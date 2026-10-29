@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090d14">
+  <title>Radio Arcade · Game room</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-frame">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Radio Arcade home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span>RADIO <b>ARCADE</b></span>
+      </a>
+      <div class="brand-context"><span class="tiny-dot"></span> DATA2G · GAME ROOM</div>
+      <div class="topbar-actions">
+        <div id="connection-status" class="connection-status" role="status"><span class="status-dot"></span><span>Starting…</span></div>
+        <button id="settings-open" class="icon-button" type="button" title="Station settings" aria-label="Station settings">⚙</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="panel lobby-panel" aria-label="Tables and game setup">
+        <div class="panel-heading">
+          <div><p class="eyebrow">YOUR GAME ROOM</p><h2>Tables <span id="session-count" class="count-pill">0</span></h2></div>
+          <span class="live-pulse" title="Live updates"></span>
+        </div>
+        <div id="session-list" class="session-list" aria-live="polite"></div>
+        <section class="new-table">
+          <div class="section-rule"><span>START SOMETHING</span></div>
+          <label class="field-label" for="game-select">Choose a game</label>
+          <select id="game-select" class="field"></select>
+          <label class="field-label" for="table-mode">Table type</label>
+          <select id="table-mode" class="field">
+            <option value="direct">Invite a station</option>
+            <option value="hosted">Open broadcast table</option>
+          </select>
+          <input id="peer-input" class="field" autocomplete="off" placeholder="Opponent callsign · optional" aria-label="Opponent callsign">
+          <button id="create-game" class="button primary full" type="button"><span>＋</span> Create table</button>
+          <p id="lobby-note" class="micro-copy">Local practice starts a private hot-seat game.</p>
+        </section>
+        <div id="session-actions" class="session-actions"></div>
+      </aside>
+
+      <section class="panel arena-panel" aria-label="Game board">
+        <div class="arena-head">
+          <div class="arena-head-copy">
+            <p class="eyebrow">THE ARENA <span class="eyebrow-separator">/</span> <span id="arena-game-tag">READY WHEN YOU ARE</span></p>
+            <h1 id="arena-title">The airwaves are yours.</h1>
+            <p id="arena-subtitle" class="arena-subtitle">Choose a table or start a new match to take your seat.</p>
+          </div>
+          <div id="arena-revision" class="revision-tag" hidden></div>
+        </div>
+        <div id="turn-banner" class="turn-banner" hidden></div>
+        <div id="arena-body" class="arena-body">
+          <div class="welcome-state">
+            <div class="welcome-orbit orbit-one"></div><div class="welcome-orbit orbit-two"></div>
+            <div class="welcome-emblem"><span>◈</span></div>
+            <p class="eyebrow">ONE ROOM · MANY WORLDS</p>
+            <h2>Pick a game.<br><span>Make a little history.</span></h2>
+            <p>Your table, your station, your next move. All game logic runs through the same engine as the desktop and terminal clients.</p>
+            <div class="welcome-chips"><span>✳ Live tables</span><span>⌘ Shared game engine</span><span>◉ Local practice</span></div>
+          </div>
+        </div>
+        <footer class="arena-foot"><span><span class="foot-glyph">◉</span> PUBLIC RADIO · MOVES ONLY TRANSMIT WHEN SUBMITTED</span><span id="transport-label">STATION OFFLINE</span></footer>
+      </section>
+
+      <aside class="panel station-panel" aria-label="Players and table chat">
+        <section class="station-section">
+          <div class="panel-heading compact-heading">
+            <div><p class="eyebrow">AT THIS TABLE</p><h2>Stations</h2></div>
+            <span id="player-count" class="subtle-count">—</span>
+          </div>
+          <div id="roster" class="roster empty-roster"><span class="roster-icon">◌</span><p>Choose a table to see who's playing.</p></div>
+          <div id="last-move" class="last-move" hidden></div>
+        </section>
+        <section class="chat-section">
+          <div class="chat-head"><div><p class="eyebrow">SIDE CHANNEL</p><h2>Table chat</h2></div><span class="chat-lock">⌁ PRIVATE TO THIS TABLE</span></div>
+          <div id="chat-list" class="chat-list" aria-live="polite"></div>
+          <form id="chat-form" class="chat-form">
+            <label class="sr-only" for="chat-input">Write a message</label>
+            <input id="chat-input" maxlength="150" autocomplete="off" placeholder="Say something kind…" disabled>
+            <button id="chat-send" type="submit" aria-label="Send message" disabled>↗</button>
+          </form>
+          <div class="chat-foot"><span id="chat-count">0 / 150 bytes</span><span>Enter to send</span></div>
+        </section>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
+
+    <dialog id="settings-dialog" class="settings-dialog">
+      <form id="settings-form" class="settings-card">
+        <div class="settings-top"><div><p class="eyebrow">YOUR STATION</p><h2>Connection settings</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button></div>
+        <p class="settings-intro">Choose how this game room talks to Data2G. Your station preferences are saved locally.</p>
+        <div class="settings-grid">
+          <label>Callsign<input name="callsign" required maxlength="10" placeholder="N0CALL" autocomplete="off"></label>
+          <label>Data2G host<input name="host" placeholder="127.0.0.1" autocomplete="off"></label>
+          <label>Transport<select name="transport"><option value="broadcast">Broadcast · KISS</option><option value="connected">Connected · VARA-like</option><option value="practice">Local practice · hot-seat</option></select></label>
+          <label>Broadcast group<input name="group" maxlength="10" value="RAGAMES"></label>
+          <label>Command port<input name="command_port" type="number" min="1" max="65535" value="8300"></label>
+          <label>KISS port<input name="kiss_port" type="number" min="1" max="65535" value="8100"></label>
+          <label>Color scheme<select name="color_scheme"><option value="midnight">Midnight</option><option value="daylight">Daylight</option><option value="monochrome">Monochrome</option></select></label>
+          <label class="check-setting"><input name="observer_mode" type="checkbox"> Observer mode <span>Receive-only · broadcast only</span></label>
+        </div>
+        <p id="settings-error" class="form-error" hidden></p>
+        <div class="settings-actions"><button id="settings-cancel" class="button" type="button">Cancel</button><button class="button primary" type="submit">Save &amp; connect <span>↗</span></button></div>
+      </form>
+    </dialog>
+  </div>
+</body>
+</html>

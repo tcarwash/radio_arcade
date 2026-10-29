@@ -5,7 +5,7 @@ is a separate PySide6 civilization-building game using this repository's
 headless multiplayer engine and hosted Data2G broadcast protocol. It is not
 part of the main Radio Arcade desktop/TUI game picker.
 
-Radio Arcade is a reusable, headless game engine with a native desktop client and a keyboard-first TUI. The same session and game logic runs over Data2G KISS broadcast or its VARA-like connected endpoint. Built-in games include tic-tac-toe, Nim, Connect Four, and Open Word Tiles, a two-player open-rack word game.
+Radio Arcade is a reusable, headless game engine with native desktop, keyboard-first TUI, and browser clients. The same session and game logic runs over Data2G KISS broadcast or its VARA-like connected endpoint. The web client brings the TUI's game-first room into a responsive browser UI, with game-specific boards for supported titles and a generic plugin-action view for games without a browser-specific board. Built-in games include tic-tac-toe, Nim, Connect Four, and Open Word Tiles, a two-player open-rack word game.
 
 To exercise a game against two local native Data2G hosts joined by audio pipes, run `python scripts/data2g_smoke.py --mode broadcast` or `python scripts/data2g_smoke.py --mode connected --reconnect`. The script needs the Data2G native host at `../Data2G/native/build/data2g-host` (or specify `--host-binary`), takes several minutes, and prints the directory containing its logs. This is a simulated audio link.
 
@@ -59,7 +59,10 @@ For an explicit configuration:
 ```sh
 radio-arcade --callsign N0CALL --host 127.0.0.1 --transport broadcast
 radio-arcade-tui --callsign N0CALL --host 127.0.0.1 --transport connected
+radio-arcade-web --callsign N0CALL --transport practice
 ```
+
+The browser client opens at `http://127.0.0.1:8765`. It has no JavaScript build or GUI dependency; the local Python server serves the bundled client and talks directly to `ArcadeService`. Configure Broadcast, Connected, or Local practice in Station settings. Bind to localhost by default; `--bind` and `--port` change the listening address, but the API has no authentication, so expose it only on a trusted network. The web room supports table creation, invites, hosted broadcasts, observer mode, chat, recovery, and the four built-in games. New plugin view models receive a generic action panel until a game-specific browser board is added.
 
 Broadcast mode opens the `RAGAMES` group using Data2G's command TCP port (8300), then connects to KISS (8100). Connected mode registers the callsign, listens for incoming calls, and uses command TCP 8300 plus its byte-stream data port 8301. Both clients show link, invite, turn, acknowledgement, and recovery status.
 

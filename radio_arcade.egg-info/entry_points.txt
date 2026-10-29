@@ -2,3 +2,4 @@
 radio-arcade = radio_arcade.desktop:main
 radio-arcade-cli = radio_arcade.cli:main
 radio-arcade-tui = radio_arcade.tui:main
+radio-arcade-web = radio_arcade.web:main

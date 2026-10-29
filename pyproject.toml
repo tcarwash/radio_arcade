@@ -17,9 +17,11 @@ all = ["PySide6>=6.6", "textual>=0.80"]
 radio-arcade = "radio_arcade.desktop:main"
 radio-arcade-tui = "radio_arcade.tui:main"
 radio-arcade-cli = "radio_arcade.cli:main"
+radio-arcade-web = "radio_arcade.web:main"
 
 [tool.setuptools.packages.find]
 include = ["radio_arcade*"]
 
 [tool.setuptools.package-data]
 "radio_arcade.games" = ["data/*.txt"]
+radio_arcade = ["web_assets/*.html", "web_assets/*.js", "web_assets/*.css"]

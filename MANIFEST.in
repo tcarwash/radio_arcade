@@ -5,6 +5,8 @@ include examples/__init__.py
 include tests/test_sessions.py
 include tests/test_tui.py
 include tests/test_desktop.py
+include tests/test_web.py
 include tests/test_wire.py
 include tests/test_scrabble.py
 recursive-include radio_arcade/games/data *.txt
+recursive-include radio_arcade/web_assets *.html *.js *.css
