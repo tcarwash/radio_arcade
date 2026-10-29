@@ -39,6 +39,12 @@ Roster encoding is `[count:u8][length:u8, ASCII callsign]...`. START is `[roster
 
 The creator coordinates the locked roster. ACTION specifies the next sequence and expected revision; COMMIT advances both and carries the actor and action. Important messages are acknowledged and retried; a snapshot repairs a missed commit. Sequence numbers for chat and opaque state are independent of game revisions. Delivery acknowledgements indicate peer processing, not privacy or authentication. Opaque state remains plaintext, is recorded in debug logs, and is hidden only by the player interfaces.
 
+## Passive broadcast observers (version 4 compatible)
+
+An optional observer client listens to all packets on the configured KISS broadcast group, including packets addressed to other callsigns. It does not register as a game participant and does not send ACKs, moves, invitations or chat. START or SNAPSHOT supplies the roster and current board. A COMMIT for an unknown game reveals its type, instance and coordinator but no initial board; the observer displays **Awaiting snapshot**. Subsequent contiguous COMMIT packets advance a known board. Missing revisions trigger a visible stale-state warning, never an automatic transmission.
+
+An observer may explicitly transmit one existing `SYNC_REQUEST` (kind 6, empty payload) addressed to the game's coordinator. The coordinator accepts this request from a non-rostered callsign for an active/finished game and sends one `SNAPSHOT` (kind 7) to that callsign without requiring an ACK; it does not add the observer to the roster. There is no retry guarantee for this optional exchange. Observer mode is broadcast-only, and receive-only except for this deliberate request. No new packet kind or version change is required. An observer cannot discover entirely silent games.
+
 ## Built-in game payloads
 
 Tic-tac-toe action is one byte: zero-based cell 0–8, row-major. Its five-byte state stores nine two-bit cells in a three-byte little-endian integer (0 empty, 1 X, 2 O), then the turn index and result byte (0 ongoing, 1 draw, 2 player 0 wins, 3 player 1 wins).

@@ -8,6 +8,19 @@ Run the fast session regression checks with `python -m unittest discover -s test
 
 For local hot-seat practice without Data2G, run `python -m radio_arcade.desktop --callsign N0CALL --transport practice` or `python -m radio_arcade.tui --callsign N0CALL --transport practice`. Create a game and take both sides; practice games use a separate local database. You can also choose Local practice in settings.
 
+## Observe broadcast games
+
+Use **Observer mode** in desktop/TUI station settings (Broadcast · KISS only), or run:
+
+```sh
+radio-arcade --callsign AG7SU --transport broadcast --observer
+radio-arcade-tui --callsign AG7SU --transport broadcast --observer
+```
+
+An observer overhears START, SNAPSHOT and COMMIT packets addressed to other players in the selected Data2G broadcast group. Live tables appear automatically, with boards, rosters, turns and overheard side chat. Observers do not join the roster, ACK, retry, play, or chat. Observed games use a separate `observer.sqlite3` database.
+
+If tuning in after START, the first overheard COMMIT creates a table marked **Awaiting snapshot**. If a move is missed, the last known board remains visible with a recovery warning. Select **Request snapshot (TRANSMITS)** to send a single explicit sync request to the coordinator; there are no automatic on-air requests or retries from the observer. Both clients clearly label this control as transmitting (desktop also asks for confirmation). The coordinator responds with a single unacknowledged snapshot addressed to the observer. A game with no overheard frames cannot yet be discovered. Connected Data2G observation is not supported.
+
 In the TUI on a narrow terminal, press `1`, `2`, or `3` to switch between the lobby, board, and chat. Use Tab to reach controls and scroll them into view.
 
 ## Install and launch
@@ -37,6 +50,7 @@ All participants must run clients using the same Radio Arcade protocol version. 
 
 - Create Tic-tac-toe, Nim, or Open Word Tiles from the game selector and invite a station.
 - In Open Word Tiles, racks are public. Enter a start square such as `H8`, choose across/down, and type the word; use `{A}` to mark a blank tile assigned as A. ENABLE1 is the shared lexicon. This is an open-rack variant because seed-derived racks are visible to all stations.
+- In the TUI's Open Word Tiles board, click a square to choose the start coordinate. Its cursor blinks, and typed letters preview along the selected Horizontal/Vertical direction. Conflicting letters and board-edge overflow are highlighted/warned locally; nothing transmits until you press Place.
 - For Nim, invite one to three other stations into the lobby and start when the roster is ready.
 - Select a received invitation and accept it.
 - Make a move only when the turn indicator says it is yours.

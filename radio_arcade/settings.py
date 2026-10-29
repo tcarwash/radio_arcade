@@ -20,6 +20,7 @@ class Settings:
     group: str = "RAGAMES"
     color_scheme: str = "midnight"
     sound_enabled: bool = False
+    observer_mode: bool = False
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Settings":

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from functools import partial
+import re
 import threading
 
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
@@ -18,6 +20,35 @@ from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
+
+
+def word_preview(view: dict, start: str, direction: str, word: str) -> tuple[dict[int, str], str]:
+    """Preview glyphs only; the game still validates the actual submitted move."""
+    match = re.fullmatch(r"([A-Oa-o])(1[0-5]|[1-9])", start.strip())
+    if not match:
+        return {}, "Enter a starting square from A1 to O15"
+    x0, y0 = ord(match[1].upper()) - 65, int(match[2]) - 1
+    if word and not re.fullmatch(r"(?:[A-Za-z]|\{[A-Za-z]\})*", word):
+        return {}, "Use letters or {A} for a blank tile"
+    letters = [blank or plain for blank, plain in re.findall(r"\{([A-Za-z])\}|([A-Za-z])", word.upper())]
+    result = {}
+    conflict = False
+    overflow = False
+    for n, letter in enumerate(letters):
+        x, y = (x0 + n, y0) if direction == "H" else (x0, y0 + n)
+        if x >= 15 or y >= 15:
+            overflow = True
+            break
+        index = y * 15 + x
+        existing = view["cells"][index]
+        if existing and existing.upper() != letter:
+            conflict = True
+        result[index] = letter
+    if overflow:
+        return result, "Word extends beyond the board"
+    if conflict:
+        return result, "Word conflicts with existing tiles"
+    return result, "Preview only · press Place to submit" if letters else "Select a tile and type a word"
 
 
 class ServiceReady(Message):
@@ -86,6 +117,8 @@ class SettingsScreen(ModalScreen[Settings | None]):
                          value=self.settings.color_scheme, allow_blank=False, id="color-scheme")
             yield Label("INVITATION AND TURN SOUNDS", classes="setting-label")
             yield Switch(value=self.settings.sound_enabled, id="sound-enabled")
+            yield Label("OBSERVER MODE · broadcast only, manual sync transmits", classes="setting-label")
+            yield Switch(value=self.settings.observer_mode, id="observer-mode")
             with Horizontal(id="settings-actions"):
                 yield Button("Cancel", id="settings-cancel")
                 yield Button("Save and connect", variant="success", id="settings-save")
@@ -113,6 +146,11 @@ class SettingsScreen(ModalScreen[Settings | None]):
             self.notify("Enter valid TCP ports.", severity="error")
             return
         self.settings.callsign, self.settings.host = call, host
+        observing = self.query_one("#observer-mode", Switch).value
+        if observing and transport != "broadcast":
+            self.notify("Observer mode requires Broadcast · KISS.", severity="error")
+            return
+        self.settings.observer_mode = observing
         self.settings.group, self.settings.transport = group, str(transport)
         self.settings.command_port, self.settings.kiss_port = command_port, kiss_port
         self.settings.color_scheme = str(self.query_one("#color-scheme", Select).value)
@@ -175,10 +213,12 @@ class ArcadeTUI(App):
     #nim-piles { height:auto; margin:2 0; color:#7ce0c9; }
     #nim-controls { height:3; }
     #nim-controls Input { width:10; }
-    .word-board { color:#e4edf5; text-style:bold; height:auto; margin:0 0 1 0; }
+    .word-board { color:#e4edf5; text-style:bold; width:64; height:16; margin:0 0 1 0; }
+    .word-board:hover { background:#182b39; }
     .word-meta { color:#7ce0c9; height:auto; margin:0 0 1 0; }
     #word-start { width:10; }
-    #word-direction { width:8; }
+    .word-direction-button { width:15; min-width:15; }
+    .word-direction-button.-selected { background:#347969; color:#ffffff; text-style:bold; }
     #word-text { width:1fr; }
     #word-exchange-tiles { width:1fr; }
     #empty-state { color:#8799ad; content-align:center middle; height:1fr; }
@@ -194,7 +234,12 @@ class ArcadeTUI(App):
         self.unsubscribe = None
         self.selected_id: str | None = None
         self.selected_game = "tic-tac-toe"
+        self._word_direction = "H"
+        self._word_cursor_visible = True
+        self._word_board_view = None
         self._action_lock = threading.Lock()
+        # Textual list mutations yield; never interleave two rebuilds.
+        self._session_refresh_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -236,6 +281,7 @@ class ArcadeTUI(App):
         yield Footer()
 
     async def on_mount(self):
+        self.set_interval(0.5, self._blink_word_cursor)
         self._update_layout(self.size.width)
         if self.settings.color_scheme == "daylight":
             self.screen.add_class("daylight")
@@ -291,7 +337,9 @@ class ArcadeTUI(App):
         self._board_signature = None
         self.unsubscribe = self.engine.subscribe(lambda event: self.post_message(EngineNotice(event)))
         offline = hasattr(self.engine.transport, "closed") and self.engine.transport.closed.is_set()
-        self.query_one("#link-status", Static).update("●  OFFLINE · press S to reconnect" if offline else f"●  {self.settings.transport.upper()} · {self.settings.callsign}")
+        self.query_one("#link-status", Static).update("●  OFFLINE · press S to reconnect" if offline else f"●  {'OBSERVER · RX ONLY' if self.settings.observer_mode else self.settings.transport.upper()} · {self.settings.callsign}")
+        for name in ("#game-select", "#peer-input", "#new-game", "#send-chat", "#chat-input"):
+            self.query_one(name).disabled = self.settings.observer_mode
         self.query_one("#connect-peer", Button).display = self.settings.transport == "connected"
         self.query_one("#disconnect-peer", Button).display = self.settings.transport == "connected"
         game_select = self.query_one("#game-select", Select)
@@ -329,6 +377,10 @@ class ArcadeTUI(App):
             self.call_later(self._refresh_sessions)
 
     async def _refresh_sessions(self):
+        async with self._session_refresh_lock:
+            await self._refresh_sessions_locked()
+
+    async def _refresh_sessions_locked(self):
         if not self.engine or not self.is_mounted: return
         listing = self.query_one("#session-list", ListView)
         sessions = self.engine.sessions()
@@ -341,7 +393,7 @@ class ArcadeTUI(App):
         current = self.selected_id
         await listing.clear()
         for session in sessions:
-            peer = next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
+            peer = (" / ".join(session["players"]) or session["coordinator"]) if self.settings.observer_mode else next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
             turn = "your turn" if session.get("current_player") == self.settings.callsign else session["status"]
             await listing.append(ListItem(Label(f"{session['game']}  ·  {peer}\n{turn}  ·  {session['id'][-6:]}"),
                                           id="s" + session["id"]))
@@ -376,7 +428,8 @@ class ArcadeTUI(App):
         self.query_one("#players", Static).update("  ·  ".join(session["players"]) + invited + f"\n\n{session['status'].upper()}  ·  rev {session['revision']}")
         state = session["view"]
         turn = session["current_player"]
-        if session["status"] == "invited": line = f"INVITATION FROM {session['coordinator']} · accept to join"
+        if self.settings.observer_mode: line = "OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT"
+        elif session["status"] == "invited": line = f"INVITATION FROM {session['coordinator']} · accept to join"
         elif session["status"] == "lobby": line = "LOBBY · invite players, then start"
         elif session["status"] == "joining": line = "WAITING FOR SESSION START"
         elif session["status"] == "cancelled": line = "INVITATION CANCELLED"
@@ -388,11 +441,12 @@ class ArcadeTUI(App):
         if session.get("last_move"):
             line += f"  ·  LAST: {session['last_move']['actor']} {session['last_move']['description']}"
         self.query_one("#turn-line", Static).update(line)
-        self.query_one("#accept-invite", Button).display = session["status"] == "invited"
-        self.query_one("#invite-player", Button).display = session["status"] == "lobby"
-        self.query_one("#cancel-invite", Button).display = session["status"] == "lobby" and bool(session["invited"])
-        self.query_one("#start-game", Button).display = session["status"] == "lobby"
-        self.query_one("#sync-state", Button).display = session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished")
+        self.query_one("#accept-invite", Button).display = not self.settings.observer_mode and session["status"] == "invited"
+        self.query_one("#invite-player", Button).display = not self.settings.observer_mode and session["status"] == "lobby"
+        self.query_one("#cancel-invite", Button).display = not self.settings.observer_mode and session["status"] == "lobby" and bool(session["invited"])
+        self.query_one("#start-game", Button).display = not self.settings.observer_mode and session["status"] == "lobby"
+        self.query_one("#sync-state", Button).display = self.settings.observer_mode or (session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished"))
+        self.query_one("#sync-state", Button).label = "Request snapshot (TRANSMITS)" if self.settings.observer_mode else "Sync / recover state"
         board = self.query_one("#board", VerticalScroll)
         await board.remove_children()
         if state:
@@ -402,7 +456,7 @@ class ArcadeTUI(App):
                     for x in range(state["width"]):
                         index = y * state["width"] + x
                         text = state["cells"][index].strip() or str(state["labels"][index])
-                        active = (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                        active = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                         button = Button(text, id=f"cell-{index}", classes="cell", disabled=not active or bool(state["cells"][index].strip()))
                         cells.append(button)
                     await board.mount(Horizontal(*cells, classes="board-row"))
@@ -420,24 +474,21 @@ class ArcadeTUI(App):
                     id="nim-controls")
                 await board.mount(row)
             elif state["kind"] == "word-tiles":
-                header = "    " + " ".join(chr(65 + x) for x in range(15))
-                rows = [header]
-                for y in range(15):
-                    cells = []
-                    for x in range(15):
-                        index = y * 15 + x
-                        cells.append(state["cells"][index] or ("★" if index == 112 else state["premiums"][index]))
-                    rows.append(f"{y+1:2d}  " + " ".join(f"{cell:>2}" for cell in cells))
-                await board.mount(Static("\n".join(rows), classes="word-board", markup=False))
+                self._word_board_view = state
+                await board.mount(Static("", id="word-board", classes="word-board", markup=False))
                 scoreline = "  ·  ".join(f"{player} {score}" for player, score in state["scores"].items())
                 await board.mount(Static(f"{scoreline}    BAG {state['bag']}    {state['lexicon']}    OPEN RACKS", classes="word-meta"))
                 for player, rack in state["racks"].items():
                     await board.mount(Static(f"{player} RACK  " + "  ".join(rack), classes="word-meta"))
-                enabled = (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                 await board.mount(Horizontal(Input("H8", placeholder="Start", id="word-start"),
-                    Input("H", placeholder="H/V", id="word-direction"),
+                    Button("— Horizontal", id="word-horizontal", classes="word-direction-button"),
+                    Button("│ Vertical", id="word-vertical", classes="word-direction-button"),
                     Input(placeholder="Word · {A} uses a blank as A", id="word-text"),
                     Button("Place", id="word-place", variant="primary", disabled=not enabled)))
+                self._update_word_direction_buttons()
+                await board.mount(Static("", id="word-preview-hint", classes="word-meta"))
+                self._refresh_word_preview()
                 await board.mount(Horizontal(Input(placeholder="Exchange letters · ? for blank", id="word-exchange-tiles"),
                     Button("Exchange", id="word-exchange", disabled=not enabled or state["bag"] < 7),
                     Button("Pass", id="word-pass", disabled=not enabled)))
@@ -515,7 +566,10 @@ class ArcadeTUI(App):
 
     @on(Button.Pressed, "#sync-state")
     def _sync_state(self):
-        if self.engine and self.selected_id: self._run_action(partial(self.engine.request_sync, self.selected_id))
+        if self.engine and self.selected_id:
+            if self.settings.observer_mode:
+                self.notify("Transmitting one snapshot request", severity="warning")
+            self._run_action(partial(self.engine.request_sync, self.selected_id))
 
     @on(Button.Pressed, "#send-chat")
     def _send_chat(self):
@@ -568,6 +622,71 @@ class ArcadeTUI(App):
         game.validate_roster(state, tuple(session["players"]))
         return session, state
 
+    @on(events.Click, "#word-board")
+    def _word_board_clicked(self, event: events.Click):
+        # One header line and four columns of row labels precede the tiles.
+        x, y = (event.x - 4) // 4, event.y - 1
+        if 0 <= x < 15 and 0 <= y < 15:
+            self.query_one("#word-start", Input).value = f"{chr(65 + x)}{y + 1}"
+            self._word_cursor_visible = True
+            self._refresh_word_preview()
+            self.query_one("#word-text", Input).focus()
+
+    def _blink_word_cursor(self):
+        if self.query("#word-board"):
+            self._word_cursor_visible = not self._word_cursor_visible
+            self._refresh_word_preview()
+
+    def _refresh_word_preview(self):
+        if not self._word_board_view or not self.query("#word-board") or not self.query("#word-start"):
+            return
+        start = self.query_one("#word-start", Input).value
+        word = self.query_one("#word-text", Input).value
+        preview, status = word_preview(self._word_board_view, start, self._word_direction, word)
+        match = re.fullmatch(r"([A-Oa-o])(1[0-5]|[1-9])", start.strip())
+        selected = (int(match[2]) - 1) * 15 + ord(match[1].upper()) - 65 if match else None
+        rows = [Text("    " + "".join(f"{chr(65 + x):^4}" for x in range(15)), style="bold cyan")]
+        for y in range(15):
+            line = Text(f"{y+1:>3} ", style="bold cyan")
+            for x in range(15):
+                index = y * 15 + x
+                existing = self._word_board_view["cells"][index]
+                glyph = preview.get(index) or existing or ("★" if index == 112 else self._word_board_view["premiums"][index])
+                style = ""
+                if index in preview:
+                    style = "bold white on dark_green" if not existing or existing.upper() == preview[index] else "bold white on dark_red"
+                if index == selected and self._word_cursor_visible:
+                    style = "bold reverse underline"
+                    if not word:
+                        glyph = "▌"
+                line.append(f"{glyph:^4}", style=style)
+            rows.append(line)
+        self.query_one("#word-board", Static).update(Text("\n").join(rows))
+        if self.query("#word-preview-hint"):
+            self.query_one("#word-preview-hint", Static).update(status)
+
+    @on(Input.Changed, "#word-start")
+    @on(Input.Changed, "#word-text")
+    def _word_input_changed(self, _event: Input.Changed):
+        self._word_cursor_visible = True
+        self._refresh_word_preview()
+
+    def _update_word_direction_buttons(self):
+        for direction, name in (("H", "#word-horizontal"), ("V", "#word-vertical")):
+            self.query_one(name, Button).set_class(self._word_direction == direction, "-selected")
+
+    @on(Button.Pressed, "#word-horizontal")
+    def _word_horizontal(self):
+        self._word_direction = "H"
+        self._update_word_direction_buttons()
+        self._refresh_word_preview()
+
+    @on(Button.Pressed, "#word-vertical")
+    def _word_vertical(self):
+        self._word_direction = "V"
+        self._update_word_direction_buttons()
+        self._refresh_word_preview()
+
     @on(Button.Pressed, "#word-place")
     def _word_place(self):
         if not self.engine or not self.selected_id: return
@@ -575,7 +694,7 @@ class ArcadeTUI(App):
             session, state = self._scrabble_state()
             action = make_placement(state, session["current_player"],
                 self.query_one("#word-start", Input).value,
-                self.query_one("#word-direction", Input).value,
+                self._word_direction,
                 self.query_one("#word-text", Input).value)
             self._run_action(partial(self.engine.legal_action, self.selected_id, action))
         except Exception as exc:
@@ -615,11 +734,13 @@ def main():
     parser.add_argument("--callsign")
     parser.add_argument("--host")
     parser.add_argument("--transport", choices=("broadcast", "connected", "practice"))
+    parser.add_argument("--observer", action="store_true", help="passively watch KISS broadcast games")
     args = parser.parse_args()
     settings = Settings.load()
     if args.callsign: settings.callsign = args.callsign.upper()
     if args.host: settings.host = args.host
     if args.transport: settings.transport = args.transport
+    if args.observer: settings.observer_mode = True
     ArcadeTUI(settings).run()
 
 
