@@ -171,8 +171,10 @@ function render() {
   $("retry").disabled=!current||!current.pending_move||state.config?.observer;
   $("sync").disabled=!current;
   $("campaignTitle").textContent=current?`Campaign · ${current.id.slice(-6)}`:"The uncharted world";
-  $("round").textContent=view?`ROUND ${view.round} / ${view.max_rounds} · ${view.ap} ORDERS LEFT`:"NO CAMPAIGN";
-  $("turn").textContent=view?(view.finished?`★ VICTORY · ${view.winner}`:`◈ ${view.turn}'S TURN${state.config.local?" · HOTSEAT":""}`):
+  $("round").textContent=view?`ROUND ${view.round} / ${view.max_rounds} · ${view.ap} ORDERS LEFT · ${current.queued_orders||0} QUEUED`:"NO CAMPAIGN";
+  const turnStatus=current?.pending_move?" · TURN SENT · WAITING FOR COMMIT":
+    current?.queued_orders?` · ${current.queued_orders} QUEUED`:"";
+  $("turn").textContent=view?(view.finished?`★ VICTORY · ${view.winner}`:`◈ ${view.turn}'S TURN${turnStatus}${state.config.local?" · HOTSEAT":""}`):
     current?"WAITING FOR START":"NO CAMPAIGN SELECTED";
   const own=view?perspective(view):-1, player=own>=0?view.players[own]:null;
   $("resources").innerHTML=player?

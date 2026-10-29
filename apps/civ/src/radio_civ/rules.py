@@ -241,6 +241,12 @@ class CivilizationGame:
         self.validate_roster(state, players)
         if self.current_player(state, players) != actor:
             raise ValueError("wait for your civilization's turn")
+        if action and action[0] == ord("P"):
+            orders = _decode_turn_bundle(action)
+            result = state
+            for order in (*orders, end_turn()):
+                result = self.apply_action(result, players, actor, order)
+            return result
         if not action or len(action) > 3 or action[0] not in b"EMFRGBT":
             raise ValueError("unknown Radio Civ action")
         s = copy.deepcopy(state)
@@ -388,6 +394,8 @@ class CivilizationGame:
     def describe_action(self, action: bytes) -> str:
         if not action:
             return "unknown order"
+        if action[0] == ord("P"):
+            return f"ended turn with {len(_decode_turn_bundle(action))} orders"
         names = {ord("E"): "ended turn", ord("M"): "moved or attacked", ord("F"): "founded a city",
                  ord("R"): "recruited a unit", ord("G"): "grew a city", ord("B"): "constructed a building",
                  ord("T"): "researched a technology"}
@@ -433,3 +441,37 @@ def research(tech: int) -> bytes:
 
 def end_turn() -> bytes:
     return b"E"
+
+
+_ORDER_LENGTHS = {ord("M"): 3, ord("F"): 2, ord("R"): 3,
+                  ord("G"): 2, ord("B"): 3, ord("T"): 2}
+
+
+def turn_bundle(orders: tuple[bytes, ...] | list[bytes]) -> bytes:
+    """Encode up to two queued orders followed by one end-turn command."""
+    if len(orders) > 2:
+        raise ValueError("a turn can contain at most two orders")
+    parts = []
+    for order in orders:
+        if not order or order[0] not in _ORDER_LENGTHS or len(order) != _ORDER_LENGTHS[order[0]]:
+            raise ValueError("turn bundles may contain only complete game orders")
+        parts.append(order)
+    return b"P" + bytes((len(parts),)) + b"".join(parts) + end_turn()
+
+
+def _decode_turn_bundle(action: bytes) -> tuple[bytes, ...]:
+    if len(action) < 3 or action[0] != ord("P") or action[1] > 2 or action[-1:] != end_turn():
+        raise ValueError("invalid Radio Civ turn bundle")
+    count, offset = action[1], 2
+    orders = []
+    for _ in range(count):
+        if offset >= len(action) - 1:
+            raise ValueError("truncated Radio Civ turn bundle")
+        length = _ORDER_LENGTHS.get(action[offset])
+        if length is None or offset + length > len(action) - 1:
+            raise ValueError("invalid order in Radio Civ turn bundle")
+        orders.append(action[offset:offset + length])
+        offset += length
+    if offset != len(action) - 1:
+        raise ValueError("trailing bytes in Radio Civ turn bundle")
+    return tuple(orders)

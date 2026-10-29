@@ -641,11 +641,15 @@ class CivWindow(QMainWindow):
         perspective = self._perspective(view)
         self.map.render(view, perspective, self.selected_tile, self.move_origin)
         self.campaign_title.setText(f"Campaign  ·  {info['id'][-6:]}")
-        self.round_label.setText(f"ROUND {view['round']} / {view['max_rounds']}    •    {view['ap']} ORDERS LEFT")
+        queued = info.get("queued_orders", 0)
+        self.round_label.setText(f"ROUND {view['round']} / {view['max_rounds']}    •    "
+                                 f"{view['ap']} ORDERS LEFT    ·    {queued} QUEUED")
         if view["finished"]:
             self.turn.setText(f"★  VICTORY  ·  {view['winner']}")
         else:
-            self.turn.setText(f"◈  {view['turn']}'S TURN" + ("  ·  HOTSEAT" if local else ""))
+            status = ("  ·  TURN SENT · WAITING FOR COMMIT" if info.get("pending_action") is not None
+                      else f"  ·  {queued} QUEUED" if queued else "")
+            self.turn.setText(f"◈  {view['turn']}'S TURN" + status + ("  ·  HOTSEAT" if local else ""))
         player = view["players"][perspective] if perspective < len(view["players"]) else None
         if player:
             self.resources.setText(f"FOOD  {player['food']}    WOOD  {player['wood']}    ORE  {player['ore']}\n"

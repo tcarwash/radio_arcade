@@ -4,7 +4,7 @@ import unittest
 
 from radio_civ.rules import (
     MAX_CITIES, MAX_UNITS, TECHS, TECH_COSTS, TECH_GUIDE, CivilizationGame, build, distance, end_turn,
-    found, grow, move, neighbors, recruit, research, score, terrain,
+    found, grow, move, neighbors, recruit, research, score, terrain, turn_bundle,
 )
 from radio_arcade.wire import Kind, Packet, decode, encode, encode_snapshot
 
@@ -64,6 +64,31 @@ class CivilizationRules(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.game.apply_action(gained, TWO, TWO[0], end_turn())
         self.assertEqual(first_food, 6)
+
+    def test_turn_bundle_applies_orders_and_end_turn_as_one_transition(self):
+        state = self.game.new_state(TWO)
+        state["players"][0]["food"] = 20
+        state["players"][0]["wood"] = 12
+        action = turn_bundle((build(0, 0), grow(0)))
+
+        result = self.game.apply_action(state, TWO, TWO[0], action)
+
+        self.assertEqual(result["turn"], 1)
+        self.assertEqual(result["ap"], 2)
+        self.assertEqual(result["cities"][0]["buildings"], 1)
+        self.assertEqual(result["cities"][0]["pop"], 2)
+        self.assertEqual(state["turn"], 0)
+        self.assertEqual(len(action), 8)
+
+    def test_turn_bundle_rejects_invalid_later_order_without_mutating_state(self):
+        state = self.game.new_state(TWO)
+        original = self.game.encode_state(state)
+        action = turn_bundle((build(0, 0), move(99, 1)))
+
+        with self.assertRaises(ValueError):
+            self.game.apply_action(state, TWO, TWO[0], action)
+
+        self.assertEqual(self.game.encode_state(state), original)
 
     def test_research_cost_prerequisites_and_warriors(self):
         state = self.game.new_state(TWO)

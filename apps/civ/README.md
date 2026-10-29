@@ -74,15 +74,17 @@ Radio Arcade broadcast transport and its usual KISS/command ports.
 3. Other stations select that hosted lobby and click **Join Hosted Lobby**.
 4. The dealer can optionally set the comma-separated reply order, with the
    dealer first, then clicks **Start Campaign** once 2–4 stations have joined.
-5. The current station gets two orders, then ends their turn. The dealer
-   broadcasts each committed action once; all game rules run locally.
+5. The current station queues up to two orders locally, then presses **End
+   Turn**. That submits one atomic turn bundle; the dealer validates it and
+   broadcasts one commit for the complete turn.
 
 The app also supports an **RX-only observer**. It can listen to broadcasts
 and inspect the campaign without sending ordinary game traffic. A deliberately
 clicked **Request Snapshot** is the only observer transmission.
 
-If a committed action was missed, click **Request Snapshot**. A participant
-with a pending turn whose order went missing can click **Retry My Order**.
+If a committed turn was missed, click **Request Snapshot**. A participant
+whose submitted turn went missing can click **Retry My Order**. Orders still
+marked **QUEUED** have not been transmitted yet.
 Avoid simultaneous multiplayer apps sharing the same station callsign.
 
 ## Playing the campaign
@@ -102,8 +104,9 @@ Avoid simultaneous multiplayer apps sharing the same station callsign.
 - **Units:** Scouts explore, warriors attack, settlers found cities. Select a
   friendly unit's hex, click **Move / Attack**, then an adjacent hex. Attacks
   are deterministic and allow besieging/capturing cities.
-- **Turn pacing:** Two orders per turn; unused orders can be skipped with
-  **End Turn**. Production is collected when ending the turn.
+- **Turn pacing:** Two orders per turn; orders are validated and previewed
+  locally, then submitted together with **End Turn**. Unused orders are
+  skipped. Production is collected when the bundled turn commits.
 - **Victory:** Reach 30 victory points after round 3; eliminate opposing
   cities and settlers; or lead the scores after round 24. Score is computed
   from settlements, population, buildings and technology.

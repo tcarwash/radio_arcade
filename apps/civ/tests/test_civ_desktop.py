@@ -60,9 +60,17 @@ class CivilizationDesktop(unittest.TestCase):
         self.assertTrue(self.window.recruit_buttons[0].isEnabled())
         self.window._build_city(0)
         self.assertEqual(self.window.current_session["view"]["cities"][0]["buildings"], 1)
+        self.assertEqual(self.window.current_session["revision"], 0)
+        self.assertEqual(self.window.current_session["queued_orders"], 1)
+        self.assertIn("1 QUEUED", self.window.round_label.text())
         self.window._order(b"E")
+        self.assertEqual(self.window.current_session["revision"], 1)
         self.assertEqual(self.window.current_session["view"]["turn"], "LOCAL2")
         self.assertIn("LOCAL2", self.window.turn.text())
+        self.window.engine.legal_action(session["id"], b"B\x01\x00")
+        self.assertEqual(self.window.engine.session(session["id"])["queued_orders"], 1)
+        self.window.engine.legal_action(session["id"], b"E")
+        self.assertEqual(self.window.engine.session(session["id"])["view"]["turn"], "AG7SU")
 
     def test_disables_orders_in_receive_only_view(self):
         # The UI must never offer input on an observer-owned game view.

@@ -17,23 +17,28 @@ This document defines **only** the external `CivilizationGame` payloads.
 
 ## Action payloads
 
-Every action is a 1–3 byte binary body inside a normal Radio Arcade `ACTION`
-or `COMMIT` envelope. All indices are unsigned, zero-based and snapshots must
-apply actions in exact revision order.
+Each individual order is a 1–3 byte binary body. At **End Turn**, the client
+sends one `P` turn-bundle body inside the ordinary Radio Arcade `ACTION`
+envelope; the resulting `COMMIT` carries that same bundle. It contains the
+queued orders and a final `E`. All indices are unsigned, zero-based and
+snapshots must apply actions in exact revision order.
 
 | First byte | Action | Payload | Meaning |
 | --- | --- | --- | --- |
-| `E` | End turn | `45` | Collect yields, advance the player/round |
+| `E` | End-turn marker | `45` | Final byte of a `P` bundle; collect yields and advance the player/round |
 | `M` | Move / attack | `4d unit tile` | Adjacent hex, deterministic combat |
 | `F` | Found city | `46 unit` | Consume one settler; obey spacing and cap |
 | `R` | Recruit | `52 city kind` | Kind 0 scout, 1 warrior, 2 settler |
 | `G` | Grow city | `47 city` | Consume food/timber for population |
 | `B` | Build | `42 city kind` | Kind 0 granary, 1 sawmill, 2 forge, 3 library |
 | `T` | Research | `54 tech` | Tech 0 agriculture, 1 mining, 2 bronze, 3 writing, 4 navigation |
+| `P` | Turn bundle | `50 count [orders] 45` | Count 0–2; each order uses the encoding above; final byte is `E` |
 
-Actions consume one of two action points, except End Turn, which consumes
-all remaining points. Unit/city indices refer to snapshot order, which is
-preserved deterministically across commits. No partial or ambiguous moves.
+Each queued order consumes one of two action points. The bundle applies every
+order in sequence and then ends the turn atomically; invalid bundles change no
+state. A bundle is at most 9 bytes. Unit/city indices refer to snapshot order,
+which is preserved deterministically across commits. No partial or ambiguous
+moves.
 
 ## Packed snapshot state
 
@@ -59,15 +64,17 @@ The worst-case **state** is `12+13×4+4×8+3×14 = 138 bytes`.
 With four ten-character callsigns, a ten-character sender and recipient,
 a maximal three-byte last action, and the engine's roster+snapshot trailer,
 the whole on-air snapshot is **239 bytes**, under the **240-byte** envelope
-limit. Both `START` and `SYNC` snapshots fit. Ordinary move/commit payloads
-are much smaller.
+limit. Both `START` and `SYNC` snapshots fit. If a longer action bundle makes
+the optional last-move trailer overflow the envelope, the snapshot omits that
+trailer; the full game state still synchronizes. Ordinary commit payloads
+remain well under the limit.
 
 ## Broadcast safety
 
-Radio Arcade's dealer validates each player's action by revision and turn,
-then sends a single broadcast `COMMIT`. A receiving station runs the same
-deterministic rules. Missing revisions use standard `SYNC_REQUEST` and
-`SNAPSHOT`; user-initiated retransmission of a pending order is safe under
+Radio Arcade's dealer validates each player's complete turn bundle by revision
+and turn, then sends a single broadcast `COMMIT`. A receiving station runs the
+same deterministic rules. Missing revisions use standard `SYNC_REQUEST` and
+`SNAPSHOT`; user-initiated retransmission of a pending turn is safe under
 the engine's duplicate/sequence checks. Observers send no ACK, join, move,
 or automatic sync. Player names, tile positions, fog and resources are
 **not encrypted or hidden on air**.

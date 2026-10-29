@@ -967,6 +967,12 @@ class ArcadeService:
             return
         payload = encode_snapshot(tuple(row["players"]), row["state"],
                                   row.get("last_actor"), row.get("last_action"))
+        try:
+            self._make(row, target, Kind.SNAPSHOT, row["sequence"], row["revision"], payload)
+        except ValueError:
+            # A long committed game action can make the optional last-move
+            # trailer exceed the radio envelope even though the state fits.
+            payload = encode_snapshot(tuple(row["players"]), row["state"])
         if row.get("hosted"):
             self._transmit(self._make(row, target, Kind.SNAPSHOT,
                                       row["sequence"], row["revision"], payload))

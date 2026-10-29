@@ -54,9 +54,12 @@ class WebClientBackend(unittest.TestCase):
         self.assertEqual(listed[0]["view"]["players"][0]["seen"],
                          f"{self.engine.session(sid)['view']['players'][0]['seen']:016X}")
         order = self.fetch(f"/api/sessions/{sid}/action", "POST", {"bytes": [66, 0, 0]})
-        self.assertEqual(order["session"]["revision"], 1)
+        self.assertEqual(order["session"]["revision"], 0)
+        self.assertEqual(order["session"]["queued_orders"], 1)
         self.assertEqual(self.engine.session(sid)["view"]["cities"][0]["buildings"], 1)
-        self.fetch(f"/api/sessions/{sid}/action", "POST", {"bytes": [69]})
+        ended = self.fetch(f"/api/sessions/{sid}/action", "POST", {"bytes": [69]})
+        self.assertEqual(ended["session"]["revision"], 1)
+        self.assertEqual(ended["session"]["queued_orders"], 0)
         self.assertEqual(self.fetch(f"/api/sessions/{sid}")["view"]["turn"], "LOCAL2")
         self.assertEqual(self.fetch(f"/api/sessions/{sid}/chat"), [])
 
