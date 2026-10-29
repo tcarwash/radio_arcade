@@ -1,13 +1,12 @@
-"""Multi-station hosted broadcast and Island Settlers rules."""
+"""Multi-station hosted broadcast protocol regression checks."""
 
 from pathlib import Path
 import tempfile
 import unittest
 
-from radio_arcade.games.settlers import EDGES, IslandSettlersGame
 from radio_arcade.service import ArcadeService
 from radio_arcade.store import SessionStore
-from radio_arcade.wire import Kind, decode, MAX_PACKET
+from radio_arcade.wire import Kind, decode
 
 
 class Air:
@@ -127,7 +126,7 @@ class HostedScenarios(unittest.TestCase):
     def test_missed_start_recovers_from_explicit_snapshot(self):
         dealer = self.engines[0]
         guest = self.engines[1]
-        sid = dealer.create_game("island-settlers", hosted=True)
+        sid = dealer.create_game("nim", hosted=True)
         self.air.pump()
         guest.join_game(sid)
         self.air.pump()
@@ -139,7 +138,7 @@ class HostedScenarios(unittest.TestCase):
         guest.request_sync(sid)
         self.air.pump()
         self.assertEqual(guest.session(sid)["status"], "active")
-        self.assertEqual(guest.session(sid)["view"]["scores"][guest.callsign], 1)
+        self.assertEqual(guest.session(sid)["view"]["piles"], [1, 3, 5, 7])
 
     def test_bad_remote_action_is_rejected_without_broadcast_commit(self):
         sid = self.start()
@@ -170,13 +169,13 @@ class HostedScenarios(unittest.TestCase):
 
     def test_hosted_chat_one_dealer_rebroadcast(self):
         sid = self.start()
-        self.engines[2].send_chat(sid, "CQ from the island")
+        self.engines[2].send_chat(sid, "CQ from the table")
         self.air.pump()
         self.assertEqual(sum(p.kind == Kind.HOST_CHAT for p in self.air.frames), 1)
         for engine in self.engines:
             history = engine.chat_history(sid)
             self.assertEqual(len(history), 1)
-            self.assertEqual(history[0]["body"], "CQ from the island")
+            self.assertEqual(history[0]["body"], "CQ from the table")
             self.assertEqual(history[0]["sender"], self.engines[2].callsign)
 
     def test_join_is_rejected_after_start(self):
@@ -229,52 +228,3 @@ class HostedScenarios(unittest.TestCase):
             observer.close()
 
 
-class SettlementRules(unittest.TestCase):
-    def setUp(self):
-        self.game = IslandSettlersGame()
-        self.players = ("N0AAA", "N0BBB", "N0CCC", "N0DDD")
-
-    def test_codec_roundtrip_and_snapshot_size(self):
-        state = self.game.new_state(self.players)
-        encoded = self.game.encode_state(state)
-        self.assertEqual(state, self.game.decode_state(encoded))
-        from radio_arcade.wire import encode_roster_state, Packet, encode
-        packet = encode(Packet(4, Kind.START, 1, 0, 0, "N0AAA", "*",
-                               encode_roster_state(self.players, encoded)))
-        self.assertLessEqual(len(packet), MAX_PACKET)
-
-    def test_roll_build_trade_and_turn(self):
-        state = self.game.new_state(self.players)
-        with self.assertRaises(ValueError):
-            self.game.apply_action(state, self.players, "N0AAA", bytes((2, 0)))
-        state = self.game.apply_action(state, self.players, "N0AAA", b"\x01")
-        self.assertEqual(state["phase"], 1)
-        state = self.game.apply_action(state, self.players, "N0AAA", bytes((2, 0)))
-        self.assertEqual(state["roads"][0], 1)
-        with self.assertRaises(ValueError):
-            self.game.apply_action(state, self.players, "N0AAA", bytes((3, 1)))
-        with self.assertRaises(ValueError):
-            self.game.apply_action(state, self.players, "N0AAA", bytes((5, 0x44)))
-        state = self.game.apply_action(state, self.players, "N0AAA", b"\x06")
-        self.assertEqual(self.game.current_player(state, self.players), "N0BBB")
-        self.assertEqual(state["phase"], 0)
-
-    def test_cannot_use_unconnected_edge_or_upgrade_opponent(self):
-        state = self.game.apply_action(self.game.new_state(self.players), self.players,
-                                       "N0AAA", b"\x01")
-        with self.assertRaises(ValueError):
-            self.game.apply_action(state, self.players, "N0AAA", bytes((2, 7)))
-        with self.assertRaises(ValueError):
-            self.game.apply_action(state, self.players, "N0AAA", bytes((4, 4)))
-        self.assertEqual(len(EDGES), 27)
-
-    def test_six_points_ends_game(self):
-        state = self.game.new_state(self.players)
-        # This test injects a legal-ish late-game board: six owned outposts.
-        state["sites"] = [1 if i in (0, 2, 4, 6, 8, 10) else 0 for i in range(18)]
-        state["phase"] = 1
-        state["stocks"][0][0] = 3
-        state["stocks"][0][1] = 3
-        state = self.game.apply_action(state, self.players, "N0AAA", bytes((2, 0)))
-        self.assertTrue(state["finished"])
-        self.assertIsNone(self.game.current_player(state, self.players))

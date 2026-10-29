@@ -329,7 +329,34 @@ class CatalogScenarios(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "permanently assigned"):
             GameRegistry().register(Impostor())
-        self.assertEqual([game.game_id for game in builtin_registry(load_plugins=False).catalog()], [1, 2, 3, 4])
+        self.assertEqual([game.game_id for game in builtin_registry(load_plugins=False).catalog()], [1, 2, 3])
+
+        class RetiredGame:
+            api_version = 1
+            game_id = 4
+
+        with self.assertRaisesRegex(ValueError, "retired"):
+            GameRegistry().register(RetiredGame())
+
+    def test_retired_game_sessions_remain_on_disk_but_not_in_ui(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "saved.sqlite3")
+            saved = {"id": "0000000000000044", "game_id": 4, "coordinator": "N0AAA",
+                     "players": ["N0AAA"], "invited": [], "status": "active",
+                     "revision": 1, "sequence": 1, "state": b"legacy game bytes",
+                     "pending_action": None, "chat_sequence": 0, "opaque_sequence": 0,
+                     "last_actor": None, "last_action": None, "updated": 1.0,
+                     "error": "", "hosted": True}
+            store.save_session(saved)
+            transport = Link()
+            service = ArcadeService("N0AAA", transport, store)
+            try:
+                self.assertEqual(service.sessions(), [])
+                self.assertEqual(len(store.load_sessions()), 1)
+                with self.assertRaises(KeyError):
+                    service.session(saved["id"])
+            finally:
+                service.close()
 
     def test_connected_transport_rejects_multiplayer_lobby(self):
         class ConnectedLink(Link):

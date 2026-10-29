@@ -41,7 +41,7 @@ Hosted sessions require a broadcast transport, and use one dealer broadcast per 
 
 ```python
 # On the dealer station:
-sid = engine.create_game("island-settlers", hosted=True)  # broadcasts HOST_ANNOUNCE
+sid = engine.create_game("nim", hosted=True)  # broadcasts HOST_ANNOUNCE
 # On a station that discovered that lobby via engine.sessions():
 engine.join_game(sid)                  # sends JOIN_REQUEST; roster broadcast confirms seat
 # On the dealer, before starting:
@@ -49,7 +49,7 @@ engine.set_reply_order(sid, "AG7SU,K7ABC,N7XYZ")  # dealer always first
 engine.announce_game(sid)             # optional manual re-announcement
 engine.start_game(sid)                # one START broadcast
 # The game view's current_player designates the only station permitted to act.
-engine.legal_action(sid, b"\x01")     # Island Settlers production roll
+engine.legal_action(sid, b"\x00\x01")  # Nim: take one item from pile zero
 ```
 
 If a remote hosted `ACTION` is lost, `engine.resend_pending_action(sid)` repeats that exact action. `engine.request_sync(sid)` asks for one snapshot when a player notices missing state; automatic catch-up also occurs if a gap in broadcast revisions is detected. The observer API remains strictly receive-only unless the user explicitly requests a snapshot. No application-level per-recipient ACK/retry exists for hosted messages. `set_reply_order` takes a comma-separated string or a list/tuple, contains all seated callsigns exactly once, and is only allowed in the open lobby.
@@ -79,9 +79,9 @@ Games whose state depends on the roster can optionally implement `validate_roste
 my-game = "my_radio_game:MyGame"
 ```
 
-IDs 1–4 are assigned to tic-tac-toe, Nim, Open Word Tiles, and Island Settlers. IDs are permanent; a plugin using a duplicate ID or API version is rejected. Plugin payloads must keep a full packet within the 240-byte on-air limit. All game messages are public radio traffic, including addressed messages.
+IDs 1–3 are assigned to tic-tac-toe, Nim, and Open Word Tiles. ID 4 is retired and cannot be reassigned. IDs are permanent; a plugin using a duplicate or retired ID or the wrong API version is rejected. Plugin payloads must keep a full packet within the 240-byte on-air limit. All game messages are public radio traffic, including addressed messages.
 
-Open Word Tiles (ID 3) uses a fixed, bundled ENABLE1 lexicon and open racks so every station can validate words and deterministically reproduce tile draws. Island Settlers (ID 4) uses public resources and an 18-site, 27-road island; its 72-byte state allows up to four radio participants.
+Open Word Tiles (ID 3) uses a fixed, bundled ENABLE1 lexicon and open racks so every station can validate words and deterministically reproduce tile draws.
 
 Third-party plugins are executable Python code. Install only plugins you trust.
 

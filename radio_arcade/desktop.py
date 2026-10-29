@@ -163,7 +163,6 @@ class ArcadeWindow(QMainWindow):
         self.game_choice = QComboBox(); self.game_choice.setObjectName("field")
         self.game_choice.addItem("Tic-tac-toe", "tic-tac-toe")
         self.game_choice.addItem("Nim · 2–4 players", "nim")
-        self.game_choice.addItem("Island Settlers · 2–4 players", "island-settlers")
         left_layout.addWidget(self.game_choice)
         self.hosted_checkbox = QCheckBox("Host / dealer · public broadcast table")
         self.hosted_checkbox.setEnabled(self.settings.transport == "broadcast" and not self.settings.observer_mode)
@@ -555,44 +554,6 @@ class ArcadeWindow(QMainWindow):
             extras.addWidget(exchange_text, 1); extras.addWidget(exchange); extras.addWidget(pass_turn)
             box.addLayout(extras)
             self.board_layout.addWidget(host)
-        elif view["kind"] == "settlement":
-            host = QWidget(); box = QVBoxLayout(host); box.setSpacing(7)
-            box.addWidget(QLabel(f"ISLAND SETTLERS · {view['phase'].upper()} PHASE · ROLL {view['roll'] or '—'} · FIRST TO 6 VP"))
-            regions = QWidget(); region_grid = QGridLayout(regions); region_grid.setSpacing(5)
-            for i, sector in enumerate(view["regions"]):
-                group = view["sites"][i * 3:i * 3 + 3]
-                cells = "  ".join(f"{site['index']:02d}{'◆' if site['city'] else '●' if site['owner'] else '·'}" for site in group)
-                label = QLabel(f"{sector['number']} · {sector['resource'].upper()}\n{cells}")
-                label.setStyleSheet("background:#1a2d3d;color:#b3e6d4;border:1px solid #40506c;padding:8px;border-radius:5px;")
-                region_grid.addWidget(label, i // 3, i % 3)
-            box.addWidget(regions)
-            box.addWidget(QLabel("◆ City   ● Outpost   · Free site   |   Resource IDs: 0 timber · 1 clay · 2 wool · 3 grain · 4 ore"))
-            for name, score in view["scores"].items():
-                inventory = "   ".join(f"{key[:2].upper()} {value}" for key, value in view["resources"][name].items())
-                owned = " ".join(f"{s['index']:02d}{'◆' if s['city'] else '●'}" for s in view["sites"] if s["owner"] == name)
-                box.addWidget(QLabel(f"{name}  ·  {score} VP  ·  {inventory}  ·  {owned}"))
-            edges = view["roads"]
-            box.addWidget(QLabel("ROADS / AVAILABLE EDGE INDEX → SITE CONNECTION"))
-            for offset in range(9):
-                three = [edges[offset], edges[offset + 9], edges[offset + 18]]
-                box.addWidget(QLabel("    ".join(f"{road['index']:02d} {road['from']:02d}↔{road['to']:02d} {road['owner'] or '—'}" for road in three)))
-            can_move = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
-            turn_row = QHBoxLayout()
-            roll = QPushButton("⚄ Roll / produce"); roll.setEnabled(can_move and view["phase"] == "roll")
-            roll.clicked.connect(lambda: self._submit_action(b"\x01"))
-            done = QPushButton("End turn →"); done.setEnabled(can_move and view["phase"] == "build")
-            done.clicked.connect(lambda: self._submit_action(b"\x06"))
-            turn_row.addWidget(roll); turn_row.addWidget(done); box.addLayout(turn_row)
-            action_row = QHBoxLayout(); move = QComboBox()
-            for label, opcode in (("Road · timber + clay", 2), ("Outpost · T+C+W+G", 3),
-                                  ("City · 2 grain + 3 ore", 4), ("Bank trade · 3:1", 5)):
-                move.addItem(label, opcode)
-            target = QLineEdit(); target.setPlaceholderText("Site/road index, or trade 0:4")
-            submit = QPushButton("Build / trade"); submit.setEnabled(can_move and view["phase"] == "build")
-            submit.clicked.connect(lambda: self._submit_island_action(move.currentData(), target.text()))
-            action_row.addWidget(move); action_row.addWidget(target); action_row.addWidget(submit)
-            box.addLayout(action_row)
-            self.board_layout.addWidget(host)
         else:
             panel = QWidget(); box = QVBoxLayout(panel)
             summary = QLabel(str(view)); summary.setWordWrap(True); box.addWidget(summary)
@@ -644,19 +605,6 @@ class ArcadeWindow(QMainWindow):
 
     def _retry_move(self):
         if self.engine and self.selected_id: self._run(partial(self.engine.resend_pending_action, self.selected_id))
-
-    def _submit_island_action(self, opcode: int, text: str):
-        try:
-            if opcode == 5:
-                give, receive = (int(piece) for piece in text.strip().split(":"))
-                if not 0 <= give <= 4 or not 0 <= receive <= 4: raise ValueError()
-                target = (give << 4) | receive
-            else:
-                target = int(text.strip())
-            if not 0 <= target <= 255: raise ValueError()
-        except ValueError:
-            self.footer_label.setText("Enter a site/road index or a resource trade such as 0:4."); return
-        self._submit_action(bytes((opcode, target)))
 
     def _created_game(self, sid: str):
         self.selected_id = sid

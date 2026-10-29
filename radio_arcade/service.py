@@ -50,7 +50,15 @@ class ArcadeService:
         self.registry = registry or builtin_registry()
         self._lock = threading.RLock()
         self._subscribers: set[Callable[[EngineEvent], None]] = set()
-        self._sessions: dict[str, dict[str, Any]] = {s["id"]: s for s in self.store.load_sessions()}
+        self._sessions: dict[str, dict[str, Any]] = {}
+        for saved in self.store.load_sessions():
+            try:
+                self.registry.by_id(saved["game_id"])
+            except ValueError:
+                # Leave unsupported/retired sessions intact on disk. Without
+                # their rules, we cannot safely decode or resume their state.
+                continue
+            self._sessions[saved["id"]] = saved
         self._reported_failed: set[tuple[str, str, int, int]] = set()
         if not observer_mode:
             self.store.upgrade_v3_outbox()
@@ -1061,11 +1069,15 @@ class ArcadeService:
             else:
                 due = self.store.due_outgoing(target=target)
             for item in due:
+                if item["session"] not in self._sessions:
+                    continue  # never retransmit outbox packets for a retired game
                 self._transmit(item["frame"])
                 self._emit("delivery", item["session"], target=item["target"],
                            kind=Kind(item["kind"]).name, sequence=item["sequence"],
                            state="retry", attempt=item["attempts"])
             for item in self.store.failed_outgoing():
+                if item["session"] not in self._sessions:
+                    continue
                 key = (item["session"], item["target"], item["kind"], item["sequence"])
                 if key not in self._reported_failed:
                     self._reported_failed.add(key)
