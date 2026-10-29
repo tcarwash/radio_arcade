@@ -10,6 +10,37 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("textual"), "install the tui extra")
 class TuiScenarios(unittest.IsolatedAsyncioTestCase):
+    async def test_island_settlers_practice_roll_and_build_controls(self):
+        from radio_arcade.settings import Settings
+        from radio_arcade.tui import ArcadeTUI
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            app = ArcadeTUI(Settings(callsign="N0CALL", transport="practice"))
+            async with app.run_test(size=(175, 55)) as pilot:
+                await pilot.pause(0.2)
+                sid = app.engine.create_game("island-settlers")
+                app.selected_id = sid
+                await app._show_session(sid)
+                self.assertEqual(len(app.query(".island-region")), 6)
+                self.assertTrue(app.query_one("#island-roll").display)
+                self.assertFalse(app.query_one("#island-roll").disabled)
+                app.query_one("#island-roll").press()
+                for _ in range(30):
+                    await pilot.pause(0.05)
+                    if app.engine.session(sid)["revision"] >= 1:
+                        break
+                self.assertEqual(app.engine.session(sid)["view"]["phase"], "build")
+                await app._show_session(sid)
+                self.assertFalse(app.query_one("#island-end").disabled)
+                app.query_one("#island-action").value = "road"
+                app.query_one("#island-target").value = "0"
+                app._island_submit()
+                for _ in range(30):
+                    await pilot.pause(0.05)
+                    if app.engine.session(sid)["revision"] >= 2:
+                        break
+                self.assertEqual(app.engine.session(sid)["view"]["roads"][0]["owner"], "N0CALL")
+
     async def test_overlapping_board_refreshes_are_serialized(self):
         from radio_arcade.settings import Settings
         from radio_arcade.tui import ArcadeTUI

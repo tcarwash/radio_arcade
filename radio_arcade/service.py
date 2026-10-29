@@ -11,8 +11,8 @@ from typing import Any, Callable
 from .games.base import GameRegistry, builtin_registry
 from .debuglog import opaque_logger
 from .store import SessionStore
-from .wire import (Kind, Packet, decode, decode_action, decode_roster_state, encode,
-                   encode_action, encode_roster_state, encode_snapshot, decode_snapshot,
+from .wire import (Kind, Packet, decode, decode_action, decode_roster, decode_roster_state, encode,
+                   encode_action, encode_roster, encode_roster_state, encode_snapshot, decode_snapshot,
                    FLAG_OPAQUE)
 
 
@@ -158,7 +158,7 @@ class ArcadeService:
         self.store.save_session(session)
 
     def _new_session(self, game_id: int, coordinator: str, players: list[str],
-                     invited: list[str], status: str) -> dict[str, Any]:
+                     invited: list[str], status: str, hosted: bool = False) -> dict[str, Any]:
         sid = secrets.randbits(64)
         while f"{sid:016X}" in self._sessions:
             sid = secrets.randbits(64)
@@ -166,7 +166,7 @@ class ArcadeService:
                    "players": players, "invited": invited, "status": status,
                    "revision": 0, "sequence": 0, "state": None, "pending_action": None,
                    "chat_sequence": 0, "opaque_sequence": 0, "last_actor": None, "last_action": None,
-                   "updated": time.time(), "error": ""}
+                   "updated": time.time(), "error": "", "hosted": hosted}
         self._sessions[session["id"]] = session
         self._save(session)
         return session
@@ -200,20 +200,66 @@ class ArcadeService:
                      self.callsign, packet.source, b"")
         self._transmit(encode(ack))
 
-    def create_game(self, game: str | int, peer: str | None = None) -> str:
+    def create_game(self, game: str | int, peer: str | None = None, *, hosted: bool = False) -> str:
         self._require_player()
         definition = self.registry.by_id(game) if isinstance(game, int) else self.registry.by_key(game)
+        if hosted and (peer or hasattr(self.transport, "connect_peer")):
+            raise ValueError("hosted tables require broadcast mode and no direct invitation")
         if peer:
             peer = station_name(peer)
             if peer == self.callsign:
                 raise ValueError("choose another station")
         if definition.max_players < 2:
             raise ValueError("radio games need at least two players")
-        row = self._new_session(definition.game_id, self.callsign, [self.callsign], [], "lobby")
+        row = self._new_session(definition.game_id, self.callsign, [self.callsign], [], "lobby", hosted)
         self._emit("session_updated", row["id"], session=self.session(row["id"]))
-        if peer:
+        if hosted:
+            self.announce_game(row["id"])
+        elif peer:
             self.invite_player(row["id"], peer)
         return row["id"]
+
+    def announce_game(self, session_id: str | int) -> None:
+        """Advertise a public lobby again, on user request (no automatic beacon)."""
+        self._require_player()
+        with self._lock:
+            row = self._sessions[self._sid(session_id)]
+            if not row.get("hosted") or row["coordinator"] != self.callsign or row["status"] != "lobby":
+                raise ValueError("only the dealer may advertise an open hosted lobby")
+            self._transmit(self._make(row, "*", Kind.HOST_ANNOUNCE,
+                                      payload=encode_roster(tuple(row["players"]))))
+
+    def set_reply_order(self, session_id: str | int, order: list[str] | tuple[str, ...] | str) -> None:
+        """Dealer chooses the roster/turn order before the first roll."""
+        self._require_player()
+        names = ([station_name(name) for name in order.split(",")] if isinstance(order, str)
+                 else [station_name(name) for name in order])
+        with self._lock:
+            row = self._sessions[self._sid(session_id)]
+            if not row.get("hosted") or row["coordinator"] != self.callsign or row["status"] != "lobby":
+                raise ValueError("only the dealer can set the order of an open hosted lobby")
+            if not names or names[0] != self.callsign or len(set(names)) != len(names) or set(names) != set(row["players"]):
+                raise ValueError("list all seated stations once, with the dealer first")
+            row["players"] = names
+            self._save(row)
+            self._transmit(self._make(row, "*", Kind.HOST_ROSTER,
+                                      payload=encode_roster(tuple(names))))
+            self._emit("session_updated", row["id"], session=self.session(row["id"]))
+
+    def join_game(self, session_id: str | int) -> None:
+        """Ask to occupy a seat in an advertised public table."""
+        self._require_player()
+        with self._lock:
+            row = self._sessions[self._sid(session_id)]
+            if not row.get("hosted") or row["coordinator"] == self.callsign or row["status"] not in ("lobby", "joining"):
+                raise ValueError("select an advertised hosted lobby to join")
+            if self.callsign in row["players"]:
+                return
+            row["status"] = "joining"
+            self._save(row)
+            # No per-station ACK. Re-click Join if the dealer did not announce a seat.
+            self._transmit(self._make(row, row["coordinator"], Kind.JOIN_REQUEST))
+            self._emit("session_updated", row["id"], session=self.session(row["id"]))
 
     def invite_player(self, session_id: str | int, peer: str) -> None:
         self._require_player()
@@ -222,6 +268,8 @@ class ArcadeService:
             raise ValueError("choose another station")
         with self._lock:
             row = self._sessions[sid]
+            if row.get("hosted"):
+                raise ValueError("hosted tables accept join requests instead of invitations")
             definition = self.registry.by_id(row["game_id"])
             if row["coordinator"] != self.callsign or row["status"] != "lobby":
                 raise ValueError("only the coordinator can invite players before the game starts")
@@ -270,17 +318,22 @@ class ArcadeService:
             state = game.new_state(players)
             encoded_state = game.encode_state(state)
             snapshot = encode_roster_state(players, encoded_state)
-            for player in players:
-                if player != self.callsign:
-                    self._make(row, player, Kind.START, 0, 0, snapshot)
-                    self._make(row, player, Kind.SNAPSHOT, 0, 0, encode_snapshot(players, encoded_state))
+            if row.get("hosted"):
+                self._make(row, "*", Kind.START, 0, 0, snapshot)
+            else:
+                for player in players:
+                    if player != self.callsign:
+                        self._make(row, player, Kind.START, 0, 0, snapshot)
             row["state"] = encoded_state
             row["status"], row["sequence"], row["revision"] = "active", 0, 0
             row["last_actor"], row["last_action"] = None, None
             self._save(row)
-            for player in players:
-                if player != self.callsign:
-                    self._reliable(row, player, Kind.START, payload=snapshot)
+            if row.get("hosted"):
+                self._transmit(self._make(row, "*", Kind.START, payload=snapshot))
+            else:
+                for player in players:
+                    if player != self.callsign:
+                        self._reliable(row, player, Kind.START, payload=snapshot)
             self._emit("session_updated", sid, session=self.session(sid))
 
     def legal_action(self, session_id: str | int, action: bytes) -> None:
@@ -307,9 +360,25 @@ class ArcadeService:
             else:
                 row["pending_action"] = action
                 self._save(row)
-                self._reliable(row, row["coordinator"], Kind.ACTION, next_sequence,
-                               row["revision"], payload)
+                if row.get("hosted"):
+                    self._transmit(self._make(row, row["coordinator"], Kind.ACTION,
+                                              next_sequence, row["revision"], payload))
+                else:
+                    self._reliable(row, row["coordinator"], Kind.ACTION, next_sequence,
+                                   row["revision"], payload)
                 self._emit("session_updated", sid, session=self.session(sid))
+
+    def resend_pending_action(self, session_id: str | int) -> None:
+        """Manually retry a lost turn request in a hosted session."""
+        self._require_player()
+        with self._lock:
+            row = self._sessions[self._sid(session_id)]
+            if not row.get("hosted") or row["coordinator"] == self.callsign or row["pending_action"] is None:
+                raise ValueError("no hosted move waiting to be retried")
+            action = row["pending_action"]
+            self._transmit(self._make(row, row["coordinator"], Kind.ACTION,
+                                      row["sequence"] + 1, row["revision"],
+                                      encode_action(self.callsign, action)))
 
     def cancel_invitation(self, session_id: str | int, peer: str) -> None:
         self._require_player()
@@ -332,10 +401,12 @@ class ArcadeService:
         encoded_state = game.encode_state(new_state)
         payload = encode_action(actor, action)
         snapshot = encode_snapshot(tuple(row["players"]), encoded_state, actor, action)
-        for player in row["players"]:
-            if player != self.callsign:
-                self._make(row, player, Kind.COMMIT, row["sequence"] + 1, row["revision"] + 1, payload)
-                self._make(row, player, Kind.SNAPSHOT, row["sequence"] + 1, row["revision"] + 1, snapshot)
+        if row.get("hosted"):
+            self._make(row, "*", Kind.COMMIT, row["sequence"] + 1, row["revision"] + 1, payload)
+        else:
+            for player in row["players"]:
+                if player != self.callsign:
+                    self._make(row, player, Kind.COMMIT, row["sequence"] + 1, row["revision"] + 1, payload)
         row["state"] = encoded_state
         row["sequence"] += 1
         row["revision"] += 1
@@ -343,9 +414,13 @@ class ArcadeService:
         if new_state.get("finished"):
             row["status"] = "finished"
         self._save(row)
-        for player in row["players"]:
-            if player != self.callsign:
-                self._reliable(row, player, Kind.COMMIT, row["sequence"], row["revision"], payload)
+        if row.get("hosted"):
+            self._transmit(self._make(row, "*", Kind.COMMIT,
+                                      row["sequence"], row["revision"], payload))
+        else:
+            for player in row["players"]:
+                if player != self.callsign:
+                    self._reliable(row, player, Kind.COMMIT, row["sequence"], row["revision"], payload)
         self._emit("session_updated", row["id"], session=self.session(row["id"]),
                    action=payload, committed=True)
 
@@ -364,9 +439,18 @@ class ArcadeService:
             seq = row["chat_sequence"]
             self.store.add_chat(sid, self.callsign, seq, text, "pending")
             self._save(row)
-            for player in row["players"]:
-                if player != self.callsign:
-                    self._reliable(row, player, Kind.CHAT, seq, row["revision"], body)
+            if row.get("hosted"):
+                if row["coordinator"] == self.callsign:
+                    self._transmit(self._make(row, "*", Kind.HOST_CHAT, seq,
+                                              row["revision"], encode_action(self.callsign, body)))
+                    self.store.set_chat_delivery(sid, self.callsign, seq, "broadcast")
+                else:
+                    self._transmit(self._make(row, row["coordinator"], Kind.CHAT,
+                                              seq, row["revision"], body))
+            else:
+                for player in row["players"]:
+                    if player != self.callsign:
+                        self._reliable(row, player, Kind.CHAT, seq, row["revision"], body)
             self._emit("chat_message", sid, message={"sender": self.callsign, "sequence": seq,
                                                        "body": text, "delivery": "pending"})
             return seq
@@ -423,6 +507,10 @@ class ArcadeService:
                 return
             if row["coordinator"] == self.callsign:
                 return
+            if row.get("hosted"):
+                self._transmit(self._make(row, row["coordinator"], Kind.SYNC_REQUEST,
+                                          row["sequence"], row["revision"]))
+                return
             self._reliable(row, row["coordinator"], Kind.SYNC_REQUEST,
                            row["sequence"], row["revision"])
 
@@ -440,7 +528,8 @@ class ArcadeService:
     def _observe(self, packet: Packet) -> None:
         """Watch overheard broadcast traffic without ACKs or automatic transmissions."""
         if packet.source == self.callsign or packet.kind not in (
-                Kind.START, Kind.SNAPSHOT, Kind.COMMIT, Kind.CHAT):
+                Kind.START, Kind.SNAPSHOT, Kind.COMMIT, Kind.CHAT,
+                Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER, Kind.HOST_CHAT):
             return
         sid = f"{packet.session:016X}"
         with self._lock:
@@ -452,7 +541,9 @@ class ArcadeService:
                     return
                 # START/SNAPSHOT prove the creator and roster. A COMMIT alone
                 # provides an incomplete table; the user may request sync.
-                if packet.kind == Kind.START:
+                if packet.kind in (Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER):
+                    players, state, last = decode_roster(packet.payload), None, None
+                elif packet.kind == Kind.START:
                     players, state = decode_roster_state(packet.payload)
                     last = None
                 elif packet.kind == Kind.SNAPSHOT:
@@ -479,16 +570,22 @@ class ArcadeService:
                        "state": state, "pending_action": None, "chat_sequence": 0,
                        "opaque_sequence": 0, "last_actor": last[0] if last else None,
                        "last_action": last[1] if last else None,
-                       "updated": time.time(), "error": "Awaiting snapshot" if state is None else ""}
+                       "updated": time.time(), "error": "Awaiting snapshot" if state is None else "",
+                       "hosted": packet.kind in (Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER) or packet.destination == "*"}
+                if packet.kind in (Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER):
+                    row["status"], row["error"] = "lobby", ""
                 self._sessions[sid] = row
                 self._save(row)
                 self._emit("session_updated", sid, session=self.session(sid))
                 return
             if row["game_id"] != packet.game:
                 return
-            if packet.kind in (Kind.START, Kind.SNAPSHOT, Kind.COMMIT) and packet.source != row["coordinator"]:
+            if packet.kind in (Kind.START, Kind.SNAPSHOT, Kind.COMMIT,
+                               Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER, Kind.HOST_CHAT) and packet.source != row["coordinator"]:
                 return
-            if packet.kind == Kind.SNAPSHOT:
+            if packet.kind in (Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER) and row.get("hosted") and row["state"] is None:
+                self._receive_host_roster(packet, sid)
+            elif packet.kind == Kind.SNAPSHOT:
                 self._receive_snapshot(row, packet)
             elif packet.kind == Kind.START and row["state"] is None:
                 players, state = decode_roster_state(packet.payload)
@@ -501,6 +598,8 @@ class ArcadeService:
                 self._receive_commit(row, packet)
             elif packet.kind == Kind.CHAT and packet.source in row["players"]:
                 self._receive_chat(row, packet)
+            elif packet.kind == Kind.HOST_CHAT and row.get("hosted"):
+                self._receive_host_chat(row, packet)
 
     def _handle(self, packet: Packet) -> None:
         if self.observer_mode:
@@ -509,6 +608,13 @@ class ArcadeService:
         if packet.source == self.callsign or packet.destination not in (self.callsign, "*"):
             return
         with self._lock:
+            sid = f"{packet.session:016X}"
+            if packet.kind in (Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER):
+                self._receive_host_roster(packet, sid)
+                return
+            if packet.kind == Kind.JOIN_REQUEST:
+                self._receive_join_request(packet, sid)
+                return
             if packet.kind == Kind.ACK:
                 row = self._sessions.get(f"{packet.session:016X}")
                 if row is None or row["game_id"] != packet.game:
@@ -538,7 +644,6 @@ class ArcadeService:
                                kind=kind.name, sequence=packet.sequence, state="delivered")
                 return
 
-            sid = f"{packet.session:016X}"
             if packet.kind == Kind.INVITE:
                 self._receive_invite(packet, sid)
                 row = self._sessions.get(sid)
@@ -560,6 +665,9 @@ class ArcadeService:
                 return
             row = self._sessions.get(sid)
             if row is None or row["game_id"] != packet.game:
+                return
+            if row.get("hosted"):
+                self._handle_hosted(row, packet)
                 return
             if (packet.kind == Kind.SYNC_REQUEST and row["coordinator"] == self.callsign
                     and packet.source not in row["players"] and packet.source not in row["invited"]
@@ -610,6 +718,102 @@ class ArcadeService:
                                Kind.OPAQUE_STATE):
                 self._ack(packet)
 
+    def _receive_host_roster(self, packet: Packet, sid: str) -> None:
+        if packet.destination != "*" or packet.revision != 0 or packet.sequence != 0:
+            return
+        game = self.registry.by_id(packet.game)
+        players = decode_roster(packet.payload)
+        if not 1 <= len(players) <= game.max_players or players[0] != packet.source:
+            return
+        row = self._sessions.get(sid)
+        if row is None:
+            row = {"id": sid, "game_id": packet.game, "coordinator": packet.source,
+                   "players": list(players), "invited": [], "status": "lobby",
+                   "revision": 0, "sequence": 0, "state": None, "pending_action": None,
+                   "chat_sequence": 0, "opaque_sequence": 0, "last_actor": None,
+                   "last_action": None, "updated": time.time(), "error": "", "hosted": True}
+            self._sessions[sid] = row
+        elif (not row.get("hosted") or row["coordinator"] != packet.source
+              or row["game_id"] != packet.game or row["state"] is not None):
+            return
+        # A stale earlier roster must never evict our accepted seat; the host's
+        # advertised roster grows monotonically while a lobby is open.
+        if not set(row["players"]).issubset(players):
+            return
+        row["players"] = list(players)
+        row["status"] = "lobby" if self.callsign in players else (
+            "joining" if row["status"] == "joining" else "lobby")
+        row["error"] = ""
+        self._save(row)
+        self._emit("session_updated", sid, session=self.session(sid))
+
+    def _receive_join_request(self, packet: Packet, sid: str) -> None:
+        row = self._sessions.get(sid)
+        if (row is None or not row.get("hosted") or row["coordinator"] != self.callsign
+                or packet.destination != self.callsign or row["status"] != "lobby"
+                or packet.game != row["game_id"] or packet.payload):
+            return
+        players = row["players"]
+        if packet.source not in players:
+            game = self.registry.by_id(row["game_id"])
+            if len(players) >= game.max_players:
+                return
+            players.append(packet.source)
+            self._save(row)
+        # Repeat the entire canonical roster, including the newest joiner.
+        self._transmit(self._make(row, "*", Kind.HOST_ROSTER,
+                                  payload=encode_roster(tuple(players))))
+        self._emit("session_updated", sid, session=self.session(sid))
+
+    def _handle_hosted(self, row: dict[str, Any], packet: Packet) -> None:
+        """Dealer owns state; only the dealer broadcasts roster, state and chat."""
+        if packet.kind == Kind.START:
+            if (packet.source == row["coordinator"] and packet.destination == "*"
+                    and self.callsign in row["players"]):
+                self._receive_start(row, packet)
+        elif packet.kind == Kind.ACTION:
+            if packet.destination == self.callsign and packet.source in row["players"]:
+                self._receive_action(row, packet)
+        elif packet.kind == Kind.COMMIT:
+            if packet.destination == "*":
+                self._receive_commit(row, packet)
+        elif packet.kind == Kind.SNAPSHOT:
+            if packet.source == row["coordinator"] and packet.destination in (self.callsign, "*"):
+                self._receive_snapshot(row, packet)
+        elif packet.kind == Kind.SYNC_REQUEST:
+            if (row["coordinator"] == self.callsign and packet.destination == self.callsign
+                    and row["status"] in ("active", "finished") and not packet.payload):
+                self._transmit(self._make(row, packet.source, Kind.SNAPSHOT,
+                                          row["sequence"], row["revision"],
+                                          encode_snapshot(tuple(row["players"]), row["state"],
+                                                          row["last_actor"], row["last_action"])))
+        elif packet.kind == Kind.CHAT:
+            if (row["coordinator"] == self.callsign and packet.destination == self.callsign
+                    and self._receive_chat(row, packet)):
+                self._transmit(self._make(row, "*", Kind.HOST_CHAT,
+                                          packet.sequence, row["revision"],
+                                          encode_action(packet.source, packet.payload)))
+        elif packet.kind == Kind.HOST_CHAT:
+            if packet.source == row["coordinator"] and packet.destination == "*":
+                self._receive_host_chat(row, packet)
+        elif packet.kind == Kind.REJECT and packet.source == row["coordinator"]:
+            if row["pending_action"] is not None and packet.sequence == row["sequence"] + 1:
+                row["pending_action"] = None
+                row["error"] = packet.payload.decode("utf-8", "replace")
+                self._save(row)
+                self._emit("session_updated", row["id"], session=self.session(row["id"]))
+
+    def _receive_host_chat(self, row: dict[str, Any], packet: Packet) -> None:
+        sender, body = decode_action(packet.payload)
+        if sender not in row["players"] or len(body) > 150:
+            return
+        rebroadcast = Packet(packet.game, Kind.CHAT, packet.session, packet.sequence,
+                             packet.revision, sender, self.callsign, body)
+        self._receive_chat(row, rebroadcast)
+        if sender == self.callsign:
+            self.store.set_chat_delivery(row["id"], sender, packet.sequence, "broadcast")
+            self._emit("chat_delivery", row["id"], sequence=packet.sequence, state="broadcast")
+
     def _receive_invite(self, packet: Packet, sid: str, announce: bool = True) -> None:
         if sid in self._sessions:
             return
@@ -651,7 +855,7 @@ class ArcadeService:
             self._emit("session_updated", row["id"], session=self.session(row["id"]))
 
     def _receive_start(self, row: dict[str, Any], packet: Packet) -> bool:
-        if row["coordinator"] != packet.source or row["status"] not in ("joining", "active", "finished"):
+        if row["coordinator"] != packet.source or row["status"] not in (("lobby", "joining", "active", "finished") if row.get("hosted") else ("joining", "active", "finished")):
             return False
         if packet.sequence != 0 or packet.revision != 0:
             return False
@@ -744,14 +948,22 @@ class ArcadeService:
 
     def _send_reject(self, row: dict[str, Any], peer: str, packet: Packet, reason: str) -> None:
         payload = reason.encode("utf-8")[:120]
-        self._reliable(row, peer, Kind.REJECT, packet.sequence, row["revision"], payload)
+        if row.get("hosted"):
+            self._transmit(self._make(row, peer, Kind.REJECT,
+                                      packet.sequence, row["revision"], payload))
+        else:
+            self._reliable(row, peer, Kind.REJECT, packet.sequence, row["revision"], payload)
 
     def _send_snapshot(self, row: dict[str, Any], target: str) -> None:
         if row["state"] is None:
             return
         payload = encode_snapshot(tuple(row["players"]), row["state"],
                                   row.get("last_actor"), row.get("last_action"))
-        self._reliable(row, target, Kind.SNAPSHOT, row["sequence"], row["revision"], payload)
+        if row.get("hosted"):
+            self._transmit(self._make(row, target, Kind.SNAPSHOT,
+                                      row["sequence"], row["revision"], payload))
+        else:
+            self._reliable(row, target, Kind.SNAPSHOT, row["sequence"], row["revision"], payload)
 
     def _receive_snapshot(self, row: dict[str, Any], packet: Packet) -> bool:
         if packet.source != row["coordinator"]:
@@ -764,7 +976,7 @@ class ArcadeService:
             return False
         if hasattr(self.transport, "connect_peer") and len(players) > 2:
             raise ValueError("connected mode cannot recover a game with more than two players")
-        if row["status"] not in ("invited", "joining", "observing") and tuple(row["players"]) != players:
+        if row["status"] not in (("invited", "joining", "observing", "lobby") if row.get("hosted") else ("invited", "joining", "observing")) and tuple(row["players"]) != players:
             return False
         decoded = game.decode_state(state)
         if hasattr(game, "validate_roster"):

@@ -17,7 +17,9 @@ class PracticeService(ArcadeService):
         super().__init__(callsign, _LocalTransport(),
                          SessionStore(default_data_dir() / "practice.sqlite3"))
 
-    def create_game(self, game, peer=None):
+    def create_game(self, game, peer=None, *, hosted=False):
+        if hosted:
+            raise ValueError("hosted tables require broadcast radio mode")
         definition = self.registry.by_id(game) if isinstance(game, int) else self.registry.by_key(game)
         players = [self.callsign]
         for i in range(1, definition.min_players):

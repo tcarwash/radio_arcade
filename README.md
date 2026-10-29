@@ -1,6 +1,6 @@
 # Radio Arcade
 
-Radio Arcade is a reusable, headless game engine with a native desktop client and a keyboard-first TUI. The same session and game logic runs over Data2G KISS broadcast or its VARA-like connected endpoint. Built-in games include tic-tac-toe, Nim, and Open Word Tiles, a two-player open-rack Scrabble-style game.
+Radio Arcade is a reusable, headless game engine with a native desktop client and a keyboard-first TUI. The same session and game logic runs over Data2G KISS broadcast or its VARA-like connected endpoint. Built-in games include tic-tac-toe, Nim, Open Word Tiles, and Island Settlers, a small original 2–4-player resource-and-settlement game.
 
 To exercise a game against two local native Data2G hosts joined by audio pipes, run `python scripts/data2g_smoke.py --mode broadcast` or `python scripts/data2g_smoke.py --mode connected --reconnect`. The script needs the Data2G native host at `../Data2G/native/build/data2g-host` (or specify `--host-binary`), takes several minutes, and prints the directory containing its logs. This is a simulated audio link.
 
@@ -22,6 +22,16 @@ An observer overhears START, SNAPSHOT and COMMIT packets addressed to other play
 If tuning in after START, the first overheard COMMIT creates a table marked **Awaiting snapshot**. If a move is missed, the last known board remains visible with a recovery warning. Select **Request snapshot (TRANSMITS)** to send a single explicit sync request to the coordinator; there are no automatic on-air requests or retries from the observer. Both clients clearly label this control as transmitting (desktop also asks for confirmation). The coordinator responds with a single unacknowledged snapshot addressed to the observer. A game with no overheard frames cannot yet be discovered. Connected Data2G observation is not supported.
 
 In the TUI on a narrow terminal, press `1`, `2`, or `3` to switch between the lobby, board, and chat. Use Tab to reach controls and scroll them into view.
+
+## Host a multiplayer broadcast table
+
+On the **Broadcast · KISS** transport, choose a game, select **Hosted broadcast table** (TUI) or tick **Host / dealer** (desktop), and create the table. Other stations tuned to the same `RAGAMES` group see its open lobby automatically and click **Join hosted table**. The dealer can re-announce the lobby if somebody tunes in late, optionally specify the reply order as comma-separated callsigns (dealer first), then start the game when enough stations are seated. Island Settlers and Nim support 2–4 stations.
+
+The dealer validates each move and sends a **single broadcast commit** to the entire table, rather than one copy per player. The roster determines who replies next, and the current-turn indicator reflects it. During a turn only the active station sends the move request. Game chat is relayed through the dealer in one broadcast as well. Observers can follow the hosted table without taking a seat or transmitting.
+
+There are no automatic retries for hosted broadcasts, to avoid an ACK storm. If Join doesn't change the roster, try Join again; if your move shows pending for too long, use **Retry pending move**. Participants can request a fresh snapshot to recover from missed updates; observers remain passive until they explicitly choose to request one. Simultaneous join requests can collide on the radio, so coordinate manually where needed. The host is not a centralized RF transmitter scheduler; it controls the *application turn order*, with no TDMA slots or guarantee of collision-free join/chat traffic.
+
+In Island Settlers the six sectors produce resources on a 1–6 roll. Each player starts with an outpost and some supplies. Roll once on your turn, then build as many roads/outposts/cities and make as many 3:1 bank trades as resources allow, and end your turn. The screen numbers the 18 buildable sites and 27 roads. Resource IDs for trades are `0 timber`, `1 clay`, `2 wool`, `3 grain`, `4 ore` (enter `0:4` to exchange three timber for one ore). The first station with six victory points wins. All inventories are public; this game is inspired by settlement-building strategy games rather than a faithful copy of Catan.
 
 ## Install and launch
 
@@ -48,7 +58,7 @@ All participants must run clients using the same Radio Arcade protocol version. 
 
 ## Play
 
-- Create Tic-tac-toe, Nim, or Open Word Tiles from the game selector and invite a station.
+- Create Tic-tac-toe, Nim, Open Word Tiles, or Island Settlers from the game selector and invite a station, or use a hosted broadcast table.
 - In Open Word Tiles, racks are public. Enter a start square such as `H8`, choose across/down, and type the word; use `{A}` to mark a blank tile assigned as A. ENABLE1 is the shared lexicon. This is an open-rack variant because seed-derived racks are visible to all stations.
 - In the TUI's Open Word Tiles board, click a square to choose the start coordinate. Its cursor blinks, and typed letters preview along the selected Horizontal/Vertical direction. Conflicting letters and board-edge overflow are highlighted/warned locally; nothing transmits until you press Place.
 - The TUI uses a game-first layout inspired by SUperChat: wider terminals show tables, the active arena, and chat side by side; narrower terminals use `1`/`2`/`3` to switch panes without squeezing the board. Word Tiles keeps its score and remaining bag count above the board, and evaluates a proposed word locally to display its prospective points before submission.

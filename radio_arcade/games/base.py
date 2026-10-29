@@ -60,11 +60,12 @@ class GameRegistry:
             raise ValueError("game plugin must declare engine api_version=1")
         if not 1 <= game.game_id <= 255:
             raise ValueError("game IDs must fit in one byte; zero is reserved")
-        if game.game_id in (1, 2, 3):
+        if game.game_id in (1, 2, 3, 4):
             from .tictactoe import TicTacToeGame
             from .nim import NimGame
             from .scrabble import OpenWordTilesGame
-            assigned = {1: TicTacToeGame, 2: NimGame, 3: OpenWordTilesGame}
+            from .settlers import IslandSettlersGame
+            assigned = {1: TicTacToeGame, 2: NimGame, 3: OpenWordTilesGame, 4: IslandSettlersGame}
             if type(game) is not assigned[game.game_id]:
                 raise ValueError(f"game ID {game.game_id} is permanently assigned to a built-in game")
         if not 1 <= game.min_players <= game.max_players <= 255:
@@ -112,11 +113,13 @@ def builtin_registry(load_plugins: bool = True) -> GameRegistry:
     from .tictactoe import TicTacToeGame
     from .nim import NimGame
     from .scrabble import OpenWordTilesGame
+    from .settlers import IslandSettlersGame
 
     registry = GameRegistry()
     registry.register(TicTacToeGame())
     registry.register(NimGame())
     registry.register(OpenWordTilesGame())
+    registry.register(IslandSettlersGame())
     if load_plugins:
         registry.load_plugins()
     return registry

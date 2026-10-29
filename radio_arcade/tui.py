@@ -274,6 +274,15 @@ class ArcadeTUI(App):
     .score-value { height:2; color:#f5efff; text-style:bold; content-align:left middle; }
     #score-divider { width:7; height:100%; color:#9482c6; text-style:bold;
                      content-align:center middle; }
+    .island-region { width:1fr; height:5; border:round #34465f;
+                     background:#142232; margin:0 1 1 0; padding:0 1; }
+    .island-region-row { height:5; min-height:5; }
+    .island-title { color:#a5e5c5; text-style:bold; height:1; }
+    .island-sites { color:#eadcfb; height:1; }
+    .island-detail { color:#b9c6db; height:auto; margin:0 0 1 0; }
+    #island-action { width:32; min-width:24; }
+    #island-target { width:1fr; }
+    #island-submit { width:18; min-width:18; }
     #game-controls { display:none; height:auto; background:#131f2c;
                      padding:0 1; margin-bottom:1; }
     #game-controls Horizontal { height:auto; }
@@ -357,18 +366,26 @@ class ArcadeTUI(App):
                     yield Static("Your tables", id="sidebar-title")
                     yield ListView(id="session-list")
                     yield Label("NEW MATCH", classes="eyebrow")
-                    yield Select((("Tic-tac-toe", "tic-tac-toe"), ("Nim · 2–4 players", "nim")),
+                    yield Select((("Tic-tac-toe", "tic-tac-toe"), ("Nim · 2–4 players", "nim"),
+                                  ("Island Settlers · 2–4 players", "island-settlers")),
                                  value="tic-tac-toe", allow_blank=False, id="game-select")
+                    yield Select((("Direct invitation", "direct"), ("Hosted broadcast table", "hosted")),
+                                 value="direct", allow_blank=False, id="table-mode")
                     yield Input(placeholder="Opponent callsign", id="peer-input")
                     yield Button("＋  Create table", id="new-game", variant="primary")
                     yield Button("Connect / resume peer", id="connect-peer")
                     yield Button("Disconnect radio link", id="disconnect-peer")
                     with Vertical(id="session-actions"):
                         yield Button("Accept invitation", id="accept-invite")
+                        yield Button("Join hosted table", id="join-game")
+                        yield Button("Re-announce hosted lobby", id="announce-game")
+                        yield Input(placeholder="Reply order: HOST,GUEST1,GUEST2", id="reply-order")
+                        yield Button("Set dealer reply order", id="set-reply-order")
                         yield Button("Invite station", id="invite-player")
                         yield Button("Cancel pending invitation", id="cancel-invite")
                         yield Button("Start lobby", id="start-game")
                         yield Button("Sync / recover state", id="sync-state")
+                        yield Button("Retry pending move", id="retry-move")
                 with Vertical(id="center", classes="panel"):
                     yield Label("02  /  GAME ARENA", classes="eyebrow")
                     with Horizontal(id="arena-header"):
@@ -460,8 +477,9 @@ class ArcadeTUI(App):
         self.unsubscribe = self.engine.subscribe(lambda event: self.post_message(EngineNotice(event)))
         offline = hasattr(self.engine.transport, "closed") and self.engine.transport.closed.is_set()
         self.query_one("#link-status", Static).update("●  OFFLINE · press S to reconnect" if offline else f"●  {'OBSERVER · RX ONLY' if self.settings.observer_mode else self.settings.transport.upper()} · {self.settings.callsign}")
-        for name in ("#game-select", "#peer-input", "#new-game", "#send-chat", "#chat-input"):
+        for name in ("#game-select", "#table-mode", "#peer-input", "#new-game", "#send-chat", "#chat-input"):
             self.query_one(name).disabled = self.settings.observer_mode
+        self.query_one("#table-mode", Select).disabled = self.settings.observer_mode or self.settings.transport != "broadcast"
         self.query_one("#connect-peer", Button).display = self.settings.transport == "connected"
         self.query_one("#disconnect-peer", Button).display = self.settings.transport == "connected"
         game_select = self.query_one("#game-select", Select)
@@ -564,13 +582,19 @@ class ArcadeTUI(App):
         self._update_scoreboard(state, turn)
         if self.settings.observer_mode: line = "OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT"
         elif session["status"] == "invited": line = f"INVITATION FROM {session['coordinator']} · accept to join"
-        elif session["status"] == "lobby": line = "LOBBY · invite players, then start"
+        elif session["status"] == "lobby":
+            line = ("DEALER · ACCEPTING JOIN REQUESTS" if session.get("hosted") and session["coordinator"] == self.settings.callsign
+                    else "HOSTED TABLE · JOIN TO PLAY" if session.get("hosted") and self.settings.callsign not in session["players"]
+                    else "HOSTED TABLE · WAIT FOR DEALER" if session.get("hosted")
+                    else "LOBBY · invite players, then start")
         elif session["status"] == "joining": line = "WAITING FOR SESSION START"
         elif session["status"] == "cancelled": line = "INVITATION CANCELLED"
         elif session["pending_action"]: line = "MOVE SENT · WAITING FOR COMMIT"
         elif state and state.get("winner"): line = f"GAME WON BY {state['winner']}"
         elif session["status"] == "finished": line = "GAME OVER · DRAW"
         else: line = f"LOCAL PRACTICE · {turn}'s turn" if self.settings.transport == "practice" else f"YOUR TURN · {turn}" if turn == self.settings.callsign else f"WAITING FOR {turn}"
+        if state and state.get("kind") == "settlement" and session["status"] == "active":
+            line += f"  ·  {state['phase'].upper()} PHASE"
         if session.get("error"): line = f"MOVE REJECTED · {session['error']}"
         if session.get("last_move"):
             last = session["last_move"]
@@ -579,15 +603,20 @@ class ArcadeTUI(App):
             self.query_one("#last-move", Static).update("NO RECENT MOVE")
         self.query_one("#turn-line", Static).update(line)
         self.query_one("#accept-invite", Button).display = not self.settings.observer_mode and session["status"] == "invited"
-        self.query_one("#invite-player", Button).display = not self.settings.observer_mode and session["status"] == "lobby"
-        self.query_one("#cancel-invite", Button).display = not self.settings.observer_mode and session["status"] == "lobby" and bool(session["invited"])
-        self.query_one("#start-game", Button).display = not self.settings.observer_mode and session["status"] == "lobby"
+        self.query_one("#join-game", Button).display = not self.settings.observer_mode and session.get("hosted", False) and session["status"] in ("lobby", "joining") and self.settings.callsign not in session["players"]
+        self.query_one("#announce-game", Button).display = not self.settings.observer_mode and session.get("hosted", False) and session["status"] == "lobby" and session["coordinator"] == self.settings.callsign
+        self.query_one("#reply-order", Input).display = self.query_one("#announce-game", Button).display
+        self.query_one("#set-reply-order", Button).display = self.query_one("#announce-game", Button).display
+        self.query_one("#invite-player", Button).display = not self.settings.observer_mode and not session.get("hosted") and session["status"] == "lobby" and session["coordinator"] == self.settings.callsign
+        self.query_one("#cancel-invite", Button).display = not self.settings.observer_mode and not session.get("hosted") and session["status"] == "lobby" and bool(session["invited"])
+        self.query_one("#start-game", Button).display = not self.settings.observer_mode and session["status"] == "lobby" and session["coordinator"] == self.settings.callsign
         self.query_one("#sync-state", Button).display = self.settings.observer_mode or (session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished"))
         self.query_one("#sync-state", Button).label = "Request snapshot (TRANSMITS)" if self.settings.observer_mode else "Sync / recover state"
+        self.query_one("#retry-move", Button).display = not self.settings.observer_mode and session.get("hosted", False) and session["pending_action"] is not None
         board = self.query_one("#board", VerticalScroll)
         controls = self.query_one("#game-controls", Vertical)
         await controls.remove_children()
-        controls.display = bool(state and state.get("kind") == "word-tiles")
+        controls.display = bool(state and state.get("kind") in ("word-tiles", "settlement"))
         await board.remove_children()
         if state:
             if state["kind"] == "grid":
@@ -631,6 +660,38 @@ class ArcadeTUI(App):
                 await controls.mount(Horizontal(Input(placeholder="Exchange letters · ? for blank", id="word-exchange-tiles"),
                     Button("Exchange", id="word-exchange", disabled=not enabled or state["bag"] < 7),
                     Button("Pass", id="word-pass", disabled=not enabled)))
+            elif state["kind"] == "settlement":
+                enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                for first in (0, 3):
+                    tiles = []
+                    for sector in range(first, first + 3):
+                        region = state["regions"][sector]
+                        group = state["sites"][sector * 3:sector * 3 + 3]
+                        sites = "  ".join(f"{s['index']:02d}{'◆' if s['city'] else '●' if s['owner'] else '·'}" for s in group)
+                        tiles.append(Vertical(Static(f"{region['number']}  /  {region['resource'].upper()}", classes="island-title"),
+                                              Static(sites, classes="island-sites"), classes="island-region"))
+                    await board.mount(Horizontal(*tiles, classes="island-region-row"))
+                await board.mount(Static("◆ CITY  ·  ● OUTPOST  ·  · FREE SITE  |  SIX POINTS TO WIN", classes="island-detail"))
+                for player, score in state["scores"].items():
+                    bank = "  ".join(f"{name[:2].upper()} {count}" for name, count in state["resources"][player].items())
+                    owned = ", ".join(f"{s['index']:02d}{'◆' if s['city'] else '●'}" for s in state["sites"] if s["owner"] == player)
+                    await board.mount(Static(f"{player}  {score} VP  /  {bank}\n    SITES {owned}", classes="island-detail"))
+                roads = state["roads"]
+                await board.mount(Static("ROAD INDEX  /  CONNECTING SITES  /  OWNER", classes="island-title"))
+                for offset in range(9):
+                    group = [roads[offset], roads[offset + 9], roads[offset + 18]]
+                    text = "      ".join(f"{road['index']:02d} {road['from']:02d}↔{road['to']:02d} {road['owner'] or '—'}" for road in group)
+                    await board.mount(Static(text, classes="island-detail"))
+                await controls.mount(Horizontal(
+                    Button("⚄ Roll / produce", id="island-roll", disabled=not enabled or state["phase"] != "roll", variant="primary"),
+                    Button("End turn →", id="island-end", disabled=not enabled or state["phase"] != "build")))
+                await controls.mount(Horizontal(
+                    Select((("Build road · timber+clay", "road"),
+                            ("Build outpost · T+C+W+G", "outpost"),
+                            ("Upgrade city · 2 grain+3 ore", "city"),
+                            ("Trade bank · 3:1", "trade")), value="road", allow_blank=False, id="island-action"),
+                    Input(placeholder="Site / road index, or trade 0:4", id="island-target"),
+                    Button("Build / trade", id="island-submit", variant="primary", disabled=not enabled or state["phase"] != "build")))
             else:
                 await board.mount(Static(str(state), classes="muted"))
                 await board.mount(Input(placeholder="Plugin action · hex bytes", id="plugin-action"))
@@ -653,7 +714,7 @@ class ArcadeTUI(App):
             self.query_one(f"#score-{side}-value", Static).update(str(score))
 
     def _refresh_chat(self, sid: str | None):
-        if not self.engine or not sid or sid != self.selected_id: return
+        if not self.engine or not sid or sid != self.selected_id or not self.query("#chat-log"): return
         log = self.query_one("#chat-log", RichLog); log.clear()
         for msg in self.engine.chat_history(sid):
             line = Text(msg['sender'], style="bold white" if self.settings.color_scheme == "monochrome" else "bold #76dfc9")
@@ -680,7 +741,53 @@ class ArcadeTUI(App):
         if not self.engine: return
         peer = self.query_one("#peer-input", Input).value.strip().upper() or None
         game = self.query_one("#game-select", Select).value
-        self._run_action(partial(self.engine.create_game, str(game), peer), select_session=True)
+        hosted = self.query_one("#table-mode", Select).value == "hosted"
+        self._run_action(partial(self.engine.create_game, str(game), None if hosted else peer, hosted=hosted), select_session=True)
+
+    @on(Button.Pressed, "#join-game")
+    def _join_game(self):
+        if self.engine and self.selected_id: self._run_action(partial(self.engine.join_game, self.selected_id))
+
+    @on(Button.Pressed, "#announce-game")
+    def _announce_game(self):
+        if self.engine and self.selected_id: self._run_action(partial(self.engine.announce_game, self.selected_id))
+
+    @on(Button.Pressed, "#set-reply-order")
+    def _set_reply_order(self):
+        if self.engine and self.selected_id:
+            order = self.query_one("#reply-order", Input).value
+            self._run_action(partial(self.engine.set_reply_order, self.selected_id, order))
+
+    @on(Button.Pressed, "#retry-move")
+    def _retry_move(self):
+        if self.engine and self.selected_id: self._run_action(partial(self.engine.resend_pending_action, self.selected_id))
+
+    @on(Button.Pressed, "#island-roll")
+    def _island_roll(self): self._submit_island_action(b"\x01")
+
+    @on(Button.Pressed, "#island-end")
+    def _island_end(self): self._submit_island_action(b"\x06")
+
+    def _submit_island_action(self, action: bytes):
+        if self.engine and self.selected_id: self._run_action(partial(self.engine.legal_action, self.selected_id, action))
+
+    @on(Button.Pressed, "#island-submit")
+    def _island_submit(self):
+        if not self.engine or not self.selected_id: return
+        opcode = {"road": 2, "outpost": 3, "city": 4, "trade": 5}[self.query_one("#island-action", Select).value]
+        target = self.query_one("#island-target", Input).value.strip()
+        try:
+            if opcode == 5:
+                a, b = (int(part) for part in target.split(":"))
+                if not 0 <= a <= 4 or not 0 <= b <= 4:
+                    raise ValueError("resources are numbered 0 through 4")
+                value = (a << 4) | b
+            else:
+                value = int(target)
+            if not 0 <= value <= 255: raise ValueError("index out of range")
+        except ValueError:
+            self.notify("Use a site/road index, or resource trade 0:4 (timber → ore).", severity="warning"); return
+        self._submit_island_action(bytes((opcode, value)))
 
     @on(Button.Pressed, "#connect-peer")
     def _connect_peer(self):

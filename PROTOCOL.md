@@ -6,7 +6,7 @@ This describes the current implementation in `radio_arcade/wire.py` and `service
 
 | Offset | Size | Field |
 | --- | --- | --- |
-| 0 | 1 | Game type ID: 1 tic-tac-toe, 2 Nim, 3 Open Word Tiles |
+| 0 | 1 | Game type ID: 1 tic-tac-toe, 2 Nim, 3 Open Word Tiles, 4 Island Settlers |
 | 1 | 1 | Envelope version: 4 |
 | 2 | 1 | Message kind |
 | 3 | 1 | Flags |
@@ -34,6 +34,10 @@ Callsign fields are 1–10 ASCII bytes. Flag `0x01` is required for opaque state
 | ACK | 11 | empty; sequence matches acknowledged packet, revision contains its kind |
 | OPAQUE_STATE | 12 | 1–200 readable UTF-8 bytes; UI-hidden flag required |
 | CANCEL_INVITE | 13 | empty; cancels a pending invitation |
+| HOST_ANNOUNCE | 14 | roster; public hosted lobby advertisement |
+| JOIN_REQUEST | 15 | empty; directed request for a seat in hosted lobby |
+| HOST_ROSTER | 16 | roster; dealer's authoritative order and seated stations |
+| HOST_CHAT | 17 | actor and UTF-8 text; dealer broadcast of participant chat |
 
 Roster encoding is `[count:u8][length:u8, ASCII callsign]...`. START is `[roster byte length:u8][roster][state byte length:u8][state]`. SNAPSHOT appends `[last-action length:u8][last-action]`, with zero length if absent. ACTION and COMMIT use `[actor length:u8][actor ASCII][action length:u8][action bytes]`; the snapshot last action uses the same encoding.
 
@@ -45,6 +49,21 @@ An optional observer client listens to all packets on the configured KISS broadc
 
 An observer may explicitly transmit one existing `SYNC_REQUEST` (kind 6, empty payload) addressed to the game's coordinator. The coordinator accepts this request from a non-rostered callsign for an active/finished game and sends one `SNAPSHOT` (kind 7) to that callsign without requiring an ACK; it does not add the observer to the roster. There is no retry guarantee for this optional exchange. Observer mode is broadcast-only, and receive-only except for this deliberate request. No new packet kind or version change is required. An observer cannot discover entirely silent games.
 
+## Hosted dealer tables (version 4 extension)
+
+A hosted table uses the existing broadcast KISS group, never a connected Data2G session. The creating station is the **dealer** and owns the authoritative state. This is separate from the original directed-invitation mode; old tables keep their existing ACK-and-retry behavior. All participants need this extension to join a hosted table.
+
+1. The dealer creates a hosted lobby and sends **one** `HOST_ANNOUNCE` to destination `*`, carrying `[count:u8][callsign lengths + bytes]`. The first roster element is the dealer. Other stations discover the lobby without being invited.
+2. A prospective player explicitly transmits `JOIN_REQUEST` to the dealer's callsign, with no payload. The dealer accepts if the lobby is still open and the game has capacity, then sends **one** `HOST_ROSTER` broadcast of the complete roster in authoritative order. Duplicate requests prompt another full roster, not another seat. The dealer can also manually repeat `HOST_ANNOUNCE`.
+3. The dealer can rearrange the roster with `set_reply_order` while in the lobby; the dealer must remain first. The resulting `HOST_ROSTER` broadcasts the new turn/reply order. Once play starts, the roster is locked.
+4. The dealer starts a game with **one** `START` broadcast to `*`, including roster and deterministic initial state. The next permitted transmitter is the game’s `current_player(state, roster)`; for Island Settlers and Nim, this follows the dealer-chosen roster order. The dealer's own turns update state locally.
+5. For a remote turn, only that active station transmits `ACTION` to the dealer, with expected revision and next sequence. The dealer validates it and sends **one** `COMMIT` to `*` carrying actor and action. Every station applies that same action deterministically to obtain the next state and the next authorized reply station. A rejected turn is returned only to its sender via `REJECT`.
+6. A side-chat message sent to the dealer as `CHAT` is rebroadcast once as `HOST_CHAT` to `*`. The payload is the usual actor/action wrapper, with the original author as actor and UTF-8 text as action. Observers can read this relay; chat does not alter the game turn.
+
+`JOIN_REQUEST`, hosted `START`, `COMMIT`, `CHAT`, `HOST_CHAT`, and host announcements are **not individually ACKed or automatically retried**. This avoids an ACK storm and repeated per-recipient airtime. The guest may manually repeat Join or Retry pending move. A participant who misses a commit automatically requests one untracked, *directed* `SNAPSHOT`; an observer still does **not** request anything automatically. Anyone may explicitly request a snapshot after a dropped start or commit. Hosted tables remain open-information games; packet content is neither encrypted nor authenticated.
+
+The dealer controls *logical reply order*, not the RF physical layer. Only the active turn holder should key up with an action. Simultaneous join requests or unrelated radio traffic may still collide; operators should stagger requests and retry when no roster update appears. There is no collision-free TDMA clock, timed join window, automatic beacon, dealer failover, or mid-game seat change in this initial implementation. Chat and sync requests are outside the ordered game-turn slot. Because packets are broadcast without per-player acknowledgments, the UI's local receipt is not proof everyone heard it.
+
 ## Built-in game payloads
 
 Tic-tac-toe action is one byte: zero-based cell 0–8, row-major. Its five-byte state stores nine two-bit cells in a three-byte little-endian integer (0 empty, 1 X, 2 O), then the turn index and result byte (0 ongoing, 1 draw, 2 player 0 wins, 3 player 1 wins).
@@ -53,8 +72,10 @@ Nim action is two bytes: zero-based pile index and number removed. Its seven-byt
 
 Open Word Tiles uses the bundled ENABLE1 lexicon (SHA-256 `3f16130220645692ed49c7134e24a18504c2ca55b3c012f7290e3e77c63b1a89`) and a public-rack ruleset. Placement actions are 7–11 bytes, exchanges are two bytes, and pass is one byte. The placement encodes its starting square, direction and span, a mask of newly occupied squares, packed letters, and blank-tile markers; receivers reconstruct intersections from the shared board. Its snapshot stores turn/score/rack/random state, a 225-square occupancy bitmap, and six-bit tile values for occupied squares. The deterministic RNG and fixed tile distribution reproduce draws on every station. All player racks are visible by design.
 
+Island Settlers (ID 4) is an original, open-information settlement-building mini-game for 2–4 players. Actions: `01` produce resources (deterministic six-sided roll), `02 ii` build road index `ii` (0–26), `03 ii` build outpost at site index `ii` (0–17), `04 ii` upgrade an outpost into a city, `05 gr` trade three of resource `g` for one of resource `r` (both 0–4, in high and low nibbles), and `06` end turn. Resources in order are timber, clay, wool, grain, ore. Six numbered regions each produce one resource when rolled, supplying adjacent outposts (one resource) or cities (two). Roads must join a player's existing route or settlement. Outposts must connect to a road and must not touch an outpost on the 18-site perimeter. Road cost: timber+clay; outpost: timber+clay+wool+grain; city: two grain+three ore. Every outpost is 1 VP and city 2 VP; the first station with 6 VP wins. Racks/resources, map ownership, die state, and production are public. The 72-byte state is `[player count, turn index, phase, roll, winner, RNG:u16]` + 18 site-owner/city bytes + 27 road-owner bytes + 20 inventory bytes (5 per possible player); it is checked as one fixed-length snapshot. The game is deliberately a compact interpretation of the resource-management genre, not the rules or board of the commercial Catan game.
+
 Game IDs and their rules are permanent; see `GAME-CATALOG.md`. Game-specific codecs must fit the complete 240-byte envelope, including callsigns and any roster or action wrapper. There is currently no independent game-payload version negotiation; incompatible rule or codec changes require a new game ID or an explicit future protocol mechanism.
 
 Opaque state uses the same game ID and the `OPAQUE_STATE` kind/flag. A game may provide optional `encode_opaque_state(value) -> str` and `decode_opaque_state(text)` methods; the engine routes decoded values to `game_opaque_state` events while the bundled UIs show only a synchronization notice. Each game's own format is readable UTF-8, at most 200 bytes per message, and remains public on air.
 
-A cancelled invitation leaves a tombstone even when cancellation arrives before the invitation. To avoid ambiguity from reordered packets, a cancelled station cannot be invited again to the same game instance; create another game instead. Version 4 adds `CANCEL_INVITE`; version 3 and version 4 clients reject each other's packets, so all participants must upgrade together. Locally retained game state is not erased, and retained version 3 outbox envelopes are upgraded on startup because existing message layouts are unchanged.
+A cancelled invitation leaves a tombstone even when cancellation arrives before the invitation. To avoid ambiguity from reordered packets, a cancelled station cannot be invited again to the same game instance; create another game instead. Version 4 adds `CANCEL_INVITE`; version 3 and version 4 clients reject each other's packets, so all participants must upgrade together. Hosted kinds 14–17 extend version 4 without changing legacy packet layouts; older version 4 clients do not understand the new kinds or game ID 4. Locally retained game state is not erased, and retained version 3 outbox envelopes are upgraded on startup because existing message layouts are unchanged.

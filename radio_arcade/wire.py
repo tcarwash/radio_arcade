@@ -34,6 +34,10 @@ class Kind(IntEnum):
     ACK = 11
     OPAQUE_STATE = 12
     CANCEL_INVITE = 13
+    HOST_ANNOUNCE = 14
+    JOIN_REQUEST = 15
+    HOST_ROSTER = 16
+    HOST_CHAT = 17
 
 
 @dataclass(frozen=True)

@@ -163,7 +163,11 @@ class ArcadeWindow(QMainWindow):
         self.game_choice = QComboBox(); self.game_choice.setObjectName("field")
         self.game_choice.addItem("Tic-tac-toe", "tic-tac-toe")
         self.game_choice.addItem("Nim · 2–4 players", "nim")
+        self.game_choice.addItem("Island Settlers · 2–4 players", "island-settlers")
         left_layout.addWidget(self.game_choice)
+        self.hosted_checkbox = QCheckBox("Host / dealer · public broadcast table")
+        self.hosted_checkbox.setEnabled(self.settings.transport == "broadcast" and not self.settings.observer_mode)
+        left_layout.addWidget(self.hosted_checkbox)
         self.peer_input = QLineEdit(); self.peer_input.setPlaceholderText("Opponent callsign")
         left_layout.addWidget(self.peer_input)
         self.connect_button = QPushButton("Connect / resume peer"); self.connect_button.clicked.connect(self._connect_peer)
@@ -175,6 +179,16 @@ class ArcadeWindow(QMainWindow):
         self.new_button.clicked.connect(self._new_game); left_layout.addWidget(self.new_button)
         self.invite_button = QPushButton("Invite to selected lobby"); self.invite_button.clicked.connect(self._invite_player)
         left_layout.addWidget(self.invite_button)
+        self.join_button = QPushButton("Join broadcast table"); self.join_button.clicked.connect(self._join_game)
+        left_layout.addWidget(self.join_button)
+        self.announce_button = QPushButton("Re-announce lobby"); self.announce_button.clicked.connect(self._announce_game)
+        left_layout.addWidget(self.announce_button)
+        self.order_input = QLineEdit(); self.order_input.setPlaceholderText("Turn order: HOST,GUEST1,GUEST2")
+        left_layout.addWidget(self.order_input)
+        self.order_button = QPushButton("Set dealer reply order"); self.order_button.clicked.connect(self._set_reply_order)
+        left_layout.addWidget(self.order_button)
+        self.retry_button = QPushButton("Retry pending move"); self.retry_button.clicked.connect(self._retry_move)
+        left_layout.addWidget(self.retry_button)
         self.cancel_invite_button = QPushButton("Cancel pending invitation")
         self.cancel_invite_button.clicked.connect(self._cancel_invitation)
         left_layout.addWidget(self.cancel_invite_button)
@@ -401,6 +415,8 @@ class ArcadeWindow(QMainWindow):
             self._board_signature = None
         self._clear_board()
         self.accept_button.setVisible(False); self.start_button.setVisible(False); self.invite_button.setVisible(False); self.cancel_invite_button.setVisible(False)
+        self.join_button.setVisible(False); self.announce_button.setVisible(False); self.retry_button.setVisible(False)
+        self.order_input.setVisible(False); self.order_button.setVisible(False)
         self.chat_list.clear()
         if not self.engine or not sid:
             self.game_heading.setText("Welcome to the airwaves")
@@ -415,6 +431,7 @@ class ArcadeWindow(QMainWindow):
         state = session["view"]
         current = session["current_player"]
         self.sync_button.setVisible(self.settings.observer_mode or (session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished")))
+        self.retry_button.setVisible(not self.settings.observer_mode and session.get("hosted", False) and session["pending_action"] is not None)
         if self.settings.observer_mode:
             self.sync_button.setText("↻  Request snapshot (TRANSMITS)")
         if self.settings.observer_mode:
@@ -423,12 +440,22 @@ class ArcadeWindow(QMainWindow):
             self.turn_badge.setText("INVITATION RECEIVED")
             self.accept_button.setVisible(True)
         elif session["status"] == "lobby":
-            self.turn_badge.setText("LOBBY · add players, then start")
-            self.invite_button.setVisible(True)
-            self.cancel_invite_button.setVisible(bool(session["invited"]))
-            self.start_button.setVisible(True)
+            if session.get("hosted"):
+                owner = session["coordinator"] == self.settings.callsign
+                self.turn_badge.setText("DEALER · WAITING FOR JOIN REQUESTS" if owner else "HOSTED TABLE · JOIN TO PLAY")
+                self.announce_button.setVisible(owner)
+                self.order_input.setVisible(owner)
+                self.order_button.setVisible(owner)
+                self.join_button.setVisible(not owner and self.settings.callsign not in players and not self.settings.observer_mode)
+                self.start_button.setVisible(owner)
+            else:
+                self.turn_badge.setText("LOBBY · add players, then start")
+                self.invite_button.setVisible(session["coordinator"] == self.settings.callsign)
+                self.cancel_invite_button.setVisible(bool(session["invited"]))
+                self.start_button.setVisible(session["coordinator"] == self.settings.callsign)
         elif session["status"] == "joining":
-            self.turn_badge.setText("WAITING FOR THE HOST TO START")
+            self.turn_badge.setText("JOIN REQUEST SENT · WAIT FOR DEALER" if session.get("hosted") else "WAITING FOR THE HOST TO START")
+            self.join_button.setVisible(bool(session.get("hosted")))
         elif session["status"] == "cancelled":
             self.turn_badge.setText("INVITATION CANCELLED")
         elif session["status"] == "finished":
@@ -528,6 +555,44 @@ class ArcadeWindow(QMainWindow):
             extras.addWidget(exchange_text, 1); extras.addWidget(exchange); extras.addWidget(pass_turn)
             box.addLayout(extras)
             self.board_layout.addWidget(host)
+        elif view["kind"] == "settlement":
+            host = QWidget(); box = QVBoxLayout(host); box.setSpacing(7)
+            box.addWidget(QLabel(f"ISLAND SETTLERS · {view['phase'].upper()} PHASE · ROLL {view['roll'] or '—'} · FIRST TO 6 VP"))
+            regions = QWidget(); region_grid = QGridLayout(regions); region_grid.setSpacing(5)
+            for i, sector in enumerate(view["regions"]):
+                group = view["sites"][i * 3:i * 3 + 3]
+                cells = "  ".join(f"{site['index']:02d}{'◆' if site['city'] else '●' if site['owner'] else '·'}" for site in group)
+                label = QLabel(f"{sector['number']} · {sector['resource'].upper()}\n{cells}")
+                label.setStyleSheet("background:#1a2d3d;color:#b3e6d4;border:1px solid #40506c;padding:8px;border-radius:5px;")
+                region_grid.addWidget(label, i // 3, i % 3)
+            box.addWidget(regions)
+            box.addWidget(QLabel("◆ City   ● Outpost   · Free site   |   Resource IDs: 0 timber · 1 clay · 2 wool · 3 grain · 4 ore"))
+            for name, score in view["scores"].items():
+                inventory = "   ".join(f"{key[:2].upper()} {value}" for key, value in view["resources"][name].items())
+                owned = " ".join(f"{s['index']:02d}{'◆' if s['city'] else '●'}" for s in view["sites"] if s["owner"] == name)
+                box.addWidget(QLabel(f"{name}  ·  {score} VP  ·  {inventory}  ·  {owned}"))
+            edges = view["roads"]
+            box.addWidget(QLabel("ROADS / AVAILABLE EDGE INDEX → SITE CONNECTION"))
+            for offset in range(9):
+                three = [edges[offset], edges[offset + 9], edges[offset + 18]]
+                box.addWidget(QLabel("    ".join(f"{road['index']:02d} {road['from']:02d}↔{road['to']:02d} {road['owner'] or '—'}" for road in three)))
+            can_move = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+            turn_row = QHBoxLayout()
+            roll = QPushButton("⚄ Roll / produce"); roll.setEnabled(can_move and view["phase"] == "roll")
+            roll.clicked.connect(lambda: self._submit_action(b"\x01"))
+            done = QPushButton("End turn →"); done.setEnabled(can_move and view["phase"] == "build")
+            done.clicked.connect(lambda: self._submit_action(b"\x06"))
+            turn_row.addWidget(roll); turn_row.addWidget(done); box.addLayout(turn_row)
+            action_row = QHBoxLayout(); move = QComboBox()
+            for label, opcode in (("Road · timber + clay", 2), ("Outpost · T+C+W+G", 3),
+                                  ("City · 2 grain + 3 ore", 4), ("Bank trade · 3:1", 5)):
+                move.addItem(label, opcode)
+            target = QLineEdit(); target.setPlaceholderText("Site/road index, or trade 0:4")
+            submit = QPushButton("Build / trade"); submit.setEnabled(can_move and view["phase"] == "build")
+            submit.clicked.connect(lambda: self._submit_island_action(move.currentData(), target.text()))
+            action_row.addWidget(move); action_row.addWidget(target); action_row.addWidget(submit)
+            box.addLayout(action_row)
+            self.board_layout.addWidget(host)
         else:
             panel = QWidget(); box = QVBoxLayout(panel)
             summary = QLabel(str(view)); summary.setWordWrap(True); box.addWidget(summary)
@@ -564,7 +629,34 @@ class ArcadeWindow(QMainWindow):
     def _new_game(self):
         if not self.engine: return
         game = self.game_choice.currentData(); peer = self.peer_input.text().strip().upper() or None
-        self._run(partial(self.engine.create_game, game, peer), self._created_game)
+        hosted = self.hosted_checkbox.isChecked()
+        self._run(partial(self.engine.create_game, game, None if hosted else peer, hosted=hosted), self._created_game)
+
+    def _join_game(self):
+        if self.engine and self.selected_id: self._run(partial(self.engine.join_game, self.selected_id))
+
+    def _announce_game(self):
+        if self.engine and self.selected_id: self._run(partial(self.engine.announce_game, self.selected_id))
+
+    def _set_reply_order(self):
+        if self.engine and self.selected_id:
+            self._run(partial(self.engine.set_reply_order, self.selected_id, self.order_input.text()))
+
+    def _retry_move(self):
+        if self.engine and self.selected_id: self._run(partial(self.engine.resend_pending_action, self.selected_id))
+
+    def _submit_island_action(self, opcode: int, text: str):
+        try:
+            if opcode == 5:
+                give, receive = (int(piece) for piece in text.strip().split(":"))
+                if not 0 <= give <= 4 or not 0 <= receive <= 4: raise ValueError()
+                target = (give << 4) | receive
+            else:
+                target = int(text.strip())
+            if not 0 <= target <= 255: raise ValueError()
+        except ValueError:
+            self.footer_label.setText("Enter a site/road index or a resource trade such as 0:4."); return
+        self._submit_action(bytes((opcode, target)))
 
     def _created_game(self, sid: str):
         self.selected_id = sid
