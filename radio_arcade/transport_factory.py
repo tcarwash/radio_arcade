@@ -73,6 +73,8 @@ class BroadcastConnection(KissConnection):
 
 def create_service(settings: Settings) -> ArcadeService:
     call = station_name(settings.callsign)
+    if settings.observer_mode and settings.transport != "broadcast":
+        raise ValueError("observer mode requires KISS broadcast transport")
     if settings.transport == "practice":
         from .practice import PracticeService
         return PracticeService(call)
@@ -83,7 +85,7 @@ def create_service(settings: Settings) -> ArcadeService:
     else:
         raise ValueError(f"unsupported transport {settings.transport!r}")
     try:
-        return ArcadeService(call, transport)
+        return ArcadeService(call, transport, observer_mode=settings.observer_mode)
     except Exception:
         transport.close()
         raise

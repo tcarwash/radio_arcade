@@ -86,6 +86,8 @@ class SettingsScreen(ModalScreen[Settings | None]):
                          value=self.settings.color_scheme, allow_blank=False, id="color-scheme")
             yield Label("INVITATION AND TURN SOUNDS", classes="setting-label")
             yield Switch(value=self.settings.sound_enabled, id="sound-enabled")
+            yield Label("OBSERVER MODE · broadcast only, manual sync transmits", classes="setting-label")
+            yield Switch(value=self.settings.observer_mode, id="observer-mode")
             with Horizontal(id="settings-actions"):
                 yield Button("Cancel", id="settings-cancel")
                 yield Button("Save and connect", variant="success", id="settings-save")
@@ -113,6 +115,11 @@ class SettingsScreen(ModalScreen[Settings | None]):
             self.notify("Enter valid TCP ports.", severity="error")
             return
         self.settings.callsign, self.settings.host = call, host
+        observing = self.query_one("#observer-mode", Switch).value
+        if observing and transport != "broadcast":
+            self.notify("Observer mode requires Broadcast · KISS.", severity="error")
+            return
+        self.settings.observer_mode = observing
         self.settings.group, self.settings.transport = group, str(transport)
         self.settings.command_port, self.settings.kiss_port = command_port, kiss_port
         self.settings.color_scheme = str(self.query_one("#color-scheme", Select).value)
@@ -291,7 +298,9 @@ class ArcadeTUI(App):
         self._board_signature = None
         self.unsubscribe = self.engine.subscribe(lambda event: self.post_message(EngineNotice(event)))
         offline = hasattr(self.engine.transport, "closed") and self.engine.transport.closed.is_set()
-        self.query_one("#link-status", Static).update("●  OFFLINE · press S to reconnect" if offline else f"●  {self.settings.transport.upper()} · {self.settings.callsign}")
+        self.query_one("#link-status", Static).update("●  OFFLINE · press S to reconnect" if offline else f"●  {'OBSERVER · RX ONLY' if self.settings.observer_mode else self.settings.transport.upper()} · {self.settings.callsign}")
+        for name in ("#game-select", "#peer-input", "#new-game", "#send-chat", "#chat-input"):
+            self.query_one(name).disabled = self.settings.observer_mode
         self.query_one("#connect-peer", Button).display = self.settings.transport == "connected"
         self.query_one("#disconnect-peer", Button).display = self.settings.transport == "connected"
         game_select = self.query_one("#game-select", Select)
@@ -341,7 +350,7 @@ class ArcadeTUI(App):
         current = self.selected_id
         await listing.clear()
         for session in sessions:
-            peer = next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
+            peer = (" / ".join(session["players"]) or session["coordinator"]) if self.settings.observer_mode else next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
             turn = "your turn" if session.get("current_player") == self.settings.callsign else session["status"]
             await listing.append(ListItem(Label(f"{session['game']}  ·  {peer}\n{turn}  ·  {session['id'][-6:]}"),
                                           id="s" + session["id"]))
@@ -376,7 +385,8 @@ class ArcadeTUI(App):
         self.query_one("#players", Static).update("  ·  ".join(session["players"]) + invited + f"\n\n{session['status'].upper()}  ·  rev {session['revision']}")
         state = session["view"]
         turn = session["current_player"]
-        if session["status"] == "invited": line = f"INVITATION FROM {session['coordinator']} · accept to join"
+        if self.settings.observer_mode: line = "OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT"
+        elif session["status"] == "invited": line = f"INVITATION FROM {session['coordinator']} · accept to join"
         elif session["status"] == "lobby": line = "LOBBY · invite players, then start"
         elif session["status"] == "joining": line = "WAITING FOR SESSION START"
         elif session["status"] == "cancelled": line = "INVITATION CANCELLED"
@@ -388,11 +398,12 @@ class ArcadeTUI(App):
         if session.get("last_move"):
             line += f"  ·  LAST: {session['last_move']['actor']} {session['last_move']['description']}"
         self.query_one("#turn-line", Static).update(line)
-        self.query_one("#accept-invite", Button).display = session["status"] == "invited"
-        self.query_one("#invite-player", Button).display = session["status"] == "lobby"
-        self.query_one("#cancel-invite", Button).display = session["status"] == "lobby" and bool(session["invited"])
-        self.query_one("#start-game", Button).display = session["status"] == "lobby"
-        self.query_one("#sync-state", Button).display = session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished")
+        self.query_one("#accept-invite", Button).display = not self.settings.observer_mode and session["status"] == "invited"
+        self.query_one("#invite-player", Button).display = not self.settings.observer_mode and session["status"] == "lobby"
+        self.query_one("#cancel-invite", Button).display = not self.settings.observer_mode and session["status"] == "lobby" and bool(session["invited"])
+        self.query_one("#start-game", Button).display = not self.settings.observer_mode and session["status"] == "lobby"
+        self.query_one("#sync-state", Button).display = self.settings.observer_mode or (session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished"))
+        self.query_one("#sync-state", Button).label = "Request snapshot (TRANSMITS)" if self.settings.observer_mode else "Sync / recover state"
         board = self.query_one("#board", VerticalScroll)
         await board.remove_children()
         if state:
@@ -402,7 +413,7 @@ class ArcadeTUI(App):
                     for x in range(state["width"]):
                         index = y * state["width"] + x
                         text = state["cells"][index].strip() or str(state["labels"][index])
-                        active = (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                        active = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                         button = Button(text, id=f"cell-{index}", classes="cell", disabled=not active or bool(state["cells"][index].strip()))
                         cells.append(button)
                     await board.mount(Horizontal(*cells, classes="board-row"))
@@ -515,7 +526,10 @@ class ArcadeTUI(App):
 
     @on(Button.Pressed, "#sync-state")
     def _sync_state(self):
-        if self.engine and self.selected_id: self._run_action(partial(self.engine.request_sync, self.selected_id))
+        if self.engine and self.selected_id:
+            if self.settings.observer_mode:
+                self.notify("Transmitting one snapshot request", severity="warning")
+            self._run_action(partial(self.engine.request_sync, self.selected_id))
 
     @on(Button.Pressed, "#send-chat")
     def _send_chat(self):
@@ -615,11 +629,13 @@ def main():
     parser.add_argument("--callsign")
     parser.add_argument("--host")
     parser.add_argument("--transport", choices=("broadcast", "connected", "practice"))
+    parser.add_argument("--observer", action="store_true", help="passively watch KISS broadcast games")
     args = parser.parse_args()
     settings = Settings.load()
     if args.callsign: settings.callsign = args.callsign.upper()
     if args.host: settings.host = args.host
     if args.transport: settings.transport = args.transport
+    if args.observer: settings.observer_mode = True
     ArcadeTUI(settings).run()
 
 

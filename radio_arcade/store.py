@@ -21,6 +21,10 @@ def default_data_dir() -> Path:
 
 
 class SessionStore:
+    @staticmethod
+    def default_observer_path() -> Path:
+        return default_data_dir() / "observer.sqlite3"
+
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path is not None else default_data_dir() / "radio-arcade.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -50,6 +50,8 @@ class SettingsDialog(QDialog):
         self.scheme.addItem("Monochrome", "monochrome")
         self.scheme.setCurrentIndex(max(0, self.scheme.findData(settings.color_scheme)))
         self.sound = QCheckBox("Play invitation and turn sounds"); self.sound.setChecked(settings.sound_enabled)
+        self.observer = QCheckBox("Observer mode · receive-only (manual sync transmits)")
+        self.observer.setChecked(settings.observer_mode)
         form.addRow("Callsign", self.callsign)
         form.addRow("Data2G host", self.host)
         form.addRow("Transport", self.transport)
@@ -58,6 +60,7 @@ class SettingsDialog(QDialog):
         form.addRow("KISS port", self.kiss_port)
         form.addRow("Color scheme", self.scheme)
         form.addRow("Sound", self.sound)
+        form.addRow("Observer", self.observer)
         outer.addLayout(form)
         buttons = QHBoxLayout(); buttons.addStretch(1)
         cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
@@ -74,6 +77,10 @@ class SettingsDialog(QDialog):
         self.settings.callsign = call
         self.settings.host = self.host.text().strip() or "127.0.0.1"
         self.settings.transport = self.transport.currentData()
+        if self.observer.isChecked() and self.settings.transport != "broadcast":
+            QMessageBox.warning(self, "Observer mode", "Select Broadcast · KISS for observer mode.")
+            return
+        self.settings.observer_mode = self.observer.isChecked()
         self.settings.group = group
         self.settings.command_port = self.command_port.value()
         self.settings.kiss_port = self.kiss_port.value()
@@ -304,7 +311,10 @@ class ArcadeWindow(QMainWindow):
         self.unsubscribe = engine.subscribe(lambda event: self._event_bridge.received.emit(event))
         offline = hasattr(engine.transport, "closed") and engine.transport.closed.is_set()
         self._update_status("Offline · reconnect in settings" if offline else "Local practice" if self.settings.transport == "practice" else "Data2G ready", not offline)
-        self.mode_label.setText(f"{self.settings.callsign}  ·  {self.settings.transport.title()}")
+        self.mode_label.setText(f"{self.settings.callsign}  ·  {'OBSERVER · RX' if self.settings.observer_mode else self.settings.transport.title()}")
+        for control in (self.game_choice, self.peer_input, self.new_button, self.invite_button,
+                        self.cancel_invite_button, self.start_button, self.chat_input, self.chat_send):
+            control.setEnabled(not self.settings.observer_mode)
         self.connect_button.setVisible(self.settings.transport == "connected")
         self.disconnect_button.setVisible(self.settings.transport == "connected")
         self._populate_games()
@@ -355,7 +365,7 @@ class ArcadeWindow(QMainWindow):
         selected = self.selected_id
         self.session_list.blockSignals(True); self.session_list.clear()
         for session in self.engine.sessions():
-            opponent = next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
+            opponent = (" / ".join(session["players"]) or session["coordinator"]) if self.settings.observer_mode else next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
             turn = "your move" if session.get("current_player") == self.settings.callsign else session["status"]
             item = QListWidgetItem(f"{session['game']}\n{opponent}  ·  {turn}  ·  {session['id'][-6:]}")
             item.setData(Qt.ItemDataRole.UserRole, session["id"])
@@ -404,8 +414,12 @@ class ArcadeWindow(QMainWindow):
         self.game_subtitle.setText(f"Game {sid}  ·  revision {session['revision']}  ·  {session['status'].title()}{suffix}")
         state = session["view"]
         current = session["current_player"]
-        self.sync_button.setVisible(session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished"))
-        if session["status"] == "invited":
+        self.sync_button.setVisible(self.settings.observer_mode or (session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished")))
+        if self.settings.observer_mode:
+            self.sync_button.setText("↻  Request snapshot (TRANSMITS)")
+        if self.settings.observer_mode:
+            self.turn_badge.setText("OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT")
+        elif session["status"] == "invited":
             self.turn_badge.setText("INVITATION RECEIVED")
             self.accept_button.setVisible(True)
         elif session["status"] == "lobby":
@@ -444,7 +458,7 @@ class ArcadeWindow(QMainWindow):
         view = session["view"]
         if view["kind"] == "grid":
             board = QWidget(); grid = QGridLayout(board); grid.setSpacing(10)
-            my_turn = (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+            my_turn = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
             for cell, value in enumerate(view["cells"]):
                 text = value if value.strip() else str(cell + 1)
                 button = QPushButton(text); button.setObjectName(f"boardCell{cell}")
@@ -629,6 +643,9 @@ class ArcadeWindow(QMainWindow):
 
     def _sync_selected(self):
         if self.engine and self.selected_id:
+            if self.settings.observer_mode and QMessageBox.question(self, "Transmit snapshot request",
+                    "This will transmit one synchronization request over the radio. Continue?") != QMessageBox.StandardButton.Yes:
+                return
             sid = self.selected_id; self._run(partial(self.engine.request_sync, sid))
 
     def _edit_settings(self):
@@ -650,11 +667,13 @@ def main():
     parser.add_argument("--callsign")
     parser.add_argument("--host")
     parser.add_argument("--transport", choices=("broadcast", "connected", "practice"))
+    parser.add_argument("--observer", action="store_true", help="passively watch KISS broadcast games")
     args, qt_args = parser.parse_known_args()
     settings = Settings.load()
     if args.callsign: settings.callsign = args.callsign.upper()
     if args.host: settings.host = args.host
     if args.transport: settings.transport = args.transport
+    if args.observer: settings.observer_mode = True
     app = QApplication([sys.argv[0], *qt_args]); app.setApplicationName("Radio Arcade")
     window = ArcadeWindow(settings)
     if not settings.callsign:
