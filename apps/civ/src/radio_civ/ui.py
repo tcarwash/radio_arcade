@@ -23,7 +23,7 @@ from radio_arcade.service import ArcadeService, station_name
 from radio_arcade.transport_factory import group_name
 
 from .engine import HotseatService, broadcast_service
-from .rules import (BUILDINGS, BUILD_COSTS, HEIGHT, TECHS, TECH_COSTS, UNIT_COSTS,
+from .rules import (BUILDINGS, BUILD_COSTS, HEIGHT, TECHS, TECH_COSTS, TECH_GUIDE, UNIT_COSTS,
                     UNITS, WIDTH, CivilizationGame, build, end_turn, found,
                     grow, move, neighbors, recruit, research)
 
@@ -295,12 +295,12 @@ class CivWindow(QMainWindow):
             button.setToolTip(f"Cost: food {BUILD_COSTS[i][0]}, timber {BUILD_COSTS[i][1]}, ore {BUILD_COSTS[i][2]}")
             actions.addWidget(button, i, 1); self.build_buttons.append(button)
         right.addWidget(self.city_actions)
-        right.addWidget(self._section("TECHNOLOGY"))
+        right.addWidget(self._section("TECHNOLOGY  ·  HOVER FOR EFFECTS"))
         self.tech_buttons = []
         tech_grid = QGridLayout(); tech_grid.setSpacing(6)
         for i, name in enumerate(TECHS):
             button = self._button(name, lambda _=False, tech=i: self._research(tech))
-            button.setToolTip(f"Research cost: {TECH_COSTS[i]} science")
+            button.setToolTip(TECH_GUIDE[i]["tooltip"])
             tech_grid.addWidget(button, i // 2, i % 2); self.tech_buttons.append(button)
         right.addLayout(tech_grid)
         self.end_button = self._button("END TURN  →", lambda: self._order(end_turn()), primary=True)

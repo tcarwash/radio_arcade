@@ -48,6 +48,9 @@ class CivilizationDesktop(unittest.TestCase):
 
     def test_hotseat_map_selection_and_turn_change(self):
         self.window._new_campaign()
+        self.assertIn("+1 food", self.window.tech_buttons[0].toolTip())
+        self.assertIn("Requires: Mining", self.window.tech_buttons[2].toolTip())
+        self.assertIn("+3 victory points", self.window.tech_buttons[4].toolTip())
         session = self.window.current_session
         self.assertEqual(session["view"]["kind"], "civilization")
         self.assertGreater(len(self.window.map.board.items()), 64)

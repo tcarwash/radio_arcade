@@ -18,6 +18,27 @@ TERRAIN = ("water", "plains", "forest", "hills", "desert")
 TECHS = ("Agriculture", "Mining", "Bronze Working", "Writing", "Navigation")
 TECH_COSTS = (6, 7, 10, 9, 11)
 TECH_PREREQUISITES = (0, 0, 1 << 1, 0, 1 << 3)
+TECH_EFFECTS = (
+    "Each city produces +1 food when you end your turn.",
+    "Each city produces +1 ore when you end your turn. Unlocks Forges and Bronze Working.",
+    "Unlocks Warriors. Your Warriors deal 2 damage instead of 1 when attacking units or besieging cities.",
+    "Each city produces +1 science when you end your turn. Unlocks Libraries and Navigation.",
+    "Moving Scouts reveal hexes within 2 steps instead of 1. Water remains impassable.",
+)
+def _tech_guide(index: int) -> dict[str, str | int]:
+    required = ", ".join(name for other, name in enumerate(TECHS)
+                         if TECH_PREREQUISITES[index] & (1 << other)) or "None"
+    return {
+        "name": TECHS[index], "cost": TECH_COSTS[index],
+        "requires": required, "effect": TECH_EFFECTS[index],
+        "tooltip": (f"{TECHS[index]} — {TECH_COSTS[index]} science · 1 order\n"
+                    f"Requires: {required}\n{TECH_EFFECTS[index]}\n+3 victory points"),
+    }
+
+
+# Shared, non-wire metadata for the native and browser clients. Keep this in
+# sync with the mechanics so both interfaces explain the same effects.
+TECH_GUIDE = tuple(_tech_guide(index) for index in range(len(TECHS)))
 BUILDINGS = ("Granary", "Sawmill", "Forge", "Library")
 BUILD_COSTS = ((2, 4, 0), (0, 5, 1), (0, 3, 5), (0, 4, 3))  # food, wood, ore
 BUILD_TECHS = (0, 0, 1 << 1, 1 << 3)

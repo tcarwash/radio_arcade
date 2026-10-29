@@ -3,7 +3,7 @@
 import unittest
 
 from radio_civ.rules import (
-    MAX_CITIES, MAX_UNITS, CivilizationGame, build, distance, end_turn,
+    MAX_CITIES, MAX_UNITS, TECHS, TECH_COSTS, TECH_GUIDE, CivilizationGame, build, distance, end_turn,
     found, grow, move, neighbors, recruit, research, score, terrain,
 )
 from radio_arcade.wire import Kind, Packet, decode, encode, encode_snapshot
@@ -16,6 +16,20 @@ FOUR = ("LONGCALL01", "LONGCALL02", "LONGCALL03", "LONGCALL04")
 class CivilizationRules(unittest.TestCase):
     def setUp(self):
         self.game = CivilizationGame()
+
+    def test_research_help_matches_unlocks_and_prerequisites(self):
+        self.assertEqual(len(TECH_GUIDE), len(TECHS))
+        for index, tech in enumerate(TECH_GUIDE):
+            with self.subTest(name=tech["name"]):
+                self.assertEqual(tech["name"], TECHS[index])
+                self.assertEqual(tech["cost"], TECH_COSTS[index])
+                self.assertIn(tech["effect"], tech["tooltip"])
+                self.assertIn("+3 victory points", tech["tooltip"])
+        self.assertEqual(TECH_GUIDE[2]["requires"], "Mining")
+        self.assertEqual(TECH_GUIDE[4]["requires"], "Writing")
+        self.assertIn("Forges", TECH_GUIDE[1]["effect"])
+        self.assertIn("Warriors", TECH_GUIDE[2]["effect"])
+        self.assertIn("2 steps", TECH_GUIDE[4]["effect"])
 
     def test_map_and_roster_determinism(self):
         a = self.game.new_state(TWO)

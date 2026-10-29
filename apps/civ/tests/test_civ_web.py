@@ -40,7 +40,11 @@ class WebClientBackend(unittest.TestCase):
             return json.loads(response.read())
 
     def test_browser_hosts_engine_campaign_and_uses_same_actions(self):
-        self.assertEqual(self.fetch("/api/config")["local"], True)
+        config = self.fetch("/api/config")
+        self.assertEqual(config["local"], True)
+        self.assertEqual(len(config["technologies"]), 5)
+        self.assertEqual(config["technologies"][2]["requires"], "Mining")
+        self.assertIn("Unlocks Warriors", config["technologies"][2]["tooltip"])
         created = self.fetch("/api/campaigns", "POST")
         sid = created["session"]["id"]
         listed = self.fetch("/api/sessions")

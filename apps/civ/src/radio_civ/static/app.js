@@ -9,8 +9,6 @@ const UNITS = ["Scout","Warrior","Settler"];
 const UNIT_COSTS = [[2,3,0],[2,4,2],[6,6,0]];
 const BUILDINGS = ["Granary","Sawmill","Forge","Library"];
 const BUILD_COSTS = [[2,4,0],[0,5,1],[0,3,5],[0,4,3]];
-const TECHS = ["Agriculture","Mining","Bronze Working","Writing","Navigation"];
-const TECH_COSTS = [6,7,10,9,11];
 const state = {config:null, sid:null, session:null, sessions:[], selected:null,
                moveOrigin:null, seenChats:new Set(), lastRevision:null, busy:false, refreshing:false};
 
@@ -224,11 +222,14 @@ function render() {
   grow.disabled=!canAct(view)||found.city<0;
   grow.onclick=()=>action([71,found.city]);production.appendChild(grow);
   const techs=$("technology");techs.replaceChildren();
-  TECHS.forEach((name,i)=>{
+  (state.config?.technologies||[]).forEach(({name,cost,tooltip},i)=>{
     const known=player&&!!(player.tech&(1<<i));
-    const b=document.createElement("button");b.textContent=`${known?"✓ ":""}${name} · ${TECH_COSTS[i]}`;
+    const hint=document.createElement("span");hint.className="techHint";hint.title=tooltip;
+    hint.tabIndex=0;hint.setAttribute("aria-label",tooltip.replaceAll("\n",". "));
+    const b=document.createElement("button");b.textContent=`${known?"✓ ":""}${name} · ${cost}`;
+    b.title=tooltip;
     b.disabled=!canAct(view)||known||!player;
-    b.onclick=()=>action([84,i]);techs.appendChild(b);
+    b.onclick=()=>action([84,i]);hint.appendChild(b);techs.appendChild(hint);
   });
   drawMap(view);
 }

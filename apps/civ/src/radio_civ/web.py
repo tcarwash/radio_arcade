@@ -18,6 +18,7 @@ from radio_arcade.service import ArcadeService, station_name
 from radio_arcade.transport_factory import group_name
 
 from .engine import HotseatService, broadcast_service
+from .rules import TECH_GUIDE
 
 
 def public_session(session: dict) -> dict:
@@ -79,7 +80,7 @@ class WebHandler(BaseHTTPRequestHandler):
         try:
             if path == "/api/config":
                 self._json({"call": engine.callsign, "observer": engine.observer_mode,
-                            "local": isinstance(engine, HotseatService)})
+                            "local": isinstance(engine, HotseatService), "technologies": TECH_GUIDE})
             elif path == "/api/sessions":
                 self._json([public_session(row) for row in engine.sessions() if row["game_id"] == 5])
             elif (session := self._sid(path)) is not None:
