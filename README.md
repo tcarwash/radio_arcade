@@ -1,5 +1,10 @@
 # Radio Arcade
 
+**Standalone graphical strategy client:** [Radio Civ](apps/civ/README.md)
+is a separate PySide6 civilization-building game using this repository's
+headless multiplayer engine and hosted Data2G broadcast protocol. It is not
+part of the main Radio Arcade desktop/TUI game picker.
+
 Radio Arcade is a reusable, headless game engine with a native desktop client and a keyboard-first TUI. The same session and game logic runs over Data2G KISS broadcast or its VARA-like connected endpoint. Built-in games include tic-tac-toe, Nim, and Open Word Tiles, a two-player open-rack word game.
 
 To exercise a game against two local native Data2G hosts joined by audio pipes, run `python scripts/data2g_smoke.py --mode broadcast` or `python scripts/data2g_smoke.py --mode connected --reconnect`. The script needs the Data2G native host at `../Data2G/native/build/data2g-host` (or specify `--host-binary`), takes several minutes, and prints the directory containing its logs. This is a simulated audio link.

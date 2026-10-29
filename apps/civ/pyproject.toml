@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radio-civ"
+version = "0.1.0"
+description = "A standalone graphical 4X strategy game powered by Radio Arcade"
+requires-python = ">=3.10"
+dependencies = ["radio-arcade>=0.2.0"]
+
+[project.optional-dependencies]
+desktop = ["PySide6>=6.6"]
+
+[project.scripts]
+radio-civ = "radio_civ.ui:main"
+radio-civ-web = "radio_civ.web:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+radio_civ = ["static/*.html", "static/*.js", "static/*.css"]
+
+[tool.uv.sources]
+radio-arcade = { path = "../..", editable = true }
