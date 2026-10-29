@@ -37,7 +37,8 @@ class TuiScenarios(unittest.IsolatedAsyncioTestCase):
                 app.selected_id = sid
                 await app._show_session(sid)
                 self.assertTrue(app.query_one("#scoreboard").display)
-                self.assertEqual(app.query_one("#score-bag").render().plain.split("·")[0].strip(), "BAG")
+                self.assertIn("BAG ", app.query_one("#arena-meta").render().plain)
+                self.assertEqual(app.query_one("#score-divider").render().plain, "VS")
                 await pilot.press("2")
                 await pilot.pause(0.2)
                 # The first board tile starts at offset x=4, y=1.

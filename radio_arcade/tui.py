@@ -268,11 +268,12 @@ class ArcadeTUI(App):
     #scoreboard { display:none; height:4; margin:0 0 1 0; background:#141d2d;
                   border:round #35415a; padding:0 1; }
     .score-card { width:1fr; height:100%; padding:0 1; }
+    #score-left-card { border-right:solid #3c4963; }
+    #score-right-card { border-left:solid #3c4963; }
     .score-name { height:1; color:#a99bd2; text-style:bold; }
     .score-value { height:2; color:#f5efff; text-style:bold; content-align:left middle; }
-    #score-mid { width:20; height:100%; padding:0; align:center middle; }
-    #score-game-label { height:1; color:#9a87cf; text-style:bold; content-align:center middle; }
-    #score-bag { height:2; color:#aebed1; content-align:center middle; }
+    #score-divider { width:7; height:100%; color:#9482c6; text-style:bold;
+                     content-align:center middle; }
     #game-controls { display:none; height:auto; background:#131f2c;
                      padding:0 1; margin-bottom:1; }
     #game-controls Horizontal { height:auto; }
@@ -303,18 +304,20 @@ class ArcadeTUI(App):
     Screen.daylight #scoreboard { background:#e1e8f1; border:round #bfcbda; }
     Screen.daylight #scoreboard .score-value { color:#243249; }
     Screen.daylight #scoreboard .score-name { color:#65558b; }
+    Screen.daylight #score-left-card { border-right:solid #b3bfd1; }
+    Screen.daylight #score-right-card { border-left:solid #b3bfd1; }
     Screen.daylight #turn-line { color:#155344; background:#e0f3ed; }
     Screen.daylight #arena-meta { color:#6d7c91; }
     Screen.monochrome #scoreboard { background:#171717; border:round #777777; }
     Screen.monochrome #turn-line { background:#222222; color:#ffffff; border-left:solid #aaaaaa; }
     Screen.monochrome .score-name, Screen.monochrome .score-value { color:#ffffff; }
+    Screen.monochrome #score-divider { color:#ffffff; }
     Screen.short #topline { height:2; }
     Screen.short #wordmark, Screen.short #brand-note { padding-top:0; }
     Screen.short #arena-header { height:2; margin-bottom:0; }
     Screen.short #turn-line { min-height:1; padding:0 1; margin-bottom:0; }
     Screen.short #scoreboard { height:4; margin-bottom:0; }
     Screen.short .score-value { height:2; }
-    Screen.short #score-mid { padding:0; }
     Screen.short #game-controls { padding:0 1; margin-bottom:0; }
     Screen.short #arena-footer { display:none; }
     Screen.short #board { min-height:5; }
@@ -373,13 +376,11 @@ class ArcadeTUI(App):
                         yield Static("", id="arena-meta")
                     yield Static("Open-information games for the airwaves.", id="turn-line")
                     with Horizontal(id="scoreboard"):
-                        with Vertical(classes="score-card"):
+                        with Vertical(id="score-left-card", classes="score-card"):
                             yield Static("STATION 1", id="score-left-name", classes="score-name")
                             yield Static("0", id="score-left-value", classes="score-value")
-                        with Vertical(id="score-mid"):
-                            yield Static("WORD TILES", id="score-game-label")
-                            yield Static("BAG  ·  0", id="score-bag")
-                        with Vertical(classes="score-card"):
+                        yield Static("VS", id="score-divider")
+                        with Vertical(id="score-right-card", classes="score-card"):
                             yield Static("STATION 2", id="score-right-name", classes="score-name")
                             yield Static("0", id="score-right-value", classes="score-value")
                     yield Vertical(id="game-controls")
@@ -552,10 +553,13 @@ class ArcadeTUI(App):
             return
         self._board_signature = signature
         self.query_one("#game-title", Label).update(session["game"])
-        self.query_one("#arena-meta", Static).update(f"{sid[-6:]}  ·  REV {session['revision']}")
+        state = session["view"]
+        arena_meta = f"GAME {sid[-6:]}  ·  REV {session['revision']}"
+        if state and state.get("kind") == "word-tiles":
+            arena_meta = f"BAG {state['bag']}  ·  {arena_meta}"
+        self.query_one("#arena-meta", Static).update(arena_meta)
         invited = "\nInvited: " + ", ".join(session["invited"]) if session["invited"] else ""
         self.query_one("#players", Static).update("  ·  ".join(session["players"]) + invited + f"\n\n{session['status'].upper()}  ·  rev {session['revision']}")
-        state = session["view"]
         turn = session["current_player"]
         self._update_scoreboard(state, turn)
         if self.settings.observer_mode: line = "OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT"
@@ -647,7 +651,6 @@ class ArcadeTUI(App):
             suffix = "  ● TURN" if name == turn else ""
             self.query_one(f"#score-{side}-name", Static).update(name + suffix)
             self.query_one(f"#score-{side}-value", Static).update(str(score))
-        self.query_one("#score-bag", Static).update(f"BAG  ·  {state['bag']}")
 
     def _refresh_chat(self, sid: str | None):
         if not self.engine or not sid or sid != self.selected_id: return
