@@ -48,6 +48,12 @@ radio-arcade-tui
 
 On first launch, enter your station callsign and Data2G host in the setup panel. Settings persist under the platform's user data directory (override it with `RADIO_ARCADE_HOME`). You can open the settings panel later to change the link.
 
+### Spot My Game · DX Cluster
+
+Configure **DX Cluster URL** in desktop or TUI Settings (for example, `https://cluster.example.org`, or `http://127.0.0.1:8766` for a local server). Create a **hosted broadcast table**, select it, and click **Spot my game · DX Cluster**. Enter your dial frequency in **kHz**, the mode/transport and an optional message. The client posts your callsign, game type and exact session ID with a one-hour expiry to the standalone DX Cluster service.
+
+Posting uses the internet via HTTP(S); it does not transmit on the amateur bands. Only the dealer of an open or active hosted game can post. Spotting is manual and optional, and requires a reachable cluster instance. Other stations browse the cluster website, tune to the advertised frequency, and join the hosted game from Radio Arcade; the website does not remotely tune radios or automatically connect clients.
+
 For an explicit configuration:
 
 ```sh

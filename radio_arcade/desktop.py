@@ -19,6 +19,7 @@ from .settings import Settings
 from .store import SessionStore
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
+from .dx_cluster import build_spot, post_spot
 
 
 class SettingsDialog(QDialog):
@@ -52,6 +53,8 @@ class SettingsDialog(QDialog):
         self.sound = QCheckBox("Play invitation and turn sounds"); self.sound.setChecked(settings.sound_enabled)
         self.observer = QCheckBox("Observer mode · receive-only (manual sync transmits)")
         self.observer.setChecked(settings.observer_mode)
+        self.dx_cluster_url = QLineEdit(settings.dx_cluster_url)
+        self.dx_cluster_url.setPlaceholderText("https://cluster.example.org")
         form.addRow("Callsign", self.callsign)
         form.addRow("Data2G host", self.host)
         form.addRow("Transport", self.transport)
@@ -61,6 +64,7 @@ class SettingsDialog(QDialog):
         form.addRow("Color scheme", self.scheme)
         form.addRow("Sound", self.sound)
         form.addRow("Observer", self.observer)
+        form.addRow("DX Cluster URL", self.dx_cluster_url)
         outer.addLayout(form)
         buttons = QHBoxLayout(); buttons.addStretch(1)
         cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
@@ -86,6 +90,7 @@ class SettingsDialog(QDialog):
         self.settings.kiss_port = self.kiss_port.value()
         self.settings.color_scheme = self.scheme.currentData()
         self.settings.sound_enabled = self.sound.isChecked()
+        self.settings.dx_cluster_url = self.dx_cluster_url.text().strip()
         self.settings.save()
         self.accept()
 
@@ -182,6 +187,8 @@ class ArcadeWindow(QMainWindow):
         left_layout.addWidget(self.join_button)
         self.announce_button = QPushButton("Re-announce lobby"); self.announce_button.clicked.connect(self._announce_game)
         left_layout.addWidget(self.announce_button)
+        self.spot_button = QPushButton("✦  Spot my game · DX Cluster"); self.spot_button.clicked.connect(self._spot_game)
+        left_layout.addWidget(self.spot_button)
         self.order_input = QLineEdit(); self.order_input.setPlaceholderText("Turn order: HOST,GUEST1,GUEST2")
         left_layout.addWidget(self.order_input)
         self.order_button = QPushButton("Set dealer reply order"); self.order_button.clicked.connect(self._set_reply_order)
@@ -415,6 +422,7 @@ class ArcadeWindow(QMainWindow):
         self._clear_board()
         self.accept_button.setVisible(False); self.start_button.setVisible(False); self.invite_button.setVisible(False); self.cancel_invite_button.setVisible(False)
         self.join_button.setVisible(False); self.announce_button.setVisible(False); self.retry_button.setVisible(False)
+        self.spot_button.setVisible(False)
         self.order_input.setVisible(False); self.order_button.setVisible(False)
         self.chat_list.clear()
         if not self.engine or not sid:
@@ -423,6 +431,9 @@ class ArcadeWindow(QMainWindow):
             self.turn_badge.setText("NO GAME SELECTED"); self.players_label.setText("Stations appear here when a lobby opens.")
             return
         game = session["game"]; players = session["players"]
+        self.spot_button.setVisible(not self.settings.observer_mode and session.get("hosted", False)
+                                    and session["status"] in ("lobby", "active")
+                                    and session["coordinator"] == self.settings.callsign)
         self.game_heading.setText(game)
         last = session.get("last_move")
         suffix = f"  ·  last: {last['actor']} {last['description']}" if last else ""
@@ -598,6 +609,36 @@ class ArcadeWindow(QMainWindow):
 
     def _announce_game(self):
         if self.engine and self.selected_id: self._run(partial(self.engine.announce_game, self.selected_id))
+
+    def _spot_game(self):
+        if not self.engine or not self.selected_id: return
+        if not self.settings.dx_cluster_url:
+            QMessageBox.information(self, "DX Cluster", "Configure a DX Cluster URL in Settings first."); return
+        try:
+            session = self.engine.session(self.selected_id)
+            build_spot(session, self.settings.callsign, "14070", "Data2G USB")
+        except (KeyError, ValueError) as exc:
+            QMessageBox.warning(self, "DX Cluster", str(exc)); return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Spot my game · DX Cluster")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        frequency = QLineEdit(); frequency.setPlaceholderText("14070")
+        mode = QLineEdit("Data2G USB")
+        note = QLineEdit("Open game · stations welcome")
+        form.addRow("Dial frequency (kHz)", frequency)
+        form.addRow("Mode / transport", mode)
+        form.addRow("Message", note)
+        layout.addLayout(form)
+        publish = QPushButton("Publish spot"); publish.clicked.connect(dialog.accept)
+        layout.addWidget(publish)
+        if dialog.exec() != QDialog.DialogCode.Accepted: return
+        try:
+            payload = build_spot(session, self.settings.callsign, frequency.text(), mode.text(), note.text())
+        except ValueError as exc:
+            QMessageBox.warning(self, "DX Cluster", str(exc)); return
+        self._run(partial(post_spot, self.settings.dx_cluster_url, payload),
+                  lambda _: self.footer_label.setText("Game spotted on the DX Cluster"))
 
     def _set_reply_order(self):
         if self.engine and self.selected_id:

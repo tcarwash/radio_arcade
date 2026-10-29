@@ -21,6 +21,7 @@ class Settings:
     color_scheme: str = "midnight"
     sound_enabled: bool = False
     observer_mode: bool = False
+    dx_cluster_url: str = ""
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Settings":

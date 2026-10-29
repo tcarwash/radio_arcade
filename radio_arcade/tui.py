@@ -20,6 +20,7 @@ from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
+from .dx_cluster import build_spot, post_spot
 
 
 # Four-character terminal cells: the background fills the entire square,
@@ -123,6 +124,8 @@ class SettingsScreen(ModalScreen[Settings | None]):
             yield Input(str(self.settings.command_port), placeholder="8300", id="command-port")
             yield Label("KISS PORT", classes="setting-label")
             yield Input(str(self.settings.kiss_port), placeholder="8100", id="kiss-port")
+            yield Label("DX CLUSTER URL · optional", classes="setting-label")
+            yield Input(self.settings.dx_cluster_url, placeholder="https://cluster.example.org", id="dx-cluster-url")
             yield Label("COLOR SCHEME", classes="setting-label")
             yield Select((("Midnight", "midnight"), ("Daylight", "daylight"), ("Monochrome", "monochrome")),
                          value=self.settings.color_scheme, allow_blank=False, id="color-scheme")
@@ -166,8 +169,40 @@ class SettingsScreen(ModalScreen[Settings | None]):
         self.settings.command_port, self.settings.kiss_port = command_port, kiss_port
         self.settings.color_scheme = str(self.query_one("#color-scheme", Select).value)
         self.settings.sound_enabled = self.query_one("#sound-enabled", Switch).value
+        self.settings.dx_cluster_url = self.query_one("#dx-cluster-url", Input).value.strip()
         self.settings.save()
         self.dismiss(self.settings)
+
+
+class SpotScreen(ModalScreen[tuple[str, str, str] | None]):
+    CSS = """
+    SpotScreen { align:center middle; background:rgba(4,8,14,0.78); }
+    #spot-card { width:62; height:auto; padding:2 3; border:round #3e6573; background:#101a27; }
+    #spot-card Label { margin-top:1; color:#73dfc8; }
+    #spot-actions { height:3; margin-top:2; align-horizontal:right; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="spot-card"):
+            yield Static("SPOT MY GAME · ONLINE DX CLUSTER")
+            yield Label("DIAL FREQUENCY (kHz)")
+            yield Input(placeholder="14070", id="spot-frequency")
+            yield Label("MODE / TRANSPORT")
+            yield Input("Data2G USB", id="spot-mode")
+            yield Label("MESSAGE (optional)")
+            yield Input("Open game · stations welcome", id="spot-note")
+            with Horizontal(id="spot-actions"):
+                yield Button("Cancel", id="spot-cancel")
+                yield Button("Publish spot", variant="success", id="spot-submit")
+
+    @on(Button.Pressed, "#spot-cancel")
+    def cancel(self): self.dismiss(None)
+
+    @on(Button.Pressed, "#spot-submit")
+    def submit(self):
+        self.dismiss((self.query_one("#spot-frequency", Input).value,
+                      self.query_one("#spot-mode", Input).value,
+                      self.query_one("#spot-note", Input).value))
 
 
 class ArcadeTUI(App):
@@ -369,6 +404,7 @@ class ArcadeTUI(App):
                         yield Button("Accept invitation", id="accept-invite")
                         yield Button("Join hosted table", id="join-game")
                         yield Button("Re-announce hosted lobby", id="announce-game")
+                        yield Button("✦  Spot my game · DX Cluster", id="spot-game")
                         yield Input(placeholder="Reply order: HOST,GUEST1,GUEST2", id="reply-order")
                         yield Button("Set dealer reply order", id="set-reply-order")
                         yield Button("Invite station", id="invite-player")
@@ -593,6 +629,7 @@ class ArcadeTUI(App):
         self.query_one("#accept-invite", Button).display = not self.settings.observer_mode and session["status"] == "invited"
         self.query_one("#join-game", Button).display = not self.settings.observer_mode and session.get("hosted", False) and session["status"] in ("lobby", "joining") and self.settings.callsign not in session["players"]
         self.query_one("#announce-game", Button).display = not self.settings.observer_mode and session.get("hosted", False) and session["status"] == "lobby" and session["coordinator"] == self.settings.callsign
+        self.query_one("#spot-game", Button).display = not self.settings.observer_mode and session.get("hosted", False) and session["status"] in ("lobby", "active") and session["coordinator"] == self.settings.callsign
         self.query_one("#reply-order", Input).display = self.query_one("#announce-game", Button).display
         self.query_one("#set-reply-order", Button).display = self.query_one("#announce-game", Button).display
         self.query_one("#invite-player", Button).display = not self.settings.observer_mode and not session.get("hosted") and session["status"] == "lobby" and session["coordinator"] == self.settings.callsign
@@ -707,6 +744,31 @@ class ArcadeTUI(App):
     @on(Button.Pressed, "#announce-game")
     def _announce_game(self):
         if self.engine and self.selected_id: self._run_action(partial(self.engine.announce_game, self.selected_id))
+
+    @on(Button.Pressed, "#spot-game")
+    def _spot_game(self):
+        if not self.settings.dx_cluster_url:
+            self.notify("Configure your DX Cluster URL in Settings first.", severity="warning"); return
+        if not self.engine or not self.selected_id: return
+        try:
+            session = self.engine.session(self.selected_id)
+            build_spot(session, self.settings.callsign, "14070", "Data2G USB")
+        except (KeyError, ValueError) as exc:
+            self.notify(str(exc), severity="warning"); return
+        def publish(values):
+            if values is None: return
+            try:
+                payload = build_spot(session, self.settings.callsign, *values)
+            except ValueError as exc:
+                self.notify(str(exc), severity="error"); return
+            def worker():
+                try:
+                    post_spot(self.settings.dx_cluster_url, payload)
+                    self.call_from_thread(self.notify, "Your game is spotted on the DX Cluster!")
+                except ValueError as exc:
+                    self.call_from_thread(self.notify, str(exc), severity="error")
+            threading.Thread(target=worker, daemon=True).start()
+        self.push_screen(SpotScreen(), publish)
 
     @on(Button.Pressed, "#set-reply-order")
     def _set_reply_order(self):
