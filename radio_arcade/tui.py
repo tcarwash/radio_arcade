@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from functools import partial
+import re
 import threading
 
 from textual import events, on
@@ -19,6 +20,35 @@ from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
+
+
+def word_preview(view: dict, start: str, direction: str, word: str) -> tuple[dict[int, str], str]:
+    """Preview glyphs only; the game still validates the actual submitted move."""
+    match = re.fullmatch(r"([A-Oa-o])(1[0-5]|[1-9])", start.strip())
+    if not match:
+        return {}, "Enter a starting square from A1 to O15"
+    x0, y0 = ord(match[1].upper()) - 65, int(match[2]) - 1
+    if word and not re.fullmatch(r"(?:[A-Za-z]|\{[A-Za-z]\})*", word):
+        return {}, "Use letters or {A} for a blank tile"
+    letters = [blank or plain for blank, plain in re.findall(r"\{([A-Za-z])\}|([A-Za-z])", word.upper())]
+    result = {}
+    conflict = False
+    overflow = False
+    for n, letter in enumerate(letters):
+        x, y = (x0 + n, y0) if direction == "H" else (x0, y0 + n)
+        if x >= 15 or y >= 15:
+            overflow = True
+            break
+        index = y * 15 + x
+        existing = view["cells"][index]
+        if existing and existing.upper() != letter:
+            conflict = True
+        result[index] = letter
+    if overflow:
+        return result, "Word extends beyond the board"
+    if conflict:
+        return result, "Word conflicts with existing tiles"
+    return result, "Preview only · press Place to submit" if letters else "Select a tile and type a word"
 
 
 class ServiceReady(Message):
@@ -205,6 +235,8 @@ class ArcadeTUI(App):
         self.selected_id: str | None = None
         self.selected_game = "tic-tac-toe"
         self._word_direction = "H"
+        self._word_cursor_visible = True
+        self._word_board_view = None
         self._action_lock = threading.Lock()
         # Textual list mutations yield; never interleave two rebuilds.
         self._session_refresh_lock = asyncio.Lock()
@@ -249,6 +281,7 @@ class ArcadeTUI(App):
         yield Footer()
 
     async def on_mount(self):
+        self.set_interval(0.5, self._blink_word_cursor)
         self._update_layout(self.size.width)
         if self.settings.color_scheme == "daylight":
             self.screen.add_class("daylight")
@@ -441,17 +474,8 @@ class ArcadeTUI(App):
                     id="nim-controls")
                 await board.mount(row)
             elif state["kind"] == "word-tiles":
-                # Exactly four character columns, for labels AND tiles.
-                # The click handler uses this same geometry.
-                header = "    " + "".join(f"{chr(65 + x):^4}" for x in range(15))
-                rows = [header]
-                for y in range(15):
-                    cells = []
-                    for x in range(15):
-                        index = y * 15 + x
-                        cells.append(state["cells"][index] or ("★" if index == 112 else state["premiums"][index]))
-                    rows.append(f"{y+1:>3} " + "".join(f"{cell:^4}" for cell in cells))
-                await board.mount(Static("\n".join(rows), id="word-board", classes="word-board", markup=False))
+                self._word_board_view = state
+                await board.mount(Static("", id="word-board", classes="word-board", markup=False))
                 scoreline = "  ·  ".join(f"{player} {score}" for player, score in state["scores"].items())
                 await board.mount(Static(f"{scoreline}    BAG {state['bag']}    {state['lexicon']}    OPEN RACKS", classes="word-meta"))
                 for player, rack in state["racks"].items():
@@ -463,6 +487,8 @@ class ArcadeTUI(App):
                     Input(placeholder="Word · {A} uses a blank as A", id="word-text"),
                     Button("Place", id="word-place", variant="primary", disabled=not enabled)))
                 self._update_word_direction_buttons()
+                await board.mount(Static("", id="word-preview-hint", classes="word-meta"))
+                self._refresh_word_preview()
                 await board.mount(Horizontal(Input(placeholder="Exchange letters · ? for blank", id="word-exchange-tiles"),
                     Button("Exchange", id="word-exchange", disabled=not enabled or state["bag"] < 7),
                     Button("Pass", id="word-pass", disabled=not enabled)))
@@ -602,7 +628,48 @@ class ArcadeTUI(App):
         x, y = (event.x - 4) // 4, event.y - 1
         if 0 <= x < 15 and 0 <= y < 15:
             self.query_one("#word-start", Input).value = f"{chr(65 + x)}{y + 1}"
+            self._word_cursor_visible = True
+            self._refresh_word_preview()
             self.query_one("#word-text", Input).focus()
+
+    def _blink_word_cursor(self):
+        if self.query("#word-board"):
+            self._word_cursor_visible = not self._word_cursor_visible
+            self._refresh_word_preview()
+
+    def _refresh_word_preview(self):
+        if not self._word_board_view or not self.query("#word-board") or not self.query("#word-start"):
+            return
+        start = self.query_one("#word-start", Input).value
+        word = self.query_one("#word-text", Input).value
+        preview, status = word_preview(self._word_board_view, start, self._word_direction, word)
+        match = re.fullmatch(r"([A-Oa-o])(1[0-5]|[1-9])", start.strip())
+        selected = (int(match[2]) - 1) * 15 + ord(match[1].upper()) - 65 if match else None
+        rows = [Text("    " + "".join(f"{chr(65 + x):^4}" for x in range(15)), style="bold cyan")]
+        for y in range(15):
+            line = Text(f"{y+1:>3} ", style="bold cyan")
+            for x in range(15):
+                index = y * 15 + x
+                existing = self._word_board_view["cells"][index]
+                glyph = preview.get(index) or existing or ("★" if index == 112 else self._word_board_view["premiums"][index])
+                style = ""
+                if index in preview:
+                    style = "bold white on dark_green" if not existing or existing.upper() == preview[index] else "bold white on dark_red"
+                if index == selected and self._word_cursor_visible:
+                    style = "bold reverse underline"
+                    if not word:
+                        glyph = "▌"
+                line.append(f"{glyph:^4}", style=style)
+            rows.append(line)
+        self.query_one("#word-board", Static).update(Text("\n").join(rows))
+        if self.query("#word-preview-hint"):
+            self.query_one("#word-preview-hint", Static).update(status)
+
+    @on(Input.Changed, "#word-start")
+    @on(Input.Changed, "#word-text")
+    def _word_input_changed(self, _event: Input.Changed):
+        self._word_cursor_visible = True
+        self._refresh_word_preview()
 
     def _update_word_direction_buttons(self):
         for direction, name in (("H", "#word-horizontal"), ("V", "#word-vertical")):
@@ -612,11 +679,13 @@ class ArcadeTUI(App):
     def _word_horizontal(self):
         self._word_direction = "H"
         self._update_word_direction_buttons()
+        self._refresh_word_preview()
 
     @on(Button.Pressed, "#word-vertical")
     def _word_vertical(self):
         self._word_direction = "V"
         self._update_word_direction_buttons()
+        self._refresh_word_preview()
 
     @on(Button.Pressed, "#word-place")
     def _word_place(self):

@@ -32,6 +32,23 @@ class TuiScenarios(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app._word_direction, "V")
                 await pilot.click("#word-horizontal")
                 self.assertEqual(app._word_direction, "H")
+                app.query_one("#word-text").value = "CAT"
+                await pilot.pause(0.1)
+                preview = app.query_one("#word-board").render()
+                self.assertIn(" C   A   T ", preview.plain)
+                self.assertIn("Preview only", app.query_one("#word-preview-hint").render().plain)
+
+    async def test_word_preview_flags_conflicts_and_board_edges(self):
+        from radio_arcade.tui import word_preview
+
+        board = {"cells": ["" for _ in range(225)]}
+        board["cells"][7 * 15 + 7] = "X"
+        preview, status = word_preview(board, "H8", "H", "CAT")
+        self.assertEqual(preview[7 * 15 + 7], "C")
+        self.assertIn("conflicts", status)
+        preview, status = word_preview(board, "O15", "H", "CAT")
+        self.assertEqual(preview[224], "C")
+        self.assertIn("beyond", status)
 
     async def test_overlapping_session_refreshes_do_not_duplicate_widget_ids(self):
         from radio_arcade.settings import Settings
