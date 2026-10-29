@@ -20,6 +20,7 @@ from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
+from .island_map import render_island, map_hit, PLAYER_COLORS
 
 
 # Four-character terminal cells: the background fills the entire square,
@@ -274,13 +275,11 @@ class ArcadeTUI(App):
     .score-value { height:2; color:#f5efff; text-style:bold; content-align:left middle; }
     #score-divider { width:7; height:100%; color:#9482c6; text-style:bold;
                      content-align:center middle; }
-    .island-region { width:1fr; height:5; border:round #34465f;
-                     background:#142232; margin:0 1 1 0; padding:0 1; }
-    .island-region-row { height:5; min-height:5; }
+    #island-map { width:68; height:35; min-height:35; margin:0 0 1 0; padding:0; }
+    #island-selection { color:#cfb8ff; text-style:bold; height:auto; }
     .island-title { color:#a5e5c5; text-style:bold; height:1; }
-    .island-sites { color:#eadcfb; height:1; }
     .island-detail { color:#b9c6db; height:auto; margin:0 0 1 0; }
-    #island-action { width:32; min-width:24; }
+    #island-action { width:23; min-width:20; }
     #island-target { width:1fr; }
     #island-submit { width:18; min-width:18; }
     #game-controls { display:none; height:auto; background:#131f2c;
@@ -347,6 +346,10 @@ class ArcadeTUI(App):
         self._word_board_view = None
         self._word_score_hint_key = None
         self._word_score_hint = ""
+        self._island_board_view: dict | None = None
+        self._island_selection: tuple[str, int] | None = None
+        self._island_hits: dict[tuple[int, int], tuple[str, int]] = {}
+        self._island_session_id: str | None = None
         self._action_lock = threading.Lock()
         # Textual list mutations yield; never interleave two rebuilds.
         self._session_refresh_lock = asyncio.Lock()
@@ -572,6 +575,13 @@ class ArcadeTUI(App):
         self._board_signature = signature
         self.query_one("#game-title", Label).update(session["game"])
         state = session["view"]
+        if state and state.get("kind") == "settlement":
+            if sid != self._island_session_id:
+                self._island_selection = None
+            self._island_session_id = sid
+        else:
+            self._island_board_view = None
+            self._island_hits = {}
         arena_meta = f"GAME {sid[-6:]}  ·  REV {session['revision']}"
         if state and state.get("kind") == "word-tiles":
             arena_meta = f"BAG {state['bag']}  ·  {arena_meta}"
@@ -662,34 +672,33 @@ class ArcadeTUI(App):
                     Button("Pass", id="word-pass", disabled=not enabled)))
             elif state["kind"] == "settlement":
                 enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
-                for first in (0, 3):
-                    tiles = []
-                    for sector in range(first, first + 3):
-                        region = state["regions"][sector]
-                        group = state["sites"][sector * 3:sector * 3 + 3]
-                        sites = "  ".join(f"{s['index']:02d}{'◆' if s['city'] else '●' if s['owner'] else '·'}" for s in group)
-                        tiles.append(Vertical(Static(f"{region['number']}  /  {region['resource'].upper()}", classes="island-title"),
-                                              Static(sites, classes="island-sites"), classes="island-region"))
-                    await board.mount(Horizontal(*tiles, classes="island-region-row"))
-                await board.mount(Static("◆ CITY  ·  ● OUTPOST  ·  · FREE SITE  |  SIX POINTS TO WIN", classes="island-detail"))
+                self._island_board_view = state
+                await board.mount(Static("◈  ISLAND MAP  ·  CLICK SITES OR ROADS TO SELECT A BUILD LOCATION", classes="island-title"))
+                legend = Text("PLAYERS    ", style="bold #a0aabf")
+                for i, (player, score) in enumerate(state["scores"].items()):
+                    legend.append(f"● {player} {score} VP    ", style="bold " + (
+                        "#ffffff" if self.settings.color_scheme == "monochrome" else PLAYER_COLORS[i]))
+                await board.mount(Static(legend, classes="island-detail", markup=False))
+                await board.mount(Static("", id="island-map", markup=False))
+                await board.mount(Static("Click a numbered site or a road · interior road crossings are not junctions",
+                                         id="island-selection"))
+                self._refresh_island_map()
+                await board.mount(Static("◆ CITY   ● OUTPOST   ○ FREE SITE   /   6 VP TO WIN   /   0–17 COAST ROADS, 18–26 CROSS ROUTES",
+                                         classes="island-detail"))
                 for player, score in state["scores"].items():
                     bank = "  ".join(f"{name[:2].upper()} {count}" for name, count in state["resources"][player].items())
                     owned = ", ".join(f"{s['index']:02d}{'◆' if s['city'] else '●'}" for s in state["sites"] if s["owner"] == player)
                     await board.mount(Static(f"{player}  {score} VP  /  {bank}\n    SITES {owned}", classes="island-detail"))
-                roads = state["roads"]
-                await board.mount(Static("ROAD INDEX  /  CONNECTING SITES  /  OWNER", classes="island-title"))
-                for offset in range(9):
-                    group = [roads[offset], roads[offset + 9], roads[offset + 18]]
-                    text = "      ".join(f"{road['index']:02d} {road['from']:02d}↔{road['to']:02d} {road['owner'] or '—'}" for road in group)
-                    await board.mount(Static(text, classes="island-detail"))
+                await board.mount(Static("CROSS ROUTES  " + "    ".join(
+                    f"{r['index']}:{r['from']}↔{r['to']}" for r in state["roads"][18:]), classes="island-detail"))
                 await controls.mount(Horizontal(
                     Button("⚄ Roll / produce", id="island-roll", disabled=not enabled or state["phase"] != "roll", variant="primary"),
                     Button("End turn →", id="island-end", disabled=not enabled or state["phase"] != "build")))
                 await controls.mount(Horizontal(
-                    Select((("Build road · timber+clay", "road"),
-                            ("Build outpost · T+C+W+G", "outpost"),
-                            ("Upgrade city · 2 grain+3 ore", "city"),
-                            ("Trade bank · 3:1", "trade")), value="road", allow_blank=False, id="island-action"),
+                    Select((("Road · T+C", "road"),
+                            ("Outpost · T+C+W+G", "outpost"),
+                            ("City · 2G+3O", "city"),
+                            ("Bank trade · 3:1", "trade")), value="road", allow_blank=False, id="island-action"),
                     Input(placeholder="Site / road index, or trade 0:4", id="island-target"),
                     Button("Build / trade", id="island-submit", variant="primary", disabled=not enabled or state["phase"] != "build")))
             else:
@@ -767,6 +776,63 @@ class ArcadeTUI(App):
 
     @on(Button.Pressed, "#island-end")
     def _island_end(self): self._submit_island_action(b"\x06")
+
+    def _refresh_island_map(self):
+        if self._island_board_view is None or not self.query("#island-map"):
+            return
+        artwork, self._island_hits = render_island(
+            self._island_board_view, self._island_selection,
+            monochrome=self.settings.color_scheme == "monochrome")
+        self.query_one("#island-map", Static).update(artwork)
+        target = self._island_selection
+        if not target or not self.query("#island-selection"):
+            return
+        kind, index = target
+        if kind == "site" and index < len(self._island_board_view["sites"]):
+            site = self._island_board_view["sites"][index]
+            owner = site["owner"] or "unclaimed"
+            label = f"SITE {index:02d}  ·  {owner}  ·  {'CITY' if site['city'] else 'OUTPOST' if site['owner'] else 'BUILD OUTPOST · COST T+C+W+G'}"
+        elif kind == "road" and index < len(self._island_board_view["roads"]):
+            road = self._island_board_view["roads"][index]
+            label = f"ROAD {index:02d}  ·  {road['from']:02d} ↔ {road['to']:02d}  ·  {road['owner'] or 'BUILD ROAD · COST TIMBER+CLAY'}"
+        else:
+            label = "Select a site or road on the island"
+        self.query_one("#island-selection", Static).update(label + "  ·  SUBMIT TO TRANSMIT")
+
+    @on(events.Click, "#island-map")
+    def _island_map_clicked(self, event: events.Click):
+        if self._island_board_view is None:
+            return
+        target = map_hit(self._island_hits, event.x, event.y)
+        if target is None:
+            return
+        kind, index = target
+        self._island_selection = target
+        if kind == "road":
+            action = "road"
+        else:
+            site = self._island_board_view["sites"][index]
+            action = "city" if site["owner"] else "outpost"
+        if self.query("#island-action"):
+            self.query_one("#island-action", Select).value = action
+        if self.query("#island-target"):
+            self.query_one("#island-target", Input).value = str(index)
+        self._refresh_island_map()
+
+    @on(Input.Changed, "#island-target")
+    @on(Select.Changed, "#island-action")
+    def _island_target_changed(self):
+        if self._island_board_view is None or not self.query("#island-action") or not self.query("#island-target"):
+            return
+        action = self.query_one("#island-action", Select).value
+        try:
+            index = int(self.query_one("#island-target", Input).value)
+        except ValueError:
+            index = -1
+        kind = "road" if action == "road" else "site"
+        bound = len(self._island_board_view["roads"] if kind == "road" else self._island_board_view["sites"])
+        self._island_selection = (kind, index) if action != "trade" and 0 <= index < bound else None
+        self._refresh_island_map()
 
     def _submit_island_action(self, action: bytes):
         if self.engine and self.selected_id: self._run_action(partial(self.engine.legal_action, self.selected_id, action))

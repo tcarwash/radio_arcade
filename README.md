@@ -33,6 +33,8 @@ There are no automatic retries for hosted broadcasts, to avoid an ACK storm. If 
 
 In Island Settlers the six sectors produce resources on a 1–6 roll. Each player starts with an outpost and some supplies. Roll once on your turn, then build as many roads/outposts/cities and make as many 3:1 bank trades as resources allow, and end your turn. The screen numbers the 18 buildable sites and 27 roads. Resource IDs for trades are `0 timber`, `1 clay`, `2 wool`, `3 grain`, `4 ore` (enter `0:4` to exchange three timber for one ore). The first station with six victory points wins. All inventories are public; this game is inspired by settlement-building strategy games rather than a faithful copy of Catan.
 
+The Settlers TUI includes an interactive, color-coded island map showing hexagonal resource regions, perimeter sites, and the entire route network. Site labels begin with **S** and coastline road labels with **R**. Click a site to select an outpost/city upgrade or click a road to choose its index; a local highlight and action preview appear before you submit anything. The nine long cross-island routes (18–26) can also be entered by number. Route lines that visually cross in the middle do not form a junction unless they terminate at the same numbered site. On a narrow terminal press `2` for the board and scroll to inspect the southern half of the island.
+
 ## Install and launch
 
 The core library has no GUI dependency. Install both clients from this checkout with:
