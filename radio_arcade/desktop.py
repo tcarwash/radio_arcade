@@ -505,6 +505,28 @@ class ArcadeWindow(QMainWindow):
                 button.clicked.connect(lambda _checked=False, i=cell: self._submit_action(bytes((i,))))
                 grid.addWidget(button, cell // 3, cell % 3)
             self.board_layout.addWidget(board)
+        elif view["kind"] == "connect-four":
+            host = QWidget(); box = QVBoxLayout(host)
+            board = QWidget(); grid = QGridLayout(board); grid.setSpacing(4)
+            grid.setContentsMargins(0, 0, 0, 0)
+            enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+            for col in range(7):
+                choose = QPushButton(f"▼ {col+1}"); choose.setFixedSize(54, 40)
+                choose.setEnabled(enabled and view["cells"][col] == " ")
+                choose.clicked.connect(lambda _checked=False, c=col: self._submit_action(bytes((c,))))
+                grid.addWidget(choose, 0, col)
+            for row in range(6):
+                for col in range(7):
+                    mark = view["cells"][row * 7 + col]
+                    disc = QLabel("●" if mark != " " else "○")
+                    disc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    color = "#eeeeee" if self.settings.color_scheme == "monochrome" else "#71e5d3" if mark == "X" else "#f4bd76" if mark == "O" else "#52697e"
+                    disc.setStyleSheet(f"background:#1a3548;color:{color};font-size:34px;border-radius:6px")
+                    disc.setFixedSize(54, 52)
+                    grid.addWidget(disc, row + 1, col)
+            box.addWidget(board)
+            box.addWidget(QLabel("Select a column to drop a disc. Four in a row wins."))
+            self.board_layout.addWidget(host)
         elif view["kind"] == "piles":
             host = QWidget(); box = QVBoxLayout(host)
             for index, count in enumerate(view["piles"]):

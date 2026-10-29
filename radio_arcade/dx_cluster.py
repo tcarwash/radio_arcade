@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
-GAME_NAMES = {"tic-tac-toe": "Tic-Tac-Toe", "nim": "Nim", "open-word-tiles": "Open Word Tiles", "scrabble": "Open Word Tiles"}
+GAME_NAMES = {"tic-tac-toe": "Tic-Tac-Toe", "nim": "Nim", "open-word-tiles": "Open Word Tiles", "scrabble": "Open Word Tiles", "connect-four": "Connect Four"}
 
 
 def build_spot(session: dict, callsign: str, frequency_khz: str, mode: str, note: str = "") -> dict:

@@ -252,6 +252,8 @@ class ArcadeTUI(App):
     #board { height:1fr; min-height:15; align: center middle; }
     .board-row { height:7; align: center middle; }
     .cell { width:13; height:5; margin:0 1; border:round #395066; background:#172536; color:#77dfc9; text-style:bold; }
+    .connect-column { width:7; height:3; margin:0; background:#153e50; color:#80efd5; border:round #3b8290; }
+    .connect-row { width:auto; height:1; text-align:center; }
     #turn-line { color:#76dfc9; text-style:bold; margin:1 0; }
     #players { color:#adbdce; height:auto; margin-bottom:1; }
     #chat-log { height:1fr; border:round #263849; background:#0a121c; padding:0 1; }
@@ -654,6 +656,21 @@ class ArcadeTUI(App):
                         button = Button(text, id=f"cell-{index}", classes="cell", disabled=not active or bool(state["cells"][index].strip()))
                         cells.append(button)
                     await board.mount(Horizontal(*cells, classes="board-row"))
+            elif state["kind"] == "connect-four":
+                active = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                await board.mount(Static("CONNECT FOUR  ·  X = turquoise   O = amber", classes="muted"))
+                await board.mount(Horizontal(*(
+                    Button(f"▼{col+1}", id=f"connect-{col}", classes="connect-column",
+                           disabled=not active or state["cells"][col] != " ")
+                    for col in range(7)), classes="board-row"))
+                for row in range(6):
+                    line = Text("  ")
+                    for col in range(7):
+                        mark = state["cells"][row * 7 + col]
+                        line.append(" ● " if mark != " " else " ○ ", style=(
+                            "bold #71e5d3" if mark == "X" else "bold #f4bd76" if mark == "O" else "#4b6579"))
+                    await board.mount(Static(line, classes="connect-row"))
+                await board.mount(Static("Click a column above to drop a disc. Four in a row wins.", classes="muted"))
             elif state["kind"] == "piles":
                 for i, count in enumerate(state["piles"]):
                     await board.mount(Static(f"PILE {i+1}   {'◆ ' * count} ({count})", classes="nim-pile"))
@@ -851,6 +868,12 @@ class ArcadeTUI(App):
         if not self.engine or not self.selected_id: return
         cell = int(event.button.id.split("-")[1])
         self._run_action(partial(self.engine.legal_action, self.selected_id, bytes((cell,))))
+
+    @on(Button.Pressed, ".connect-column")
+    def _connect_four_drop(self, event: Button.Pressed):
+        if self.engine and self.selected_id:
+            col = int(event.button.id.rsplit("-", 1)[1])
+            self._run_action(partial(self.engine.legal_action, self.selected_id, bytes((col,))))
 
     @on(Button.Pressed, "#nim-take")
     def _nim_take(self):

@@ -329,7 +329,7 @@ class CatalogScenarios(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "permanently assigned"):
             GameRegistry().register(Impostor())
-        self.assertEqual([game.game_id for game in builtin_registry(load_plugins=False).catalog()], [1, 2, 3])
+        self.assertEqual([game.game_id for game in builtin_registry(load_plugins=False).catalog()], [1, 2, 3, 6])
 
         class RetiredGame:
             api_version = 1

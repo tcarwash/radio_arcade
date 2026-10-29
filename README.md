@@ -5,7 +5,7 @@ is a separate PySide6 civilization-building game using this repository's
 headless multiplayer engine and hosted Data2G broadcast protocol. It is not
 part of the main Radio Arcade desktop/TUI game picker.
 
-Radio Arcade is a reusable, headless game engine with a native desktop client and a keyboard-first TUI. The same session and game logic runs over Data2G KISS broadcast or its VARA-like connected endpoint. Built-in games include tic-tac-toe, Nim, and Open Word Tiles, a two-player open-rack word game.
+Radio Arcade is a reusable, headless game engine with a native desktop client and a keyboard-first TUI. The same session and game logic runs over Data2G KISS broadcast or its VARA-like connected endpoint. Built-in games include tic-tac-toe, Nim, Connect Four, and Open Word Tiles, a two-player open-rack word game.
 
 To exercise a game against two local native Data2G hosts joined by audio pipes, run `python scripts/data2g_smoke.py --mode broadcast` or `python scripts/data2g_smoke.py --mode connected --reconnect`. The script needs the Data2G native host at `../Data2G/native/build/data2g-host` (or specify `--host-binary`), takes several minutes, and prints the directory containing its logs. This is a simulated audio link.
 
@@ -67,7 +67,8 @@ All participants must run clients using the same Radio Arcade protocol version. 
 
 ## Play
 
-- Create Tic-tac-toe, Nim, or Open Word Tiles from the game selector and invite a station, or use a hosted broadcast table.
+- Create Tic-tac-toe, Nim, Connect Four, or Open Word Tiles from the game selector and invite a station, or use a hosted broadcast table.
+- In Connect Four, click column 1–7 to drop a disc; four horizontally, vertically, or diagonally wins. The desktop and TUI show the same 7×6 board, and the 13-byte state snapshot fits the existing radio protocol.
 - In Open Word Tiles, racks are public. Enter a start square such as `H8`, choose across/down, and type the word; use `{A}` to mark a blank tile assigned as A. ENABLE1 is the shared lexicon. This is an open-rack variant because seed-derived racks are visible to all stations.
 - In the TUI's Open Word Tiles board, click a square to choose the start coordinate. Its cursor blinks, and typed letters preview along the selected Horizontal/Vertical direction. Conflicting letters and board-edge overflow are highlighted/warned locally; nothing transmits until you press Place.
 - The TUI uses a game-first layout inspired by SUperChat: wider terminals show tables, the active arena, and chat side by side; narrower terminals use `1`/`2`/`3` to switch panes without squeezing the board. Word Tiles keeps its score and remaining bag count above the board, and evaluates a proposed word locally to display its prospective points before submission.
