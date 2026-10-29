@@ -22,6 +22,17 @@ from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
 
 
+# Four-character terminal cells: the background fills the entire square,
+# leaving premium labels subdued while played and previewed letters pop.
+WORD_PREMIUM_STYLES = {
+    "TW": "bold #ffd9de on #813748",
+    "DW": "#ffdfe7 on #703e59",
+    "TL": "bold #d4f3ff on #205d83",
+    "DL": "#d9f2ff on #31546c",
+    "..": "dim #6f8495 on #1a2937",
+}
+
+
 def word_preview(view: dict, start: str, direction: str, word: str) -> tuple[dict[int, str], str]:
     """Preview glyphs only; the game still validates the actual submitted move."""
     match = re.fullmatch(r"([A-Oa-o])(1[0-5]|[1-9])", start.strip())
@@ -651,10 +662,21 @@ class ArcadeTUI(App):
             for x in range(15):
                 index = y * 15 + x
                 existing = self._word_board_view["cells"][index]
-                glyph = preview.get(index) or existing or ("★" if index == 112 else self._word_board_view["premiums"][index])
-                style = ""
+                premium = self._word_board_view["premiums"][index]
+                glyph = preview.get(index) or existing or ("★" if index == 112 else premium)
+                if self.settings.color_scheme == "monochrome":
+                    style = "bold white on #363636" if premium != ".." else "dim #aaaaaa on #181818"
+                else:
+                    style = WORD_PREMIUM_STYLES.get(premium, WORD_PREMIUM_STYLES[".."])
+                if index == 112 and not existing:
+                    style = "bold #ffe7a3 on #645125" if self.settings.color_scheme != "monochrome" else "bold reverse"
+                if existing:
+                    style = "bold #f9f4dc on #354d48" if self.settings.color_scheme != "monochrome" else "bold white on #444444"
                 if index in preview:
-                    style = "bold white on dark_green" if not existing or existing.upper() == preview[index] else "bold white on dark_red"
+                    style = ("bold white on #176d54" if not existing or existing.upper() == preview[index]
+                             else "bold white on #a73333") if self.settings.color_scheme != "monochrome" else (
+                                 "bold reverse" if not existing or existing.upper() == preview[index]
+                                 else "bold black on white")
                 if index == selected and self._word_cursor_visible:
                     style = "bold reverse underline"
                     if not word:

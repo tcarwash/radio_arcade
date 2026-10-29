@@ -39,7 +39,9 @@ class TuiScenarios(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Preview only", app.query_one("#word-preview-hint").render().plain)
 
     async def test_word_preview_flags_conflicts_and_board_edges(self):
-        from radio_arcade.tui import word_preview
+        from radio_arcade.tui import WORD_PREMIUM_STYLES, word_preview
+
+        self.assertEqual(len({WORD_PREMIUM_STYLES[key] for key in ("TW", "DW", "TL", "DL", "..")}), 5)
 
         board = {"cells": ["" for _ in range(225)]}
         board["cells"][7 * 15 + 7] = "X"
