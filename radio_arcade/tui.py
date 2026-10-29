@@ -7,7 +7,7 @@ import asyncio
 from functools import partial
 import threading
 
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
@@ -183,10 +183,12 @@ class ArcadeTUI(App):
     #nim-piles { height:auto; margin:2 0; color:#7ce0c9; }
     #nim-controls { height:3; }
     #nim-controls Input { width:10; }
-    .word-board { color:#e4edf5; text-style:bold; height:auto; margin:0 0 1 0; }
+    .word-board { color:#e4edf5; text-style:bold; width:64; height:16; margin:0 0 1 0; }
+    .word-board:hover { background:#182b39; }
     .word-meta { color:#7ce0c9; height:auto; margin:0 0 1 0; }
     #word-start { width:10; }
-    #word-direction { width:8; }
+    .word-direction-button { width:15; min-width:15; }
+    .word-direction-button.-selected { background:#347969; color:#ffffff; text-style:bold; }
     #word-text { width:1fr; }
     #word-exchange-tiles { width:1fr; }
     #empty-state { color:#8799ad; content-align:center middle; height:1fr; }
@@ -202,6 +204,7 @@ class ArcadeTUI(App):
         self.unsubscribe = None
         self.selected_id: str | None = None
         self.selected_game = "tic-tac-toe"
+        self._word_direction = "H"
         self._action_lock = threading.Lock()
         # Textual list mutations yield; never interleave two rebuilds.
         self._session_refresh_lock = asyncio.Lock()
@@ -438,24 +441,28 @@ class ArcadeTUI(App):
                     id="nim-controls")
                 await board.mount(row)
             elif state["kind"] == "word-tiles":
-                header = "    " + " ".join(chr(65 + x) for x in range(15))
+                # Exactly four character columns, for labels AND tiles.
+                # The click handler uses this same geometry.
+                header = "    " + "".join(f"{chr(65 + x):^4}" for x in range(15))
                 rows = [header]
                 for y in range(15):
                     cells = []
                     for x in range(15):
                         index = y * 15 + x
                         cells.append(state["cells"][index] or ("★" if index == 112 else state["premiums"][index]))
-                    rows.append(f"{y+1:2d}  " + " ".join(f"{cell:>2}" for cell in cells))
-                await board.mount(Static("\n".join(rows), classes="word-board", markup=False))
+                    rows.append(f"{y+1:>3} " + "".join(f"{cell:^4}" for cell in cells))
+                await board.mount(Static("\n".join(rows), id="word-board", classes="word-board", markup=False))
                 scoreline = "  ·  ".join(f"{player} {score}" for player, score in state["scores"].items())
                 await board.mount(Static(f"{scoreline}    BAG {state['bag']}    {state['lexicon']}    OPEN RACKS", classes="word-meta"))
                 for player, rack in state["racks"].items():
                     await board.mount(Static(f"{player} RACK  " + "  ".join(rack), classes="word-meta"))
-                enabled = (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                 await board.mount(Horizontal(Input("H8", placeholder="Start", id="word-start"),
-                    Input("H", placeholder="H/V", id="word-direction"),
+                    Button("— Horizontal", id="word-horizontal", classes="word-direction-button"),
+                    Button("│ Vertical", id="word-vertical", classes="word-direction-button"),
                     Input(placeholder="Word · {A} uses a blank as A", id="word-text"),
                     Button("Place", id="word-place", variant="primary", disabled=not enabled)))
+                self._update_word_direction_buttons()
                 await board.mount(Horizontal(Input(placeholder="Exchange letters · ? for blank", id="word-exchange-tiles"),
                     Button("Exchange", id="word-exchange", disabled=not enabled or state["bag"] < 7),
                     Button("Pass", id="word-pass", disabled=not enabled)))
@@ -589,6 +596,28 @@ class ArcadeTUI(App):
         game.validate_roster(state, tuple(session["players"]))
         return session, state
 
+    @on(events.Click, "#word-board")
+    def _word_board_clicked(self, event: events.Click):
+        # One header line and four columns of row labels precede the tiles.
+        x, y = (event.x - 4) // 4, event.y - 1
+        if 0 <= x < 15 and 0 <= y < 15:
+            self.query_one("#word-start", Input).value = f"{chr(65 + x)}{y + 1}"
+            self.query_one("#word-text", Input).focus()
+
+    def _update_word_direction_buttons(self):
+        for direction, name in (("H", "#word-horizontal"), ("V", "#word-vertical")):
+            self.query_one(name, Button).set_class(self._word_direction == direction, "-selected")
+
+    @on(Button.Pressed, "#word-horizontal")
+    def _word_horizontal(self):
+        self._word_direction = "H"
+        self._update_word_direction_buttons()
+
+    @on(Button.Pressed, "#word-vertical")
+    def _word_vertical(self):
+        self._word_direction = "V"
+        self._update_word_direction_buttons()
+
     @on(Button.Pressed, "#word-place")
     def _word_place(self):
         if not self.engine or not self.selected_id: return
@@ -596,7 +625,7 @@ class ArcadeTUI(App):
             session, state = self._scrabble_state()
             action = make_placement(state, session["current_player"],
                 self.query_one("#word-start", Input).value,
-                self.query_one("#word-direction", Input).value,
+                self._word_direction,
                 self.query_one("#word-text", Input).value)
             self._run_action(partial(self.engine.legal_action, self.selected_id, action))
         except Exception as exc:

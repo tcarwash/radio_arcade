@@ -10,6 +10,29 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("textual"), "install the tui extra")
 class TuiScenarios(unittest.IsolatedAsyncioTestCase):
+    async def test_word_board_click_and_direction_buttons(self):
+        from radio_arcade.settings import Settings
+        from radio_arcade.tui import ArcadeTUI
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            app = ArcadeTUI(Settings(callsign="N0CALL", transport="practice"))
+            async with app.run_test(size=(100, 42)) as pilot:
+                await pilot.pause(0.2)
+                sid = app.engine.create_game("open-word-tiles")
+                app.selected_id = sid
+                await app._show_session(sid)
+                await pilot.press("2")
+                await pilot.pause(0.2)
+                # The first board tile starts at offset x=4, y=1.
+                await pilot.click("#word-board", offset=(5, 1))
+                self.assertEqual(app.query_one("#word-start").value, "A1")
+                await pilot.click("#word-board", offset=(33, 8))
+                self.assertEqual(app.query_one("#word-start").value, "H8")
+                await pilot.click("#word-vertical")
+                self.assertEqual(app._word_direction, "V")
+                await pilot.click("#word-horizontal")
+                self.assertEqual(app._word_direction, "H")
+
     async def test_overlapping_session_refreshes_do_not_duplicate_widget_ids(self):
         from radio_arcade.settings import Settings
         from radio_arcade.tui import ArcadeTUI

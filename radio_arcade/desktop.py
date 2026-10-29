@@ -505,7 +505,9 @@ class ArcadeWindow(QMainWindow):
                     color = "#eeeeee" if tile else ("#343a40" if self.settings.color_scheme == "monochrome" else premium_colors[view["premiums"][index]])
                     foreground = "#111111" if tile else ("#eeeeee" if self.settings.color_scheme == "monochrome" else "#d8e3ed")
                     button.setStyleSheet(f"QPushButton {{ padding:0; font-size:10px; font-weight:700; background:{color}; color:{foreground}; border:1px solid #182635; }}")
-                    button.setEnabled(False)
+                    # Clicking a square chooses the start coordinate; this is
+                    # local UI selection and never transmits a move.
+                    button.clicked.connect(lambda _checked=False, x=x, y=y: start.setText(f"{chr(65 + x)}{y + 1}"))
                     grid.addWidget(button, y + 1, x + 1)
             box.addWidget(grid_host, alignment=Qt.AlignmentFlag.AlignHCenter)
             for player, rack in view["racks"].items():
