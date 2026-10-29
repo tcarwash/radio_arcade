@@ -1,0 +1,10 @@
+include ENGINE-API.md GAME-GOALS.md GAME-IDEAS.md GAME-CATALOG.md PROTOCOL.md
+include scripts/data2g_smoke.py
+include examples/countdown_game.py
+include examples/__init__.py
+include tests/test_sessions.py
+include tests/test_tui.py
+include tests/test_desktop.py
+include tests/test_wire.py
+include tests/test_scrabble.py
+recursive-include radio_arcade/games/data *.txt

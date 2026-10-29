@@ -1,0 +1,10 @@
+
+[all]
+PySide6>=6.6
+textual>=0.80
+
+[desktop]
+PySide6>=6.6
+
+[tui]
+textual>=0.80
