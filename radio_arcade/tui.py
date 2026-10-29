@@ -233,6 +233,91 @@ class ArcadeTUI(App):
     #word-text { width:1fr; }
     #word-exchange-tiles { width:1fr; }
     #empty-state { color:#8799ad; content-align:center middle; height:1fr; }
+
+    /* SUperChat-inspired midnight/violet palette, with a game-first arena. */
+    Screen { background:#080d16; color:#e7edf7; }
+    Header, Footer { background:#111827; color:#8795aa; }
+    #shell { padding:1; }
+    #topline { height:2; padding:0 1; margin-bottom:0; background:#111827; }
+    #wordmark { width:auto; color:#ded2ff; text-style:bold; padding:1 1 0 0; }
+    #brand-note { width:1fr; color:#74839c; padding:1 0 0 1; }
+    #link-status { background:#10251f; border:round #245543; color:#a2f0cc; }
+    #pane-tabs { display:none; height:1; margin:0 1 1 1; color:#ac9bdf; text-style:bold; }
+    .panel { background:#0e1521; border:round #25334a; padding:1 2; }
+    #left { width:28; margin-right:1; }
+    #right { width:31; margin-left:1; margin-right:0; }
+    #center { width:1fr; background:#0b111b; border:round #35405c; margin-right:0; }
+    .eyebrow { color:#7889a3; text-style:bold; margin:0 0 1 0; }
+    #sidebar-title, #rail-title { height:2; color:#e7dcff; text-style:bold; }
+    #session-list { border:none; background:#101827; margin-bottom:1; scrollbar-color:#35435d; }
+    ListItem { padding:1; color:#b6c5d7; }
+    ListItem.--highlight { background:#282540; color:#eee5ff; text-style:bold; }
+    Input, Select { background:#121c2c; color:#eff3ff; border:round #394865; }
+    Input:focus, Select:focus { border:round #9c88eb; }
+    Button { background:#1a283b; border:round #384b68; color:#d9e3f4; }
+    Button:hover { background:#2b3e54; }
+    Button.-primary { background:#7764b7; color:#ffffff; text-style:bold; border:round #a28cdb; }
+    #new-game { width:100%; }
+    #session-actions { margin-top:1; border-top:solid #26334a; padding-top:1; }
+    #session-actions Button { width:100%; }
+    #arena-header { height:2; border-bottom:solid #28344a; margin-bottom:0; }
+    #game-title { width:1fr; color:#f2ecff; text-style:bold; padding:0 1 0 0; }
+    #arena-meta { width:auto; color:#7d8ba4; text-align:right; padding-top:1; }
+    #turn-line { height:1; min-height:1; padding:0 1; margin:0 0 1 0;
+                 background:#14251f; border-left:solid #5cb596; color:#b8f4d7; text-style:bold; }
+    #scoreboard { display:none; height:4; margin:0 0 1 0; background:#141d2d;
+                  border:round #35415a; padding:0 1; }
+    .score-card { width:1fr; height:100%; padding:0 1; }
+    .score-name { height:1; color:#a99bd2; text-style:bold; }
+    .score-value { height:2; color:#f5efff; text-style:bold; content-align:left middle; }
+    #score-mid { width:20; height:100%; padding:0; align:center middle; }
+    #score-game-label { height:1; color:#9a87cf; text-style:bold; content-align:center middle; }
+    #score-bag { height:2; color:#aebed1; content-align:center middle; }
+    #game-controls { display:none; height:auto; background:#131f2c;
+                     padding:0 1; margin-bottom:1; }
+    #game-controls Horizontal { height:auto; }
+    #game-controls Input { margin-bottom:0; }
+    #game-controls Button { margin-bottom:0; }
+    #board { height:1fr; min-height:10; align:center top; scrollbar-color:#34415a; }
+    #arena-footer { height:1; color:#74839a; text-align:center; }
+    #players { color:#c1cde0; background:#141e2d; border:round #26374f;
+               padding:1; height:auto; min-height:4; }
+    #last-move { min-height:2; height:auto; margin-top:1; padding:0 1;
+                 color:#a8b4c9; background:#131e2b; border-left:solid #7663af; }
+    .section-label { margin-top:2; }
+    #chat-log { border:none; background:#0b111b; padding:1 0; scrollbar-color:#34415a; }
+    #chat-input { margin-top:1; }
+    #send-chat { width:100%; }
+    .word-board { margin:1 0; }
+    .word-meta { color:#a5d7c6; }
+    #word-preview-hint { color:#b9a7f6; text-style:italic; }
+    .word-direction-button.-selected { background:#594b8a; color:#ffffff; border:round #a18adc; }
+    Screen.compact #left, Screen.compact #center, Screen.compact #right { display:none; width:1fr; margin:0; }
+    Screen.compact.show-lobby #left, Screen.compact.show-board #center, Screen.compact.show-chat #right { display:block; }
+    Screen.compact #pane-tabs { display:block; }
+    Screen.compact #brand-note { display:none; }
+    Screen.compact #topline { margin-bottom:0; }
+    Screen.compact #shell { padding:0; }
+    Screen.compact #columns { min-height:0; }
+    Screen.daylight #center { background:#f8fafc; border:round #bcc7d8; }
+    Screen.daylight #scoreboard { background:#e1e8f1; border:round #bfcbda; }
+    Screen.daylight #scoreboard .score-value { color:#243249; }
+    Screen.daylight #scoreboard .score-name { color:#65558b; }
+    Screen.daylight #turn-line { color:#155344; background:#e0f3ed; }
+    Screen.daylight #arena-meta { color:#6d7c91; }
+    Screen.monochrome #scoreboard { background:#171717; border:round #777777; }
+    Screen.monochrome #turn-line { background:#222222; color:#ffffff; border-left:solid #aaaaaa; }
+    Screen.monochrome .score-name, Screen.monochrome .score-value { color:#ffffff; }
+    Screen.short #topline { height:2; }
+    Screen.short #wordmark, Screen.short #brand-note { padding-top:0; }
+    Screen.short #arena-header { height:2; margin-bottom:0; }
+    Screen.short #turn-line { min-height:1; padding:0 1; margin-bottom:0; }
+    Screen.short #scoreboard { height:4; margin-bottom:0; }
+    Screen.short .score-value { height:2; }
+    Screen.short #score-mid { padding:0; }
+    Screen.short #game-controls { padding:0 1; margin-bottom:0; }
+    Screen.short #arena-footer { display:none; }
+    Screen.short #board { min-height:5; }
     """
     BINDINGS = [("q", "quit", "Quit"), ("r", "refresh", "Refresh"), ("s", "settings", "Settings"),
                 ("1", "show_lobby", "Lobby"), ("2", "show_board", "Board"), ("3", "show_chat", "Chat")]
@@ -248,25 +333,31 @@ class ArcadeTUI(App):
         self._word_direction = "H"
         self._word_cursor_visible = True
         self._word_board_view = None
+        self._word_score_hint_key = None
+        self._word_score_hint = ""
         self._action_lock = threading.Lock()
         # Textual list mutations yield; never interleave two rebuilds.
         self._session_refresh_lock = asyncio.Lock()
+        self._board_refresh_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         with Vertical(id="shell"):
             with Horizontal(id="topline"):
-                yield Label("◈  RADIO ARCADE", id="wordmark")
+                yield Label("◈  RADIO / ARCADE", id="wordmark")
+                yield Static("DATA2G  ·  ON-AIR GAME ROOM", id="brand-note")
                 yield Static("●  OFFLINE", id="link-status")
+            yield Static("1  TABLES     2  GAME BOARD     3  CHAT     S  SETTINGS", id="pane-tabs")
             with Horizontal(id="columns"):
                 with VerticalScroll(id="left", classes="panel"):
-                    yield Label("YOUR TABLES", classes="eyebrow")
+                    yield Label("01  /  GAME LOBBY", classes="eyebrow")
+                    yield Static("Your tables", id="sidebar-title")
                     yield ListView(id="session-list")
-                    yield Label("START A GAME", classes="eyebrow")
+                    yield Label("NEW MATCH", classes="eyebrow")
                     yield Select((("Tic-tac-toe", "tic-tac-toe"), ("Nim · 2–4 players", "nim")),
                                  value="tic-tac-toe", allow_blank=False, id="game-select")
                     yield Input(placeholder="Opponent callsign", id="peer-input")
-                    yield Button("＋  Create game", id="new-game", variant="primary")
+                    yield Button("＋  Create table", id="new-game", variant="primary")
                     yield Button("Connect / resume peer", id="connect-peer")
                     yield Button("Disconnect radio link", id="disconnect-peer")
                     with Vertical(id="session-actions"):
@@ -276,19 +367,35 @@ class ArcadeTUI(App):
                         yield Button("Start lobby", id="start-game")
                         yield Button("Sync / recover state", id="sync-state")
                 with Vertical(id="center", classes="panel"):
-                    yield Label("Choose a game or invite a station", id="game-title")
+                    yield Label("02  /  GAME ARENA", classes="eyebrow")
+                    with Horizontal(id="arena-header"):
+                        yield Label("Choose a table", id="game-title")
+                        yield Static("", id="arena-meta")
                     yield Static("Open-information games for the airwaves.", id="turn-line")
+                    with Horizontal(id="scoreboard"):
+                        with Vertical(classes="score-card"):
+                            yield Static("STATION 1", id="score-left-name", classes="score-name")
+                            yield Static("0", id="score-left-value", classes="score-value")
+                        with Vertical(id="score-mid"):
+                            yield Static("WORD TILES", id="score-game-label")
+                            yield Static("BAG  ·  0", id="score-bag")
+                        with Vertical(classes="score-card"):
+                            yield Static("STATION 2", id="score-right-name", classes="score-name")
+                            yield Static("0", id="score-right-value", classes="score-value")
+                    yield Vertical(id="game-controls")
                     with VerticalScroll(id="board"):
                         yield Static("Start a table to take a seat.", id="empty-state")
-                    yield Static("PUBLIC RADIO · GAME ACTIONS ARE EXPLICIT", classes="muted")
+                    yield Static("◌  PUBLIC RADIO  /  MOVES TRANSMIT ONLY WHEN SUBMITTED", id="arena-footer")
                 with Vertical(id="right", classes="panel"):
-                    yield Label("PLAYERS", classes="eyebrow")
+                    yield Label("03  /  STATIONS", classes="eyebrow")
+                    yield Static("At the table", id="rail-title")
                     yield Static("No table selected", id="players")
-                    yield Label("SIDE CHAT", classes="eyebrow")
+                    yield Static("NO RECENT MOVE", id="last-move")
+                    yield Label("TABLE CHAT", classes="eyebrow section-label")
                     yield RichLog(id="chat-log", markup=True, wrap=True, highlight=True)
                     yield Input(placeholder="Message · up to 150 UTF-8 bytes", id="chat-input")
                     yield Static("0 / 150 bytes", id="chat-count", classes="muted")
-                    yield Button("Send message", id="send-chat")
+                    yield Button("Send message  ↗", id="send-chat", variant="primary")
         yield Footer()
 
     async def on_mount(self):
@@ -304,7 +411,10 @@ class ArcadeTUI(App):
         self.set_interval(2.0, self._refresh_sessions)
 
     def _update_layout(self, width):
-        self.screen.set_class(width < 120, "compact")
+        # The word board is 64 columns wide. At narrower sizes the arena takes
+        # the entire terminal instead of squeezing between two side rails.
+        self.screen.set_class(width < 155, "compact")
+        self.screen.set_class(self.size.height < 36, "short")
         if not any(self.screen.has_class(c) for c in ("show-lobby", "show-board", "show-chat")):
             self.screen.add_class("show-lobby")
 
@@ -405,8 +515,11 @@ class ArcadeTUI(App):
         await listing.clear()
         for session in sessions:
             peer = (" / ".join(session["players"]) or session["coordinator"]) if self.settings.observer_mode else next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
-            turn = "your turn" if session.get("current_player") == self.settings.callsign else session["status"]
-            await listing.append(ListItem(Label(f"{session['game']}  ·  {peer}\n{turn}  ·  {session['id'][-6:]}"),
+            turn = ("● YOUR TURN" if session.get("current_player") == self.settings.callsign else
+                    "◉ SPECTATING" if self.settings.observer_mode else session["status"].upper())
+            description = Text(session["game"], style="bold #e7dcff")
+            description.append(f"\n{peer}  ·  {turn}", style="#96adba")
+            await listing.append(ListItem(Label(description),
                                           id="s" + session["id"]))
             if session["id"] == current:
                 listing.index = len(listing.children) - 1
@@ -424,6 +537,10 @@ class ArcadeTUI(App):
             await self._show_session(self.selected_id)
 
     async def _show_session(self, sid: str | None):
+        async with self._board_refresh_lock:
+            await self._show_session_locked(sid)
+
+    async def _show_session_locked(self, sid: str | None):
         if not self.engine or not sid: return
         try: session = self.engine.session(sid)
         except KeyError: return
@@ -434,11 +551,13 @@ class ArcadeTUI(App):
         if signature == self._board_signature:
             return
         self._board_signature = signature
-        self.query_one("#game-title", Label).update(f"{session['game']}  ·  {sid[-6:]}")
+        self.query_one("#game-title", Label).update(session["game"])
+        self.query_one("#arena-meta", Static).update(f"{sid[-6:]}  ·  REV {session['revision']}")
         invited = "\nInvited: " + ", ".join(session["invited"]) if session["invited"] else ""
         self.query_one("#players", Static).update("  ·  ".join(session["players"]) + invited + f"\n\n{session['status'].upper()}  ·  rev {session['revision']}")
         state = session["view"]
         turn = session["current_player"]
+        self._update_scoreboard(state, turn)
         if self.settings.observer_mode: line = "OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT"
         elif session["status"] == "invited": line = f"INVITATION FROM {session['coordinator']} · accept to join"
         elif session["status"] == "lobby": line = "LOBBY · invite players, then start"
@@ -450,7 +569,10 @@ class ArcadeTUI(App):
         else: line = f"LOCAL PRACTICE · {turn}'s turn" if self.settings.transport == "practice" else f"YOUR TURN · {turn}" if turn == self.settings.callsign else f"WAITING FOR {turn}"
         if session.get("error"): line = f"MOVE REJECTED · {session['error']}"
         if session.get("last_move"):
-            line += f"  ·  LAST: {session['last_move']['actor']} {session['last_move']['description']}"
+            last = session["last_move"]
+            self.query_one("#last-move", Static).update(f"LAST MOVE  ·  {last['actor']}\n{last['description']}")
+        else:
+            self.query_one("#last-move", Static).update("NO RECENT MOVE")
         self.query_one("#turn-line", Static).update(line)
         self.query_one("#accept-invite", Button).display = not self.settings.observer_mode and session["status"] == "invited"
         self.query_one("#invite-player", Button).display = not self.settings.observer_mode and session["status"] == "lobby"
@@ -459,6 +581,9 @@ class ArcadeTUI(App):
         self.query_one("#sync-state", Button).display = self.settings.observer_mode or (session["coordinator"] != self.settings.callsign and session["status"] in ("active", "finished"))
         self.query_one("#sync-state", Button).label = "Request snapshot (TRANSMITS)" if self.settings.observer_mode else "Sync / recover state"
         board = self.query_one("#board", VerticalScroll)
+        controls = self.query_one("#game-controls", Vertical)
+        await controls.remove_children()
+        controls.display = bool(state and state.get("kind") == "word-tiles")
         await board.remove_children()
         if state:
             if state["kind"] == "grid":
@@ -487,20 +612,19 @@ class ArcadeTUI(App):
             elif state["kind"] == "word-tiles":
                 self._word_board_view = state
                 await board.mount(Static("", id="word-board", classes="word-board", markup=False))
-                scoreline = "  ·  ".join(f"{player} {score}" for player, score in state["scores"].items())
-                await board.mount(Static(f"{scoreline}    BAG {state['bag']}    {state['lexicon']}    OPEN RACKS", classes="word-meta"))
+                await board.mount(Static(f"OPEN RACKS   ·   {state['lexicon']} DICTIONARY", classes="word-meta"))
                 for player, rack in state["racks"].items():
                     await board.mount(Static(f"{player} RACK  " + "  ".join(rack), classes="word-meta"))
                 enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
-                await board.mount(Horizontal(Input("H8", placeholder="Start", id="word-start"),
+                await controls.mount(Horizontal(Input("H8", placeholder="Start", id="word-start"),
                     Button("— Horizontal", id="word-horizontal", classes="word-direction-button"),
                     Button("│ Vertical", id="word-vertical", classes="word-direction-button"),
                     Input(placeholder="Word · {A} uses a blank as A", id="word-text"),
                     Button("Place", id="word-place", variant="primary", disabled=not enabled)))
                 self._update_word_direction_buttons()
-                await board.mount(Static("", id="word-preview-hint", classes="word-meta"))
+                await controls.mount(Static("", id="word-preview-hint", classes="word-meta"))
                 self._refresh_word_preview()
-                await board.mount(Horizontal(Input(placeholder="Exchange letters · ? for blank", id="word-exchange-tiles"),
+                await controls.mount(Horizontal(Input(placeholder="Exchange letters · ? for blank", id="word-exchange-tiles"),
                     Button("Exchange", id="word-exchange", disabled=not enabled or state["bag"] < 7),
                     Button("Pass", id="word-pass", disabled=not enabled)))
             else:
@@ -511,6 +635,19 @@ class ArcadeTUI(App):
         else:
             await board.mount(Static("Waiting for the host to start this lobby.", id="empty-state"))
         self._refresh_chat(sid)
+
+    def _update_scoreboard(self, state: dict | None, turn: str | None):
+        panel = self.query_one("#scoreboard", Horizontal)
+        panel.display = bool(state and state.get("kind") == "word-tiles")
+        if not panel.display:
+            return
+        scores = list(state["scores"].items())
+        for side, pair in zip(("left", "right"), scores):
+            name, score = pair
+            suffix = "  ● TURN" if name == turn else ""
+            self.query_one(f"#score-{side}-name", Static).update(name + suffix)
+            self.query_one(f"#score-{side}-value", Static).update(str(score))
+        self.query_one("#score-bag", Static).update(f"BAG  ·  {state['bag']}")
 
     def _refresh_chat(self, sid: str | None):
         if not self.engine or not sid or sid != self.selected_id: return
@@ -654,6 +791,25 @@ class ArcadeTUI(App):
         start = self.query_one("#word-start", Input).value
         word = self.query_one("#word-text", Input).value
         preview, status = word_preview(self._word_board_view, start, self._word_direction, word)
+        if word and status.startswith("Preview only") and self.engine and self.selected_id:
+            session = self.engine.session(self.selected_id)
+            key = (self.selected_id, session["revision"], start, self._word_direction, word)
+            if key != self._word_score_hint_key:
+                self._word_score_hint_key = key
+                try:
+                    actor = session["current_player"]
+                    if not actor:
+                        raise ValueError("game is finished")
+                    game = self.engine.registry.by_id(session["game_id"])
+                    state = game.decode_state(session["state"])
+                    action = make_placement(state, actor, start, self._word_direction, word)
+                    next_state = game.apply_action(state, tuple(session["players"]), actor, action)
+                    player_index = session["players"].index(actor)
+                    points = next_state["scores"][player_index] - state["scores"][player_index]
+                    self._word_score_hint = f"✓  VALID PLAY   ·   +{points} POINTS   ·   Place to transmit"
+                except ValueError as exc:
+                    self._word_score_hint = f"PREVIEW   ·   {exc}"
+            status = self._word_score_hint
         match = re.fullmatch(r"([A-Oa-o])(1[0-5]|[1-9])", start.strip())
         selected = (int(match[2]) - 1) * 15 + ord(match[1].upper()) - 65 if match else None
         rows = [Text("    " + "".join(f"{chr(65 + x):^4}" for x in range(15)), style="bold cyan")]

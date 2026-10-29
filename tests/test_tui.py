@@ -10,17 +10,34 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("textual"), "install the tui extra")
 class TuiScenarios(unittest.IsolatedAsyncioTestCase):
+    async def test_overlapping_board_refreshes_are_serialized(self):
+        from radio_arcade.settings import Settings
+        from radio_arcade.tui import ArcadeTUI
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            app = ArcadeTUI(Settings(callsign="N0CALL", transport="practice"))
+            async with app.run_test(size=(170, 50)) as pilot:
+                await pilot.pause(0.2)
+                sid = app.engine.create_game("open-word-tiles")
+                app.selected_id = sid
+                await asyncio.gather(*(app._show_session(sid) for _ in range(5)))
+                self.assertEqual(len(app.query("#word-preview-hint")), 1)
+                self.assertTrue(app.query_one("#scoreboard").display)
+                self.assertFalse(app.screen.has_class("compact"))
+
     async def test_word_board_click_and_direction_buttons(self):
         from radio_arcade.settings import Settings
         from radio_arcade.tui import ArcadeTUI
 
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
             app = ArcadeTUI(Settings(callsign="N0CALL", transport="practice"))
-            async with app.run_test(size=(100, 42)) as pilot:
+            async with app.run_test(size=(100, 56)) as pilot:
                 await pilot.pause(0.2)
                 sid = app.engine.create_game("open-word-tiles")
                 app.selected_id = sid
                 await app._show_session(sid)
+                self.assertTrue(app.query_one("#scoreboard").display)
+                self.assertEqual(app.query_one("#score-bag").render().plain.split("·")[0].strip(), "BAG")
                 await pilot.press("2")
                 await pilot.pause(0.2)
                 # The first board tile starts at offset x=4, y=1.
@@ -36,7 +53,7 @@ class TuiScenarios(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.1)
                 preview = app.query_one("#word-board").render()
                 self.assertIn(" C   A   T ", preview.plain)
-                self.assertIn("Preview only", app.query_one("#word-preview-hint").render().plain)
+                self.assertTrue(app.query_one("#word-preview-hint").render().plain.startswith(("PREVIEW", "✓")))
 
     async def test_word_preview_flags_conflicts_and_board_edges(self):
         from radio_arcade.tui import WORD_PREMIUM_STYLES, word_preview
@@ -111,8 +128,15 @@ class TuiScenarios(unittest.IsolatedAsyncioTestCase):
                 x = 7 - (len(word) - 1) // 2
                 app.query_one("#word-start").value = f"{chr(65+x)}8"
                 app.query_one("#word-text").value = word
+                app._refresh_word_preview()
+                self.assertIn("POINTS", app.query_one("#word-preview-hint").render().plain)
                 app._word_place()
                 for _ in range(50):
                     await pilot.pause(0.05)
                     if app.engine.session(sid)["revision"] >= 1: break
                 self.assertEqual(app.engine.session(sid)["revision"], 1)
+                updated = app.engine.session(sid)["view"]["scores"]
+                await app._show_session(sid)
+                displayed = {app.query_one("#score-left-value").render().plain,
+                             app.query_one("#score-right-value").render().plain}
+                self.assertTrue({str(value) for value in updated.values()}.issubset(displayed))

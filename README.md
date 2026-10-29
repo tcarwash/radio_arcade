@@ -51,6 +51,7 @@ All participants must run clients using the same Radio Arcade protocol version. 
 - Create Tic-tac-toe, Nim, or Open Word Tiles from the game selector and invite a station.
 - In Open Word Tiles, racks are public. Enter a start square such as `H8`, choose across/down, and type the word; use `{A}` to mark a blank tile assigned as A. ENABLE1 is the shared lexicon. This is an open-rack variant because seed-derived racks are visible to all stations.
 - In the TUI's Open Word Tiles board, click a square to choose the start coordinate. Its cursor blinks, and typed letters preview along the selected Horizontal/Vertical direction. Conflicting letters and board-edge overflow are highlighted/warned locally; nothing transmits until you press Place.
+- The TUI uses a game-first layout inspired by SUperChat: wider terminals show tables, the active arena, and chat side by side; narrower terminals use `1`/`2`/`3` to switch panes without squeezing the board. Word Tiles keeps its score and remaining bag count above the board, and evaluates a proposed word locally to display its prospective points before submission.
 - For Nim, invite one to three other stations into the lobby and start when the roster is ready.
 - Select a received invitation and accept it.
 - Make a move only when the turn indicator says it is yours.
