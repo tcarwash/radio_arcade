@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from functools import partial
 import threading
 
@@ -202,6 +203,8 @@ class ArcadeTUI(App):
         self.selected_id: str | None = None
         self.selected_game = "tic-tac-toe"
         self._action_lock = threading.Lock()
+        # Textual list mutations yield; never interleave two rebuilds.
+        self._session_refresh_lock = asyncio.Lock()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -338,6 +341,10 @@ class ArcadeTUI(App):
             self.call_later(self._refresh_sessions)
 
     async def _refresh_sessions(self):
+        async with self._session_refresh_lock:
+            await self._refresh_sessions_locked()
+
+    async def _refresh_sessions_locked(self):
         if not self.engine or not self.is_mounted: return
         listing = self.query_one("#session-list", ListView)
         sessions = self.engine.sessions()

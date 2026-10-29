@@ -1,4 +1,5 @@
 """Keyboard interaction smoke check; skipped when the TUI extra is absent."""
+import asyncio
 import importlib.util
 from itertools import permutations
 import os
@@ -9,6 +10,21 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("textual"), "install the tui extra")
 class TuiScenarios(unittest.IsolatedAsyncioTestCase):
+    async def test_overlapping_session_refreshes_do_not_duplicate_widget_ids(self):
+        from radio_arcade.settings import Settings
+        from radio_arcade.tui import ArcadeTUI
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            app = ArcadeTUI(Settings(callsign="N0CALL", transport="practice"))
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause(0.2)
+                for _ in range(4):
+                    app.engine.create_game("tic-tac-toe")
+                await asyncio.gather(*(app._refresh_sessions() for _ in range(5)))
+                items = app.query_one("#session-list").children
+                self.assertEqual(len(items), 4)
+                self.assertEqual(len({item.id for item in items}), 4)
+
     async def test_compact_keyboard_practice_game(self):
         from radio_arcade.settings import Settings
         from radio_arcade.tui import ArcadeTUI
