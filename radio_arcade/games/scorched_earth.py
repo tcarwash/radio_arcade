@@ -6,9 +6,9 @@ from math import cos, isqrt, radians, sin
 from secrets import randbelow
 from typing import Any
 
-WIDTH, HEIGHT, SKY_HEIGHT = 64, 16, 32
+WIDTH, HEIGHT, SKY_HEIGHT = 128, 16, 40
 SCALE = 1000
-GRAVITY = 60
+GRAVITY = 90
 MIN_ANGLE, MAX_ANGLE = 10, 80
 NO_ACTION = 255
 DRIVE, REPAIR, SHIELD = 0x80, 0x81, 0x82
@@ -17,9 +17,7 @@ MAX_HP = 100
 MIN_SEPARATION = 6
 STARTING_CREDITS = 70
 
-# Shared map profiles never travel over the radio. Heights fit in four bits.
-# Mirroring the classic 32-column profiles makes larger, continuous arenas
-# without sacrificing their recognisable terrain features or map identifiers.
+# Historical terrain profiles are retained for migration of local saves.
 CLASSIC_MAPS = (
     ("Dust Bowl", (2, 2, 3, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 3, 2, 2)),
     ("Split Ridge", (2, 2, 3, 4, 6, 8, 10, 12, 13, 14, 12, 10, 8, 6, 4, 3, 3, 4, 6, 8, 10, 12, 14, 13, 12, 10, 8, 6, 4, 3, 2, 2)),
@@ -27,18 +25,42 @@ CLASSIC_MAPS = (
     ("Broken Mesa", (3, 3, 4, 5, 7, 10, 13, 13, 12, 10, 8, 6, 5, 5, 6, 8, 11, 14, 14, 12, 9, 7, 6, 7, 9, 12, 13, 11, 8, 6, 4, 3)),
     ("Cinder Valley", (5, 5, 4, 3, 3, 4, 5, 7, 10, 12, 11, 8, 5, 3, 2, 2, 3, 5, 8, 11, 13, 12, 9, 6, 4, 3, 4, 6, 8, 7, 6, 5)),
 )
-MAPS = tuple((name, profile + tuple(reversed(profile))) for name, profile in CLASSIC_MAPS)
+# Hand-shaped elevation anchors every eight columns. Both stations recreate
+# all 128 columns deterministically from a map ID; no static terrain travels
+# over the radio. Every biome has a distinct, asymmetric silhouette.
+MAP_ANCHORS = (
+    (3, 3, 5, 8, 6, 3, 2, 4, 7, 9, 6, 3, 4, 7, 5, 3, 2),
+    (2, 4, 8, 13, 11, 5, 3, 7, 14, 12, 6, 4, 9, 13, 7, 3, 2),
+    (6, 8, 10, 11, 8, 5, 2, 2, 4, 8, 11, 9, 5, 3, 2, 5, 7),
+    (3, 6, 13, 13, 7, 4, 9, 14, 14, 6, 3, 8, 12, 10, 4, 3, 5),
+    (5, 4, 3, 8, 12, 7, 2, 3, 6, 13, 8, 3, 2, 9, 11, 5, 4),
+)
+
+
+def _generate_terrain(map_id: int) -> tuple[int, ...]:
+    anchors = MAP_ANCHORS[map_id]
+    heights = []
+    for x in range(WIDTH):
+        segment, phase = divmod(x, 8)
+        a, b = anchors[segment], anchors[segment + 1]
+        baseline = (a * (8 - phase) + b * phase + 4) // 8
+        feature = (((x // 3 + map_id * 7) * 17 + (x // 7) * 11) % 7 - 3) // 3
+        heights.append(max(1, min(15, baseline + feature)))
+    return tuple(heights)
+
+
+MAPS = tuple((entry[0], _generate_terrain(i)) for i, entry in enumerate(CLASSIC_MAPS))
 
 # Speed, blast radius, direct damage, and crater depth are fixed game rules.
 WEAPONS = (
-    {"name": "Cannon", "speed": 2400, "radius": 1800, "damage": 38, "crater": 2, "cost": 0, "tag": "free / balanced"},
-    {"name": "High explosive", "speed": 2200, "radius": 3200, "damage": 30, "crater": 4, "cost": 18, "tag": "wide blast"},
-    {"name": "Armor piercing", "speed": 2850, "radius": 850, "damage": 62, "crater": 1, "cost": 22, "tag": "direct hit"},
-    {"name": "Cluster", "speed": 2300, "radius": 1600, "damage": 12, "crater": 2, "cost": 26, "tag": "three-burst spread"},
-    {"name": "Bunker buster", "speed": 1950, "radius": 1200, "damage": 48, "crater": 6, "cost": 30, "tag": "terrain breaker"},
-    {"name": "Mega nuke", "speed": 1950, "radius": 5200, "damage": 52, "crater": 7, "cost": 55, "tag": "massive blast"},
-    {"name": "Needle", "speed": 3200, "radius": 600, "damage": 90, "crater": 1, "cost": 34, "tag": "precision strike"},
-    {"name": "Earth mover", "speed": 2050, "radius": 1400, "damage": 8, "crater": 9, "cost": 28, "tag": "extreme excavation"},
+    {"name": "Cannon", "speed": 3300, "radius": 1800, "damage": 38, "crater": 2, "cost": 0, "tag": "free / balanced"},
+    {"name": "High explosive", "speed": 3100, "radius": 3200, "damage": 30, "crater": 4, "cost": 18, "tag": "wide blast"},
+    {"name": "Armor piercing", "speed": 3900, "radius": 850, "damage": 62, "crater": 1, "cost": 22, "tag": "direct hit"},
+    {"name": "Cluster", "speed": 3200, "radius": 1600, "damage": 12, "crater": 2, "cost": 26, "tag": "three-burst spread"},
+    {"name": "Bunker buster", "speed": 2850, "radius": 1200, "damage": 48, "crater": 6, "cost": 30, "tag": "terrain breaker"},
+    {"name": "Mega nuke", "speed": 2800, "radius": 5200, "damage": 52, "crater": 7, "cost": 55, "tag": "massive blast"},
+    {"name": "Needle", "speed": 4400, "radius": 600, "damage": 90, "crater": 1, "cost": 34, "tag": "precision strike"},
+    {"name": "Earth mover", "speed": 2950, "radius": 1400, "damage": 8, "crater": 9, "cost": 28, "tag": "extreme excavation"},
 )
 WIND_ACCEL = (-3, -2, -1, 0, 1, 2, 3)
 
@@ -53,6 +75,37 @@ def _unpack_heights(payload: bytes) -> list[int]:
     if len(payload) != WIDTH // 2:
         raise ValueError("invalid Scorched Earth terrain data")
     return [height for byte in payload for height in (byte >> 4, byte & 15)]
+
+
+def _pack_changes(terrain: list[int], baseline: tuple[int, ...]) -> bytes:
+    """Encode only deformed columns; baseline scenery is shared game content."""
+    if len(terrain) != WIDTH or any(not 0 <= height <= 15 for height in terrain):
+        raise ValueError("invalid Scorched Earth terrain")
+    columns = [i for i, height in enumerate(terrain) if height != baseline[i]]
+    mask = sum(1 << i for i in columns).to_bytes(WIDTH // 8, "little")
+    values = [terrain[i] for i in columns]
+    if len(values) % 2:
+        values.append(0)
+    return mask + bytes((values[i] << 4) | values[i + 1] for i in range(0, len(values), 2))
+
+
+def _unpack_changes(payload: bytes, offset: int, baseline: tuple[int, ...]) -> tuple[list[int], int]:
+    if len(payload) < offset + WIDTH // 8:
+        raise ValueError("truncated Scorched Earth terrain changes")
+    mask = int.from_bytes(payload[offset:offset + WIDTH // 8], "little")
+    offset += WIDTH // 8
+    count = mask.bit_count()
+    count_bytes = (count + 1) // 2
+    if len(payload) < offset + count_bytes:
+        raise ValueError("truncated Scorched Earth height changes")
+    packed = payload[offset:offset + count_bytes]
+    if count % 2 and packed[-1] & 15:
+        raise ValueError("nonzero padding in Scorched Earth terrain changes")
+    values = [height for byte in packed for height in (byte >> 4, byte & 15)]
+    terrain = list(baseline)
+    for i, column in enumerate(j for j in range(WIDTH) if mask & (1 << j)):
+        terrain[column] = values[i]
+    return terrain, offset + count_bytes
 
 
 def _surface(terrain: list[int] | tuple[int, ...], x: int) -> int:
@@ -151,13 +204,15 @@ class ScorchedEarthGame:
         terrain = list(MAPS[map_id][1])
         # Spawn on an early ridge so the expanded arena doesn't put an
         # impassable mountain directly in front of either cannon.
-        left_spawn = max(range(4, 13), key=lambda x: terrain[x])
+        left_spawn = max(range(12, 28), key=lambda x: terrain[x])
+        right_spawn = max(range(WIDTH - 28, WIDTH - 12), key=lambda x: terrain[x])
         return {"map": map_id, "turn": 0, "round": 0, "hp": [MAX_HP, MAX_HP],
-                "x": [left_spawn, WIDTH - 1 - left_spawn], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
+                "x": [left_spawn, right_spawn], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
                 "credits": [STARTING_CREDITS, STARTING_CREDITS],
                 "ammo": [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)],
                 "terrain": terrain, "last_terrain": list(terrain), "last": [NO_ACTION, NO_ACTION],
-                "last_wind": NO_ACTION, "last_damage": [0, 0], "winner": -1, "finished": False}
+                "last_wind": NO_ACTION, "last_damage": [0, 0], "winner": -1, "finished": False,
+                "craters": [], "last_was_crater": False}
 
     def apply_action(self, state: dict[str, Any], players: tuple[str, ...], actor: str,
                      action: bytes) -> dict[str, Any]:
@@ -177,6 +232,8 @@ class ScorchedEarthGame:
         ammo = [list(stock) for stock in state["ammo"]]
         terrain = list(state["terrain"])
         last_terrain = list(state["last_terrain"])
+        craters = None if state.get("craters") is None else list(state["craters"])
+        last_was_crater = False
         damage = [0, 0]
         last_wind = NO_ACTION
 
@@ -198,6 +255,9 @@ class ScorchedEarthGame:
             credits[player] = min(255, credits[player] + 8 + damage[1 - player] // 3)
             if shot["kind"] != "edge":
                 terrain = _make_crater(terrain, shot["x"], WEAPONS[code]["crater"])
+                last_was_crater = True
+                if craters is not None:
+                    craters.append((max(0, min(WIDTH - 1, round(shot["x"] / SCALE))), code))
         elif code == DRIVE:
             if parameter not in (0, 1):
                 raise ValueError("choose left or right to drive")
@@ -230,6 +290,9 @@ class ScorchedEarthGame:
         else:
             raise ValueError("unknown Scorched Earth turn")
 
+        if code >= len(WEAPONS):
+            last_terrain = list(terrain)
+
         dead = [hp[0] == 0, hp[1] == 0]
         finished = any(dead)
         winner = -1 if dead[0] and dead[1] else 1 if dead[0] else 0 if dead[1] else -1
@@ -237,7 +300,8 @@ class ScorchedEarthGame:
                 "hp": hp, "x": positions, "kits": kits, "fuel": fuel, "shields": shields,
                 "credits": credits, "ammo": ammo,
                 "terrain": terrain, "last_terrain": last_terrain, "last": [code, parameter],
-                "last_wind": last_wind, "last_damage": damage, "winner": winner, "finished": finished}
+                "last_wind": last_wind, "last_damage": damage, "winner": winner, "finished": finished,
+                "craters": craters, "last_was_crater": last_was_crater}
 
     def current_player(self, state: dict[str, Any], players: tuple[str, ...]) -> str | None:
         return None if state["finished"] else players[state["turn"]]
@@ -245,9 +309,32 @@ class ScorchedEarthGame:
     def encode_state(self, state: dict[str, Any]) -> bytes:
         result = 3 if state["finished"] and state["winner"] < 0 else state["winner"] + 1 if state["finished"] else 0
         shields = int(state["shields"][0]) | (int(state["shields"][1]) << 1)
-        return bytes((state["map"], state["turn"], state["round"], *state["hp"], *state["x"],
+        if not 0 <= state["map"] < len(MAPS):
+            raise ValueError("invalid Scorched Earth map ID")
+        baseline = MAPS[state["map"]][1]
+        craters = state.get("craters")
+        # Full snapshots can replay crater events as two-byte (column, weapon)
+        # records. If a marathon match exceeds the compact event budget, use
+        # sparse changed heights for resync only. Ordinary turns stay two bytes.
+        event_snapshot = craters is not None and len(craters) <= 80
+        prefix = (0xC0 if event_snapshot else 0x80) | state["map"]
+        header = bytes((prefix, state["turn"], state["round"], *state["hp"], *state["x"],
                       *state["kits"], *state["fuel"], shields, *state["last"], state["last_wind"],
-                      *state["last_damage"], result)) + _pack_heights(state["terrain"]) + _pack_heights(state["last_terrain"]) + bytes((*state["credits"], *(n for stock in state["ammo"] for n in stock)))
+                      *state["last_damage"], result))
+        if event_snapshot:
+            for x, weapon in craters:
+                if not 0 <= x < WIDTH or not 0 <= weapon < len(WEAPONS):
+                    raise ValueError("invalid Scorched Earth crater history")
+            surface = list(baseline)
+            for x, weapon in craters:
+                surface = _make_crater(surface, x * SCALE, WEAPONS[weapon]["crater"])
+            if surface != state["terrain"]:
+                raise ValueError("Scorched Earth crater history does not match terrain")
+            changes = bytes((len(craters) | (0x80 if state.get("last_was_crater") else 0),)) + bytes(
+                value for crater in craters for value in crater)
+        else:
+            changes = _pack_changes(state["terrain"], baseline) + _pack_changes(state["last_terrain"], baseline)
+        return header + changes + bytes((*state["credits"], *(n for stock in state["ammo"] for n in stock)))
 
     def decode_state(self, payload: bytes) -> dict[str, Any]:
         # Preserve locally stored 9-byte development sessions from the first
@@ -264,28 +351,70 @@ class ScorchedEarthGame:
                             (result == 3 and hp0 == 0 and hp1 == 0))
             if not valid_result or (old_weapon == NO_ACTION and (damage0 or damage1)):
                 raise ValueError("inconsistent legacy Scorched Earth snapshot")
-            terrain = list(CLASSIC_MAPS[map_id][1])
-            terrain += list(reversed(terrain))
+            classic = list(CLASSIC_MAPS[map_id][1]); classic += list(reversed(classic))
+            terrain = classic + list(MAPS[map_id][1][64:])
             last_wind = 3 if old_weapon != NO_ACTION else NO_ACTION
             return {"map": map_id, "turn": turn, "round": 0, "hp": [hp0, hp1],
                     "x": [2, 29], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
                     "credits": [STARTING_CREDITS] * 2, "ammo": [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)],
                     "terrain": terrain, "last_terrain": list(terrain), "last": [old_weapon, old_angle],
                     "last_wind": last_wind, "last_damage": [damage0, damage1],
-                    "winner": result - 1 if result in (1, 2) else -1, "finished": result != 0}
+                    "winner": result - 1 if result in (1, 2) else -1, "finished": result != 0,
+                    "craters": None, "last_was_crater": False}
         classic_size = 52 + 2 * len(WEAPONS)
-        current_size = 84 + 2 * len(WEAPONS)
-        if len(payload) not in (50, classic_size, 82, current_size):
+        wide_size = 84 + 2 * len(WEAPONS)
+        modern = bool(payload and payload[0] & 0x80)
+        event_snapshot = bool(modern and payload[0] & 0x40)
+        if not modern and len(payload) not in (50, classic_size, 82, wide_size):
+            raise ValueError("invalid Scorched Earth snapshot length")
+        if len(payload) < 18:
             raise ValueError("invalid Scorched Earth snapshot length")
         (map_id, turn, round_number, hp0, hp1, x0, x1, kits0, kits1, fuel0, fuel1,
          shields, last_code, last_parameter, last_wind, damage0, damage1, result) = payload[:18]
-        classic = len(payload) in (50, classic_size)
-        packed_size = 16 if classic else WIDTH // 2
-        terrain = [height for byte in payload[18:18 + packed_size] for height in (byte >> 4, byte & 15)]
-        last_terrain = [height for byte in payload[18 + packed_size:18 + packed_size * 2] for height in (byte >> 4, byte & 15)]
-        if classic:
-            terrain += list(reversed(terrain))
-            last_terrain += list(reversed(last_terrain))
+        map_id = map_id & 0x3F if modern else map_id
+        if map_id >= len(MAPS):
+            raise ValueError("invalid Scorched Earth map ID")
+        craters = None
+        last_was_crater = False
+        if modern:
+            if event_snapshot:
+                if len(payload) < 19:
+                    raise ValueError("truncated Scorched Earth crater log")
+                count = payload[18] & 0x7F
+                last_was_crater = bool(payload[18] & 0x80)
+                if count > 80 or len(payload) < 19 + count * 2:
+                    raise ValueError("invalid Scorched Earth crater log")
+                craters = [(payload[19 + i * 2], payload[20 + i * 2]) for i in range(count)]
+                terrain = list(MAPS[map_id][1]); last_terrain = list(terrain)
+                for index, (column, weapon) in enumerate(craters):
+                    if column >= WIDTH or weapon >= len(WEAPONS):
+                        raise ValueError("invalid Scorched Earth crater event")
+                    if last_was_crater and index == count - 1:
+                        last_terrain = list(terrain)
+                    terrain = _make_crater(terrain, column * SCALE, WEAPONS[weapon]["crater"])
+                if not last_was_crater:
+                    last_terrain = list(terrain)
+                if last_was_crater and (not craters or last_code >= len(WEAPONS)):
+                    raise ValueError("invalid last Scorched Earth crater event")
+                offset = 19 + count * 2
+            else:
+                terrain, offset = _unpack_changes(payload, 18, MAPS[map_id][1])
+                last_terrain, offset = _unpack_changes(payload, offset, MAPS[map_id][1])
+            if len(payload) != offset + 2 + 2 * len(WEAPONS):
+                raise ValueError("invalid Scorched Earth snapshot length")
+            credits = list(payload[offset:offset + 2])
+            ammo = [list(payload[offset + 2:offset + 2 + len(WEAPONS)]),
+                    list(payload[offset + 2 + len(WEAPONS):])]
+        else:
+            classic = len(payload) in (50, classic_size)
+            packed_size = 16 if classic else 32
+            terrain = [height for byte in payload[18:18 + packed_size] for height in (byte >> 4, byte & 15)]
+            last_terrain = [height for byte in payload[18 + packed_size:18 + packed_size * 2] for height in (byte >> 4, byte & 15)]
+            if classic:
+                terrain += list(reversed(terrain))
+                last_terrain += list(reversed(last_terrain))
+            terrain += list(MAPS[map_id][1][64:])
+            last_terrain += list(MAPS[map_id][1][64:])
         if (map_id >= len(MAPS) or turn > 1 or max(hp0, hp1) > MAX_HP or
                 not (1 <= x0 < x1 <= WIDTH - 2) or x1 - x0 < MIN_SEPARATION or
                 max(kits0, kits1) > 2 or max(fuel0, fuel1) > 3 or shields > 3 or
@@ -312,22 +441,25 @@ class ScorchedEarthGame:
                         (result == 3 and hp0 == 0 and hp1 == 0))
         if not valid_result:
             raise ValueError("inconsistent Scorched Earth result")
-        if len(payload) in (classic_size, current_size):
+        if not modern and len(payload) in (classic_size, wide_size):
             shop_offset = 18 + packed_size * 2
             credits = list(payload[shop_offset:shop_offset + 2])
             ammo = [list(payload[shop_offset + 2:shop_offset + 2 + len(WEAPONS)]),
                     list(payload[shop_offset + 2 + len(WEAPONS):])]
             if ammo[0][0] != 255 or ammo[1][0] != 255:
                 raise ValueError("invalid unlimited cannon ammunition")
-        else:
+        elif not modern:
             credits = [STARTING_CREDITS] * 2
             ammo = [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)]
+        if ammo[0][0] != 255 or ammo[1][0] != 255:
+            raise ValueError("invalid unlimited cannon ammunition")
         return {"map": map_id, "turn": turn, "round": round_number, "hp": [hp0, hp1], "x": [x0, x1],
                 "kits": [kits0, kits1], "fuel": [fuel0, fuel1], "shields": [bool(shields & 1), bool(shields & 2)],
                 "credits": credits, "ammo": ammo,
                 "terrain": terrain, "last_terrain": last_terrain, "last": [last_code, last_parameter],
                 "last_wind": last_wind, "last_damage": [damage0, damage1],
-                "winner": result - 1 if result in (1, 2) else -1, "finished": result != 0}
+                "winner": result - 1 if result in (1, 2) else -1, "finished": result != 0,
+                "craters": craters, "last_was_crater": last_was_crater}
 
     def describe_action(self, action: bytes) -> str:
         if len(action) != 2:

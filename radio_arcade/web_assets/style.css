@@ -228,8 +228,17 @@ select.field, .settings-card select { appearance: none; background-image: linear
 
 .island-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(190px, .8fr); gap: 14px; align-items: start; }
 .tank-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+.tank-navigation { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border: 1px solid rgba(178,198,230,.18); border-radius: 12px; background: rgba(23,36,50,.82); }
+.tank-nav-label { color: #a6c6bd; font: 700 10px 'Space Grotesk', sans-serif; letter-spacing: .07em; white-space: nowrap; }
+.tank-minimap { flex: 1 1 180px; min-width: 0; height: 54px; border: 1px solid #354c56; border-radius: 6px; background: linear-gradient(#102033,#263c4a); cursor: crosshair; touch-action: none; }
+.tank-minimap-ground { fill: #668a72; stroke: #b6d09c; stroke-width: 2; }
+.tank-minimap-player.player-0 { fill: #72e9c7; stroke: #0d302c; stroke-width: 2; }
+.tank-minimap-player.player-1 { fill: #ffbb70; stroke: #53311f; stroke-width: 2; }
+.tank-minimap-viewport { fill: rgba(139,230,211,.13); stroke: #a8f9e2; stroke-width: 3; pointer-events: none; }
+.tank-zoom { min-width: 34px; height: 34px; font-size: 20px; flex: 0 0 auto; padding: 0; }
+.tank-zoom-label { font-size: 11px; font-weight: 700; color: #bcdbd1; min-width: 35px; text-align: center; }
 .tank-arena { min-width: 0; overflow-x: auto; overflow-y: hidden; border: 1px solid rgba(178,198,230,.24); border-radius: 13px; background: #111b29; box-shadow: inset 0 0 40px rgba(95,160,193,.08), 0 12px 36px rgba(0,0,0,.19); scrollbar-color: #60817b #142333; }
-.tank-map { display: block; width: max(100%, 1360px); height: auto; }
+.tank-map { display: block; height: min(66vh, 630px); min-height: 420px; }
 .tank-pan-hint { color: #91a5b8; font-size: 12px; letter-spacing: .015em; margin: -3px 0 0; }
 .tank-sky { fill: url(#scorched-sky); }
 .tank-moon { fill: #e6edcf; opacity: .75; filter: drop-shadow(0 0 20px rgba(223,236,194,.48)); }
@@ -408,7 +417,9 @@ select.field, .settings-card select { appearance: none; background-image: linear
   .arena-panel > .session-actions > .action-input { flex: 1 1 100%; }
   .arena-body { min-height: 320px; }
   .tank-layout { grid-template-columns: minmax(0, 1fr); }
-  .tank-map { width: 1180px; }
+  .tank-map { height: 510px; min-height: 0; }
+  .tank-navigation { flex-wrap: wrap; }
+  .tank-nav-label { width: 100%; }
   .station-panel { grid-column: auto; min-height: calc(100dvh - 145px); }
   .station-section { padding-bottom: 12px; }
   .chat-section { min-height: 210px; border-top: 1px solid var(--line); border-left: 0; padding: 14px 0 0; }

@@ -881,7 +881,10 @@ class ArcadeWindow(QMainWindow):
         if animate:
             self._last_scorched_animation_key = shot_key
         battlefield = ScorchedBattlefield(view, animate=animate)
-        battlefield.setFixedSize(view["width"] * 23, view["sky_height"] * 23)
+        # Maintain a consistent, readable vertical view while letting the
+        # extra horizontal world extend beyond the desktop viewport.
+        scene_scale = 14
+        battlefield.setFixedSize(view["width"] * scene_scale, view["sky_height"] * scene_scale)
         map_scroll = QScrollArea(); map_scroll.setObjectName("battlefieldScroll")
         map_scroll.setWidgetResizable(False); map_scroll.setWidget(battlefield)
         map_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -957,7 +960,7 @@ class ArcadeWindow(QMainWindow):
         box.addStretch(1)
         scroll.setWidget(controls); layout.addWidget(scroll, 2)
         if tank:
-            map_scroll.horizontalScrollBar().setValue(max(0, int(tank["x"] * 23 - map_scroll.viewport().width() / 2)))
+            map_scroll.horizontalScrollBar().setValue(max(0, int(tank["x"] * scene_scale - map_scroll.viewport().width() / 2)))
         self.board_layout.addWidget(host)
         preview()
 

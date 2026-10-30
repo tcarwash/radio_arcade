@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (selector, root = document) => root.querySelector(selector);
-const state = { snapshot: null, selectedId: null, session: null, listSignature: "", sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null };
+const state = { snapshot: null, selectedId: null, session: null, listSignature: "", sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null, tankZoom: 1 };
 const RESOURCE_META = [
   ["timber", "♣"], ["clay", "⬟"], ["wool", "✿"], ["grain", "✳"], ["ore", "◈"],
 ];
@@ -600,7 +600,9 @@ function renderScorchedEarth(session, view, host) {
   arena.setAttribute("tabindex", "0");
   arena.setAttribute("aria-label", "Scrollable battlefield. Swipe, drag the scrollbar, or use horizontal arrow keys to pan.");
   const svg = svgElement("svg", { class: "tank-map", viewBox: `0 0 ${view.width * 24} ${view.sky_height * 24}`,
+    preserveAspectRatio: "none",
     role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
+  svg.style.width = `${Math.round(view.width * 20 * state.tankZoom)}px`;
   const width = view.width * 24, height = view.sky_height * 24;
   const defs = svgElement("defs");
   const skyGradient = svgElement("linearGradient", { id: "scorched-sky", x1: "0%", y1: "0%", x2: "0%", y2: "100%" });
@@ -683,7 +685,56 @@ function renderScorchedEarth(session, view, host) {
     r: Math.max(8, view.weapons[view.impact.weapon].radius * 24), class: "tank-impact" }));
   const preview = svgElement("polyline", { class: "tank-preview-trajectory", points: "" });
   arena.append(svg);
-  const panHint = node("p", "tank-pan-hint", `↔ ${view.width}-column battlefield · Scroll sideways to scout the entire map`);
+  const panHint = node("p", "tank-pan-hint", `↔ ${view.width}-column battlefield · Drag the minimap or scroll to scout`);
+  const navigation = node("div", "tank-navigation");
+  const navLabel = node("span", "tank-nav-label", `${view.map_name.toUpperCase()}  ·  SECTOR MAP`);
+  const overview = svgElement("svg", { class: "tank-minimap", viewBox: `0 0 ${view.width * 8} 100`,
+    preserveAspectRatio: "none", role: "img", "aria-label": "Interactive overview of the entire battlefield" });
+  const overviewPoints = [`0,100`, ...view.terrain.map((h, x) => `${x * 8 + 4},${100 - h * 5}`), `${view.width * 8},100`];
+  overview.append(svgElement("polygon", { points: overviewPoints.join(" "), class: "tank-minimap-ground" }));
+  for (const [index, tank] of view.tanks.entries()) {
+    overview.append(svgElement("circle", { cx: tank.x * 8, cy: 100 - tank.world_y * 5, r: 7,
+      class: `tank-minimap-player player-${index}` }));
+  }
+  const visibleRegion = svgElement("rect", { x: 0, y: 0, width: 300, height: 100, rx: 4, class: "tank-minimap-viewport" });
+  overview.append(visibleRegion);
+  const zoomOut = node("button", "button tank-zoom", "−"); zoomOut.type = "button"; zoomOut.title = "Zoom out";
+  const zoomIn = node("button", "button tank-zoom", "+"); zoomIn.type = "button"; zoomIn.title = "Zoom in";
+  const zoomText = node("span", "tank-zoom-label", `${Math.round(state.tankZoom * 100)}%`);
+  function updateMinimap() {
+    const mapWidth = svg.getBoundingClientRect().width || 1;
+    const viewWidth = Math.min(view.width * 8, view.width * 8 * arena.clientWidth / mapWidth);
+    visibleRegion.setAttribute("width", viewWidth);
+    visibleRegion.setAttribute("x", view.width * 8 * arena.scrollLeft / mapWidth);
+  }
+  function centerOn(fraction) {
+    arena.scrollLeft = Math.max(0, fraction * svg.getBoundingClientRect().width - arena.clientWidth / 2);
+    updateMinimap();
+  }
+  function panOverview(event) {
+    const rect = overview.getBoundingClientRect();
+    if (rect.width) centerOn(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)));
+  }
+  overview.addEventListener("pointerdown", event => {
+    overview.setPointerCapture(event.pointerId);
+    panOverview(event);
+  });
+  overview.addEventListener("pointermove", event => {
+    if (overview.hasPointerCapture(event.pointerId)) panOverview(event);
+  });
+  overview.addEventListener("pointerup", event => overview.releasePointerCapture(event.pointerId));
+  function zoomBy(delta) {
+    const mapWidth = svg.getBoundingClientRect().width || 1;
+    const centerFraction = (arena.scrollLeft + arena.clientWidth / 2) / mapWidth;
+    state.tankZoom = Math.max(.75, Math.min(1.6, Math.round((state.tankZoom + delta) * 100) / 100));
+    svg.style.width = `${Math.round(view.width * 20 * state.tankZoom)}px`;
+    zoomText.textContent = `${Math.round(state.tankZoom * 100)}%`;
+    centerOn(centerFraction);
+  }
+  zoomOut.addEventListener("click", () => zoomBy(-.2));
+  zoomIn.addEventListener("click", () => zoomBy(.2));
+  arena.addEventListener("scroll", updateMinimap, { passive: true });
+  navigation.append(navLabel, overview, zoomOut, zoomText, zoomIn);
   const side = node("aside", "tank-side");
   side.append(node("div", "tank-map-name", view.map_name), node("div", "tank-wind", `${view.wind.direction} ${view.wind.label} · shifts each turn`), node("div", "tank-help", isPractice()
     ? "Aim with the wind and reshape the hills. Weapons are unlimited; fuel and repair kits are scarce."
@@ -757,13 +808,14 @@ function renderScorchedEarth(session, view, host) {
   side.append(shop);
   const callout = node("div", "tank-shot-result", view.last_action ? `${view.last_actor} ${view.last_action}` : "Take the first turn");
   side.append(callout);
-  wrap.append(arena, panHint, side); host.append(wrap);
+  wrap.append(navigation, arena, panHint, side); host.append(wrap);
   // On a panoramic map, start near the tank whose turn it is; players can pan
   // across the entire battlefield with touch, trackpad or the scrollbar.
   const activeViewTank = view.tanks.find(tank => tank.player === view.turn);
   if (activeViewTank) requestAnimationFrame(() => {
     const x = activeViewTank.x / view.width * svg.getBoundingClientRect().width;
     arena.scrollLeft = Math.max(0, x - arena.clientWidth * .35);
+    updateMinimap();
   });
   const actor = view.last_actor;
   const shotKey = `${session.id}:${session.revision}`;
