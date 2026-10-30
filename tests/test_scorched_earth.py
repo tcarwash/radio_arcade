@@ -12,6 +12,9 @@ class ScorchedEarthTests(unittest.TestCase):
         self.players = ("AG7SU", "N0CALL")
         self.state = self.game.new_state(self.players)
 
+    def test_desktop_and_web_are_supported(self):
+        self.assertEqual(self.game.ui_clients, ("desktop", "web"))
+
     def test_snapshot_round_trip(self):
         payload = self.game.encode_state(self.state)
         self.assertEqual(len(payload), 52 + 2 * len(WEAPONS))

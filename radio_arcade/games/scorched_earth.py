@@ -139,7 +139,7 @@ class ScorchedEarthGame:
     key = "scorched-earth"
     name = "Scorched Earth"
     min_players = max_players = 2
-    ui_clients = ("web",)
+    ui_clients = ("desktop", "web")
 
     def new_state(self, players: tuple[str, ...]) -> dict[str, Any]:
         if len(players) != 2 or len(set(players)) != 2:

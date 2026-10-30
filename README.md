@@ -1,6 +1,6 @@
 # Radio Arcade
 
-Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Open Word Tiles, and Scorched Earth (web only).
+Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Open Word Tiles, and Scorched Earth (desktop and web).
 
 ## Install and run
 

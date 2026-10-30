@@ -8,11 +8,12 @@ import html
 import sys
 from typing import Callable
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-    QSplitter, QStackedWidget, QVBoxLayout, QWidget)
+    QSlider, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
 from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
@@ -20,6 +21,85 @@ from .store import SessionStore
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
 from .dx_cluster import build_spot, post_spot
+from .games.scorched_earth import _trace_shot, _wind
+
+
+class ScorchedBattlefield(QWidget):
+    """Resolution-independent native rendering of the shared artillery state."""
+
+    def __init__(self, view: dict, parent=None):
+        super().__init__(parent)
+        self.view = view
+        self.preview: list[tuple[int, int]] = []
+        self.setMinimumSize(240, 165)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setObjectName("scorchedBattlefield")
+
+    def set_preview(self, path: list[tuple[int, int]]):
+        self.preview = path
+        self.update()
+
+    def paintEvent(self, _event):
+        view = self.view
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        margin = 12
+        scale = min((self.width() - 2 * margin) / 32, (self.height() - 2 * margin) / 24)
+        ox = (self.width() - 32 * scale) / 2
+        oy = (self.height() - 24 * scale) / 2
+        painter.translate(ox, oy)
+        painter.scale(scale, scale)
+        sky = QLinearGradient(0, 0, 0, 24)
+        sky.setColorAt(0, QColor("#091525")); sky.setColorAt(1, QColor("#28445b"))
+        painter.fillRect(0, 0, 32, 24, QBrush(sky))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(217, 232, 251, 95))
+        for i in range(46):
+            painter.drawEllipse(QPointF(((i * 187 + 43) % 768) / 24,
+                                        ((i * 79 + 17) % 288) / 24), .035 if i % 5 else .07,
+                                .035 if i % 5 else .07)
+        terrain = QPolygonF([QPointF(0, 24)] +
+                            [QPointF(x + .5, 24 - height) for x, height in enumerate(view["terrain"])] +
+                            [QPointF(32, 24)])
+        painter.setBrush(QColor("#455f48"))
+        painter.setPen(QPen(QColor("#91bd89"), .11))
+        painter.drawPolygon(terrain)
+        def draw_path(points, color, dotted=False):
+            if len(points) < 2:
+                return
+            path = QPainterPath(QPointF(points[0][0], 24 - points[0][1]))
+            for x, y in points[1:]:
+                path.lineTo(x, 24 - y)
+            pen = QPen(QColor(color), .09 if dotted else .12)
+            if dotted:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush); painter.drawPath(path)
+        draw_path(view.get("trajectory", []), "#ec996f", True)
+        draw_path([(x / 1000, y / 1000) for x, y in self.preview], "#dceeff", True)
+        impact = view.get("impact")
+        if impact and impact["kind"] != "edge":
+            painter.setPen(QPen(QColor("#ef9767"), .09, Qt.PenStyle.DashLine))
+            painter.setBrush(QColor(240, 125, 76, 28))
+            painter.drawEllipse(QPointF(impact["x"], 24 - impact["y"]),
+                                view["weapons"][impact["weapon"]]["radius"],
+                                view["weapons"][impact["weapon"]]["radius"])
+        for index, tank in enumerate(view["tanks"]):
+            x, y = tank["x"], 24 - tank["world_y"]
+            if tank["shielded"]:
+                painter.setPen(QPen(QColor("#74d9fb"), .12))
+                painter.setBrush(QColor(91, 197, 241, 35))
+                painter.drawEllipse(QPointF(x, y), 1.0, .8)
+            painter.setPen(QPen(QColor("#142333"), .11))
+            painter.setBrush(QColor("#76e5c8" if index == 0 else "#f3b476"))
+            painter.drawRoundedRect(QRectF(x - .65, y - .25, 1.3, .55), .15, .15)
+            painter.setPen(QPen(QColor("#e7edf4"), .15, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawLine(QPointF(x, y), QPointF(x + (.9 if index == 0 else -.9), y))
+            painter.setPen(QColor("#ffffff"))
+            painter.setFont(QFont("Sans Serif", 7))
+            painter.save(); painter.scale(1 / scale, 1 / scale)
+            painter.drawText(QPointF(x * scale - 22, (y - .7) * scale), f"{tank['hp']} HP")
+            painter.restore()
+        painter.end()
 
 
 class SettingsDialog(QDialog):
@@ -572,7 +652,9 @@ class ArcadeWindow(QMainWindow):
 
     def _render_state(self, session: dict):
         view = session["view"]
-        if view["kind"] == "grid":
+        if view["kind"] == "scorched-earth":
+            self._render_scorched(session, view)
+        elif view["kind"] == "grid":
             board = QWidget(); grid = QGridLayout(board); grid.setSpacing(10)
             my_turn = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"] and (self.settings.transport == "practice" or self.settings.tx_enabled)
             for cell, value in enumerate(view["cells"]):
@@ -684,6 +766,83 @@ class ArcadeWindow(QMainWindow):
             send.setEnabled(not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active")
             send.clicked.connect(lambda: self._submit_hex_action(raw.text()))
             box.addWidget(raw); box.addWidget(send); self.board_layout.addWidget(panel)
+
+    def _render_scorched(self, session: dict, view: dict):
+        """Native artillery controls; only two-byte moves enter the shared engine."""
+        host = QWidget(); layout = QHBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0)
+        battlefield = ScorchedBattlefield(view)
+        layout.addWidget(battlefield, 3)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(180)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        controls = QWidget(); box = QVBoxLayout(controls)
+        box.setContentsMargins(6, 2, 6, 2); box.setSpacing(9)
+        box.addWidget(QLabel(f"{view['map_name']} · turn {view['round'] + 1}"))
+        wind = view["wind"]
+        box.addWidget(QLabel(f"Wind {wind['direction']} {wind['label']}"))
+        can_play = (not self.settings.observer_mode and session["status"] == "active"
+                    and not session["pending_action"] and
+                    (self.settings.transport == "practice" or
+                     (self.settings.tx_enabled and session["current_player"] == self.settings.callsign)))
+        actor = session["current_player"] if self.settings.transport == "practice" else self.settings.callsign
+        tank = next((item for item in view["tanks"] if item["player"] == actor), None)
+        for item in view["tanks"]:
+            box.addWidget(QLabel(f"{item['player']}: {item['hp']} HP · ¤{item['credits']} · "
+                                 f"{item['fuel']} fuel · {item['repair_kits']} repairs"))
+        weapon = QComboBox(); weapon.setObjectName("scorchedWeapon")
+        for item in view["weapons"]:
+            stock = tank["ammo"][item["id"]] if tank else 0
+            label = f"{item['name']} · {'∞' if item['id'] == 0 else stock} rounds"
+            weapon.addItem(label, item["id"])
+            weapon.model().item(item["id"]).setEnabled(bool(stock))
+            weapon.setItemData(item["id"], f"{item['tag']} · blast {item['radius']:.1f}", Qt.ItemDataRole.ToolTipRole)
+        box.addWidget(weapon)
+        angle_label = QLabel("Angle: 45°")
+        angle = QSlider(Qt.Orientation.Horizontal); angle.setObjectName("scorchedAngle")
+        angle.setRange(view["min_angle"], view["max_angle"]); angle.setValue(45)
+        box.addWidget(angle_label); box.addWidget(angle)
+        def preview():
+            angle_label.setText(f"Angle: {angle.value()}°")
+            if not can_play or not tank:
+                battlefield.set_preview([]); return
+            game = self.engine.registry.by_id(session["game_id"])
+            saved = game.decode_state(session["state"])
+            shot = _trace_shot(saved["terrain"], saved["x"], saved["turn"],
+                               int(weapon.currentData()), angle.value(), _wind(saved["map"], saved["round"]))
+            battlefield.set_preview(shot["path"])
+        angle.valueChanged.connect(preview)
+        weapon.currentIndexChanged.connect(preview)
+        fire = QPushButton("Fire weapon"); fire.setObjectName("scorchedFire")
+        fire.setEnabled(can_play and bool(tank))
+        fire.clicked.connect(lambda: self._submit_action(bytes((int(weapon.currentData()), angle.value()))))
+        box.addWidget(fire)
+        movement = QHBoxLayout()
+        for direction, label in ((0, "◀ Drive"), (1, "Drive ▶")):
+            button = QPushButton(label)
+            candidate = max(1, min(30, tank["x"] + (-2 if direction == 0 else 2))) if tank else 0
+            other = next((item for item in view["tanks"] if item is not tank), None)
+            button.setEnabled(bool(can_play and tank and tank["fuel"] and other and
+                                   abs(candidate - other["x"]) >= 6 and candidate != tank["x"]))
+            button.clicked.connect(lambda _checked=False, d=direction: self._submit_action(bytes((view["actions"]["drive"], d))))
+            movement.addWidget(button)
+        box.addLayout(movement)
+        repair = QPushButton("Repair +24 HP")
+        repair.setEnabled(bool(can_play and tank and tank["repair_kits"] and tank["hp"] < 100))
+        repair.clicked.connect(lambda: self._submit_action(bytes((view["actions"]["repair"], 0))))
+        shield = QPushButton("Raise shield")
+        shield.setEnabled(bool(can_play and tank and not tank["shielded"]))
+        shield.clicked.connect(lambda: self._submit_action(bytes((view["actions"]["shield"], 0))))
+        box.addWidget(repair); box.addWidget(shield)
+        box.addWidget(QLabel("ARMORY · buying uses your turn"))
+        for item in view["weapons"][1:]:
+            buy = QPushButton(f"{item['name']} · ¤{item['cost']}")
+            buy.setEnabled(bool(can_play and tank and tank["credits"] >= item["cost"] and tank["ammo"][item["id"]] < 254))
+            buy.setToolTip(f"Buy one {item['name']} round · {item['tag']}")
+            buy.clicked.connect(lambda _checked=False, i=item["id"]: self._submit_action(bytes((view["actions"]["buy"], i))))
+            box.addWidget(buy)
+        box.addStretch(1)
+        scroll.setWidget(controls); layout.addWidget(scroll, 2)
+        self.board_layout.addWidget(host)
+        preview()
 
     def _refresh_chat(self, sid: str | None):
         if not self.engine or not sid or sid != self.selected_id:
