@@ -720,7 +720,7 @@ class ArcadeTUI(App):
                            allow_blank=False, id="nim-pile"),
                     Input("1", placeholder="Amount", id="nim-amount"),
                     Button("Take", id="nim-take", variant="primary",
-                           disabled=(self.settings.transport != "practice" and (not self.settings.tx_enabled or turn != self.settings.callsign)) or session["status"] != "active"),
+                           disabled=self.settings.observer_mode or (self.settings.transport != "practice" and (not self.settings.tx_enabled or turn != self.settings.callsign)) or session["status"] != "active" or bool(session["pending_action"])),
                     id="nim-controls")
                 await board.mount(row)
             elif state["kind"] == "word-tiles":
@@ -961,8 +961,10 @@ class ArcadeTUI(App):
             amount = int(self.query_one("#nim-amount", Input).value)
         except (ValueError, TypeError):
             self.notify("Enter a positive item count.", severity="error"); return
-        if not 1 <= amount <= 255 or not 0 <= pile <= 255:
-            self.notify("Enter an item count from 1 to 255.", severity="error"); return
+        session = self.engine.session(self.selected_id)
+        available = session["view"]["piles"]
+        if not 0 <= pile < len(available) or not 1 <= amount <= available[pile]:
+            self.notify("Choose a non-empty pile and take at most its remaining stones.", severity="error"); return
         self._run_action(partial(self.engine.legal_action, self.selected_id, bytes((pile, amount))))
 
     def _scrabble_state(self):

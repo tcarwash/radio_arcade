@@ -615,10 +615,19 @@ class ArcadeWindow(QMainWindow):
                     pebble = QLabel("◆"); pebble.setStyleSheet("color:#eeeeee;font-size:20px" if self.settings.color_scheme == "monochrome" else "color:#66d9c2;font-size:20px")
                     row.addWidget(pebble)
                 row.addWidget(QLabel(str(count))); box.addLayout(row)
-            controls = QHBoxLayout(); pile = QComboBox(); amount = QSpinBox(); amount.setRange(1, 7)
-            pile.addItems([f"Pile {i+1}" for i in range(len(view["piles"]))])
+            controls = QHBoxLayout(); pile = QComboBox(); amount = QSpinBox()
+            for i, count in enumerate(view["piles"]):
+                pile.addItem(f"Pile {i+1} · {count} remaining", i)
+                if count == 0:
+                    pile.model().item(i).setEnabled(False)
+            first = next((i for i, count in enumerate(view["piles"]) if count), 0)
+            pile.setCurrentIndex(first)
+            def update_amount(index):
+                amount.setRange(1, max(1, view["piles"][index]))
+            pile.currentIndexChanged.connect(update_amount)
+            update_amount(first)
             take = QPushButton("Take items"); take.setObjectName("primaryButton")
-            take.setEnabled(not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active")
+            take.setEnabled(not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"])
             take.clicked.connect(lambda: self._submit_action(bytes((pile.currentIndex(), amount.value()))))
             controls.addWidget(pile); controls.addWidget(amount); controls.addWidget(take); box.addLayout(controls)
             self.board_layout.addWidget(host)

@@ -107,6 +107,8 @@
           <label>Command port<input name="command_port" type="number" min="1" max="65535" value="8300"></label>
           <label>KISS port<input name="kiss_port" type="number" min="1" max="65535" value="8100"></label>
           <label>Color scheme<select name="color_scheme"><option value="midnight">Midnight</option><option value="daylight">Daylight</option><option value="monochrome">Monochrome</option></select></label>
+          <label>DX Cluster URL<input name="dx_cluster_url" type="url" placeholder="https://cluster.example.org"></label>
+          <label class="check-setting"><input name="sound_enabled" type="checkbox"> Invitation and turn sounds <span>Desktop and terminal clients</span></label>
           <label class="check-setting"><input name="observer_mode" type="checkbox"> Observer mode <span>Receive-only · broadcast only</span></label>
         </div>
         <p id="settings-error" class="form-error" hidden></p>

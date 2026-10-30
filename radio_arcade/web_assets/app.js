@@ -41,7 +41,11 @@ function isPractice() { return state.snapshot?.transport === "practice"; }
 function isObserver() { return Boolean(state.snapshot?.observer_mode); }
 function canAct(session = state.session) {
   return Boolean(session && !isObserver() && session.status === "active" && !session.has_pending_action &&
+    (isPractice() || state.snapshot?.tx_enabled) &&
     (isPractice() || session.current_player === state.snapshot?.callsign));
+}
+function canTransmit() {
+  return Boolean(state.snapshot?.ready && !isObserver() && (isPractice() || state.snapshot?.tx_enabled));
 }
 
 function setConnection(snapshot) {
@@ -198,36 +202,36 @@ function renderSessionActions(session) {
   actions.replaceChildren();
   const command = (name, extra = {}) => sendCommand(name, { session_id: session.id, ...extra });
   const owner = session.coordinator === state.snapshot.callsign;
-  if (!isObserver() && session.status === "invited") addButton(actions, "Accept invitation", () => command("accept_invite"), true);
+  if (!isObserver() && session.status === "invited") addButton(actions, "Accept invitation", () => command("accept_invite"), true, !canTransmit());
   if (!isObserver() && session.hosted && ["lobby", "joining"].includes(session.status) && !session.players.includes(state.snapshot.callsign))
-    addButton(actions, session.status === "joining" ? "Retry join request" : "Join hosted table", () => command("join_game"), true);
+    addButton(actions, session.status === "joining" ? "Retry join request" : "Join hosted table", () => command("join_game"), true, !canTransmit());
   if (!isObserver() && session.hosted && session.status === "lobby" && owner) {
     const order = addActionInput(actions, `Turn order · ${state.snapshot.callsign},GUEST1,…`, "reply-order");
     const row = node("div", "action-row"); actions.append(row);
-    addButton(row, "Set reply order", () => command("set_reply_order", { order: order.value }));
-    addButton(row, "Re-announce", () => command("announce_game"));
+    addButton(row, "Set reply order", () => command("set_reply_order", { order: order.value }), false, !canTransmit());
+    addButton(row, "Re-announce", () => command("announce_game"), false, !canTransmit());
   }
   if (!isObserver() && !session.hosted && session.status === "lobby" && owner) {
     const peer = addActionInput(actions, "Station callsign to invite", "invite-peer");
-    addButton(actions, "Invite station", () => command("invite_player", { peer: peer.value }), false);
+    addButton(actions, "Invite station", () => command("invite_player", { peer: peer.value }), false, !canTransmit());
     if (session.invited?.length) {
       const cancelPeer = addActionInput(actions, "Pending station callsign", "cancel-peer");
-      addButton(actions, "Cancel invitation", () => command("cancel_invitation", { peer: cancelPeer.value }));
+      addButton(actions, "Cancel invitation", () => command("cancel_invitation", { peer: cancelPeer.value }), false, !canTransmit());
     }
   }
   if (!isObserver() && session.status === "lobby" && owner)
-    addButton(actions, "Start this game", () => command("start_game"), true, session.invited?.length > 0);
+    addButton(actions, "Start this game", () => command("start_game"), true, !canTransmit() || session.invited?.length > 0);
   if (isObserver() || (!owner && ["active", "finished"].includes(session.status)))
     addButton(actions, isObserver() ? "Request snapshot · transmits" : "Sync / recover state", () => {
       if (isObserver() && !window.confirm("This sends one synchronization request over the radio. Continue?")) return;
       command("request_sync");
-    });
+    }, false, !state.snapshot?.tx_enabled && !isPractice());
   if (!isObserver() && session.hosted && session.has_pending_action)
-    addButton(actions, "Retry pending move", () => command("resend_pending_action"));
+    addButton(actions, "Retry pending move", () => command("resend_pending_action"), false, !canTransmit());
   if (!isObserver() && state.snapshot.transport === "connected") {
     const peer = addActionInput(actions, "Station callsign", "peer-connect");
     const row = node("div", "action-row"); actions.append(row);
-    addButton(row, "Connect / resume", () => sendCommand("connect_peer", { peer: peer.value }));
+    addButton(row, "Connect / resume", () => sendCommand("connect_peer", { peer: peer.value }), false, !canTransmit());
     addButton(row, "Disconnect", () => sendCommand("disconnect_peer"));
   }
   addButton(actions, "Delete game from this device", () => {
@@ -279,10 +283,20 @@ function renderNim(session, view, host) {
   view.piles.forEach((count, index) => {
     const option = node("option", "", `Pile ${index + 1} · ${count}`); option.value = index; option.disabled = count === 0; pile.append(option);
   });
-  const amount = node("input", "field"); amount.type = "number"; amount.min = "1"; amount.max = "7"; amount.value = "1"; amount.setAttribute("aria-label", "Number to take");
+  pile.value = String(view.piles.findIndex(count => count > 0));
+  const amount = node("input", "field"); amount.type = "number"; amount.min = "1"; amount.value = "1"; amount.setAttribute("aria-label", "Number to take");
+  function updateLimit() { const available = view.piles[Number(pile.value)] || 0; amount.max = String(available); if (Number(amount.value) > available) amount.value = String(Math.max(1, available)); }
+  pile.addEventListener("change", updateLimit); updateLimit();
   const take = node("button", "button primary", "Take stones"); take.type = "submit"; take.disabled = !canAct(session);
   controls.append(label, pile, amount, take);
-  controls.addEventListener("submit", event => { event.preventDefault(); submitAction([Number(pile.value), Number(amount.value)]); });
+  controls.addEventListener("submit", event => {
+    event.preventDefault();
+    const selected = Number(pile.value), count = Number(amount.value);
+    if (!canAct(session) || !Number.isInteger(count) || count < 1 || count > view.piles[selected]) {
+      notify("Choose a non-empty pile and take no more stones than it contains."); return;
+    }
+    submitAction([selected, count]);
+  });
   host.append(controls);
 }
 
@@ -792,17 +806,19 @@ function renderSession(session, messages) {
   renderRoster(session);
   const actionSignature = JSON.stringify([session.id, session.status, session.players, session.invited,
     session.hosted, session.coordinator, session.has_pending_action, state.snapshot.transport,
-    state.snapshot.observer_mode, state.snapshot.callsign]);
+    state.snapshot.observer_mode, state.snapshot.callsign, state.snapshot.tx_enabled]);
   if (actionSignature !== state.actionSignature) {
     state.actionSignature = actionSignature;
     renderSessionActions(session);
   }
-  const chatEnabled = !isObserver() && ["active", "finished"].includes(session.status);
+  const chatEnabled = canTransmit() && ["active", "finished"].includes(session.status);
   $("#chat-input").disabled = !chatEnabled;
   $("#chat-send").disabled = !chatEnabled;
+  updateChatCount();
   renderChat(messages);
-  if (signature !== state.sessionSignature) {
-    state.sessionSignature = signature;
+  const gameSignature = JSON.stringify([signature, state.snapshot.tx_enabled, state.snapshot.observer_mode]);
+  if (gameSignature !== state.sessionSignature) {
+    state.sessionSignature = gameSignature;
     renderGame(session);
   }
 }
@@ -819,9 +835,9 @@ async function refresh() {
     const hostedOption = tableMode.querySelector('option[value="hosted"]');
     hostedOption.disabled = snapshot.transport !== "broadcast" || snapshot.observer_mode;
     if (hostedOption.disabled && tableMode.value === "hosted") tableMode.value = "direct";
-    $("#create-game").disabled = !snapshot.ready || snapshot.observer_mode;
-    $("#peer-input").disabled = !snapshot.ready || snapshot.observer_mode;
-    $("#game-select").disabled = !snapshot.ready || snapshot.observer_mode;
+    $("#create-game").disabled = !canTransmit();
+    $("#peer-input").disabled = !canTransmit();
+    $("#game-select").disabled = !canTransmit();
     renderSessionList(snapshot.sessions || []);
     if (!snapshot.ready && snapshot.callsign && snapshot.error) $("#transport-label").textContent = `OFFLINE · ${snapshot.error}`;
     if (!snapshot.callsign && !state.setupShown) { state.setupShown = true; openSettings(); }
@@ -885,10 +901,11 @@ function submitAction(bytes) {
 function openSettings() {
   const form = $("#settings-form");
   if (state.snapshot) {
-    for (const key of ["callsign", "host", "transport", "group", "broadcast_mode", "command_port", "kiss_port", "color_scheme"]) {
+    for (const key of ["callsign", "host", "transport", "group", "broadcast_mode", "command_port", "kiss_port", "color_scheme", "dx_cluster_url"]) {
       if (form.elements[key]) form.elements[key].value = state.snapshot[key] ?? "";
     }
     form.elements.observer_mode.checked = Boolean(state.snapshot.observer_mode);
+    form.elements.sound_enabled.checked = Boolean(state.snapshot.sound_enabled);
   }
   $("#settings-error").hidden = true;
   $("#settings-dialog").showModal();
@@ -900,6 +917,7 @@ $("#tx-toggle").addEventListener("click", async () => {
   try {
     state.snapshot = await request("/api/tx", { method: "POST", body: JSON.stringify({ enabled: !state.snapshot.tx_enabled }) });
     setConnection(state.snapshot);
+    await refresh();
   } catch (error) { notify(error.message); }
 });
 $("#settings-close").addEventListener("click", () => $("#settings-dialog").close());
@@ -910,7 +928,7 @@ $("#settings-form").addEventListener("submit", async event => {
   const data = Object.fromEntries(new FormData(form).entries());
   data.command_port = Number(data.command_port); data.kiss_port = Number(data.kiss_port);
   data.observer_mode = form.elements.observer_mode.checked;
-  data.sound_enabled = false;
+  data.sound_enabled = form.elements.sound_enabled.checked;
   try {
     const snapshot = await request("/api/settings", { method: "POST", body: JSON.stringify(data) });
     state.snapshot = snapshot; state.sessionSignature = ""; state.chatSignature = "";

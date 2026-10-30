@@ -85,6 +85,8 @@ class WebController:
             "command_port": self.settings.command_port,
             "kiss_port": self.settings.kiss_port,
             "color_scheme": self.settings.color_scheme,
+            "sound_enabled": self.settings.sound_enabled,
+            "dx_cluster_url": self.settings.dx_cluster_url,
             "observer_mode": self.settings.observer_mode,
             "tx_enabled": self.settings.tx_enabled,
             "transmitting": self.transmitting,
@@ -128,6 +130,7 @@ class WebController:
             kiss_port=integer("kiss_port"),
             color_scheme=scheme,
             sound_enabled=bool(data.get("sound_enabled", self.settings.sound_enabled)),
+            dx_cluster_url=str(data.get("dx_cluster_url", self.settings.dx_cluster_url)).strip(),
             observer_mode=observer,
             tx_enabled=self.settings.tx_enabled,
         )

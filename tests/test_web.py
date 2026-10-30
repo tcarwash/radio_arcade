@@ -44,6 +44,22 @@ class WebControllerScenarios(unittest.TestCase):
         self.assertEqual({game["key"] for game in value["catalog"]},
                          {"tic-tac-toe", "nim", "open-word-tiles", "connect-four", "scorched-earth"})
 
+    def test_web_settings_preserve_shared_client_preferences(self):
+        self.controller.settings.sound_enabled = True
+        self.controller.settings.dx_cluster_url = "https://cluster.example.org"
+        status, state = self.request("POST", "/api/settings", {
+            "callsign": "N0CALL", "transport": "practice", "color_scheme": "daylight"
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(state["sound_enabled"])
+        self.assertEqual(state["dx_cluster_url"], "https://cluster.example.org")
+        status, state = self.request("POST", "/api/settings", {
+            "sound_enabled": False, "dx_cluster_url": "https://other.example.org"
+        })
+        self.assertEqual(status, 200)
+        self.assertFalse(state["sound_enabled"])
+        self.assertEqual(state["dx_cluster_url"], "https://other.example.org")
+
     def test_create_play_and_chat_round_trip_through_web_api(self):
         status, created = self.request("POST", "/api/command", {
             "command": "create_game", "game": "tic-tac-toe"})
