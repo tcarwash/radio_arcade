@@ -1,12 +1,19 @@
 "use strict";
 
 const $ = (selector, root = document) => root.querySelector(selector);
-const state = { snapshot: null, selectedId: null, session: null, sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null };
+const state = { snapshot: null, selectedId: null, session: null, listSignature: "", sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null };
 const RESOURCE_META = [
   ["timber", "♣"], ["clay", "⬟"], ["wool", "✿"], ["grain", "✳"], ["ore", "◈"],
 ];
 const PLAYER_COLORS = ["#8edbfa", "#ffb777", "#d6a8ff", "#a2e4a5"];
 const RESOURCE_COLORS = ["#365f4e", "#77503e", "#5b4b76", "#78633e", "#415e73", "#365f4e"];
+const GAME_PREVIEWS = {
+  "scorched-earth": ["◈", "Artillery duels · Aim, fire, and reshape the terrain."],
+  "open-word-tiles": ["▦", "Build words on a shared board and chase the high score."],
+  "connect-four": ["●", "Drop discs, build a line, and outthink your opponent."],
+  "tic-tac-toe": ["✕", "A quick classic for a friendly on-air rivalry."],
+  nim: ["◇", "Take turns removing pieces. Plan the final move."],
+};
 
 function node(tag, className, text) {
   const element = document.createElement(tag);
@@ -48,6 +55,45 @@ function canTransmit() {
   return Boolean(state.snapshot?.ready && !isObserver() && (isPractice() || state.snapshot?.tx_enabled));
 }
 
+function switchPane(pane) {
+  if (!["lobby", "arena", "station"].includes(pane)) return;
+  $(".workspace").dataset.activePane = pane;
+  for (const button of document.querySelectorAll(".mobile-tab")) {
+    const selected = button.dataset.pane === pane;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+function placeSessionActions() {
+  const actions = $("#session-actions");
+  if (window.matchMedia("(max-width: 800px)").matches) {
+    const banner = $("#turn-banner");
+    if (actions.previousElementSibling !== banner) banner.after(actions);
+  } else if (actions.parentElement !== $(".lobby-panel")) {
+    $(".lobby-panel").append(actions);
+  }
+}
+
+function updateTableSetup() {
+  const practice = isPractice();
+  const hosted = $("#table-mode").value === "hosted" && !practice;
+  const peer = $("#peer-input");
+  const canCreate = canTransmit();
+  $("#table-mode").disabled = !canCreate || practice;
+  $("#peer-label").hidden = practice || hosted;
+  peer.hidden = practice || hosted;
+  peer.disabled = !canCreate || practice || hosted;
+  $("#create-game").textContent = practice ? "Start local match →" : hosted ? "Open broadcast table →" : "Create table →";
+  $("#lobby-note").textContent = !state.snapshot?.ready
+    ? "Connect your station in settings to start playing."
+    : isObserver() ? "Receive-only station: observe existing tables or disable observer mode in settings."
+    : practice ? "Practice mode · Two or more players share this device. No radio transmission needed."
+    : hosted ? "Host as dealer · Stations can discover and request to join your open table."
+    : "Direct table · Enter a callsign for an invitation, or invite a station after creating the table.";
+}
+
 function setConnection(snapshot) {
   const status = $("#connection-status");
   status.classList.toggle("offline", !snapshot.ready || !snapshot.connected);
@@ -87,21 +133,35 @@ function populateGames(catalog) {
   }
   select.dataset.keys = keys;
   if (catalog.some(game => game.key === selected)) select.value = selected;
+  updateGamePreview();
+}
+
+function updateGamePreview() {
+  const option = $("#game-select").selectedOptions[0];
+  const [icon, description] = GAME_PREVIEWS[$("#game-select").value] || ["✦", "A new challenge awaits at this table."];
+  $("#game-preview-icon").textContent = icon;
+  $("#game-preview-name").textContent = option?.textContent?.split("  ·  ")[0] || "Choose your next match";
+  $("#game-preview-description").textContent = description;
 }
 
 function renderSessionList(sessions) {
   const list = $("#session-list");
   const previous = state.selectedId;
-  list.replaceChildren();
   $("#session-count").textContent = sessions.length;
+  $("#mobile-table-count").textContent = sessions.length;
+  if (!sessions.some(session => session.id === previous)) state.selectedId = sessions[0]?.id || null;
+  if (state.selectedId !== previous) { state.sessionSignature = ""; state.actionSignature = ""; state.chatSignature = ""; }
+  const signature = JSON.stringify([state.selectedId, state.snapshot?.callsign, state.snapshot?.observer_mode,
+    sessions.map(session => [session.id, session.game, session.status, session.current_player, session.players, session.coordinator, session.hosted])]);
+  if (signature === state.listSignature) return;
+  state.listSignature = signature;
+  const scroll = list.scrollTop;
+  list.replaceChildren();
   if (!sessions.length) {
     const empty = node("div", "empty-list", "No open tables yet. Start a game or wait for an invitation to come over the air.");
     list.append(empty);
-    state.selectedId = null;
     return;
   }
-  if (!sessions.some(session => session.id === previous)) state.selectedId = sessions[0].id;
-  if (state.selectedId !== previous) { state.sessionSignature = ""; state.actionSignature = ""; state.chatSignature = ""; }
   for (const session of sessions) {
     const card = node("button", `session-card${session.id === state.selectedId ? " selected" : ""}`);
     card.type = "button";
@@ -120,6 +180,7 @@ function renderSessionList(sessions) {
     card.append(top, summary);
     list.append(card);
   }
+  list.scrollTop = scroll;
 }
 
 function setTurnBanner(session) {
@@ -876,16 +937,19 @@ async function refresh() {
     hostedOption.disabled = snapshot.transport !== "broadcast" || snapshot.observer_mode;
     if (hostedOption.disabled && tableMode.value === "hosted") tableMode.value = "direct";
     $("#create-game").disabled = !canTransmit();
-    $("#peer-input").disabled = !canTransmit();
     $("#game-select").disabled = !canTransmit();
+    updateTableSetup();
     renderSessionList(snapshot.sessions || []);
+    placeSessionActions();
     if (!snapshot.ready && snapshot.callsign && snapshot.error) $("#transport-label").textContent = `OFFLINE · ${snapshot.error}`;
     if (!snapshot.callsign && !state.setupShown) { state.setupShown = true; openSettings(); }
     if (snapshot.error) $("#transport-label").textContent = `OFFLINE · ${snapshot.error}`;
     if (state.selectedId && snapshot.ready) {
       const detail = await request(`/api/session/${encodeURIComponent(state.selectedId)}`);
       renderSession(detail.session, detail.chat || []);
+      $("#mobile-turn-dot").hidden = !canAct(detail.session);
     } else if (!state.selectedId) {
+      $("#mobile-turn-dot").hidden = true;
       state.session = null; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
       $("#arena-title").textContent = "The airwaves are yours.";
       $("#arena-subtitle").textContent = "Choose a table or start a new match to take your seat.";
@@ -914,6 +978,8 @@ function createWelcome() {
   const heading = node("h2", ""); heading.append(document.createTextNode("Pick a game."), document.createElement("br")); heading.append(node("span", "", "Make a little history."));
   welcome.append(heading);
   welcome.append(node("p", "", "Your table, your station, your next move. All game logic runs through the same engine as the desktop and terminal clients."));
+  const browse = node("button", "button primary welcome-cta", "Browse games & create a table →");
+  browse.type = "button"; browse.dataset.openTables = ""; welcome.append(browse);
   const chips = node("div", "welcome-chips");
   for (const text of ["✳ Live tables", "⌘ Shared game engine", "◉ Local practice"]) chips.append(node("span", "", text));
   welcome.append(chips); return welcome;
@@ -924,6 +990,7 @@ async function sendCommand(command, extra = {}) {
     const result = await request("/api/command", { method: "POST", body: JSON.stringify({ command, ...extra }) });
     if (command === "create_game" && result.session_id) {
       state.selectedId = result.session_id; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
+      switchPane("arena");
     }
     if (command === "delete_game") {
       state.selectedId = null; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
@@ -982,10 +1049,20 @@ $("#create-game").addEventListener("click", () => {
   if (!state.snapshot?.ready) { openSettings(); return; }
   sendCommand("create_game", { game: $("#game-select").value, peer: $("#peer-input").value.trim(), hosted: $("#table-mode").value === "hosted" });
 });
+$("#table-mode").addEventListener("change", updateTableSetup);
+$("#game-select").addEventListener("change", updateGamePreview);
+$("#arena-body").addEventListener("click", event => {
+  if (event.target.closest("[data-open-tables]")) switchPane("lobby");
+});
+for (const button of document.querySelectorAll(".mobile-tab")) {
+  button.addEventListener("click", () => switchPane(button.dataset.pane));
+}
+window.addEventListener("resize", placeSessionActions);
 $("#session-list").addEventListener("click", event => {
   const button = event.target.closest("[data-session]");
   if (!button) return;
   state.selectedId = button.dataset.session; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
+  switchPane("arena");
   refresh();
 });
 $("#chat-form").addEventListener("submit", async event => {

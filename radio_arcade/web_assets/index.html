@@ -24,7 +24,12 @@
       </div>
     </header>
 
-    <main class="workspace">
+    <nav class="mobile-nav" aria-label="Game room sections">
+      <button type="button" class="mobile-tab" data-pane="lobby" aria-pressed="false"><span aria-hidden="true">◫</span> Tables <span id="mobile-table-count" class="mobile-count">0</span></button>
+      <button type="button" class="mobile-tab active" data-pane="arena" aria-pressed="true"><span aria-hidden="true">✦</span> Play <span id="mobile-turn-dot" class="mobile-turn-dot" hidden></span></button>
+      <button type="button" class="mobile-tab" data-pane="station" aria-pressed="false"><span aria-hidden="true">◌</span> Stations &amp; chat</button>
+    </nav>
+    <main class="workspace" data-active-pane="arena">
       <aside class="panel lobby-panel" aria-label="Tables and game setup">
         <div class="panel-heading">
           <div><p class="eyebrow">YOUR GAME ROOM</p><h2>Tables <span id="session-count" class="count-pill">0</span></h2></div>
@@ -35,14 +40,19 @@
           <div class="section-rule"><span>START SOMETHING</span></div>
           <label class="field-label" for="game-select">Choose a game</label>
           <select id="game-select" class="field"></select>
+          <div class="game-preview" aria-live="polite">
+            <div id="game-preview-icon" class="game-preview-icon" aria-hidden="true">✦</div>
+            <div><strong id="game-preview-name">Choose your next match</strong><p id="game-preview-description">Pick a game to see what awaits.</p></div>
+          </div>
           <label class="field-label" for="table-mode">Table type</label>
           <select id="table-mode" class="field">
             <option value="direct">Invite a station</option>
             <option value="hosted">Open broadcast table</option>
           </select>
-          <input id="peer-input" class="field" autocomplete="off" placeholder="Opponent callsign · optional" aria-label="Opponent callsign">
+          <label class="field-label" for="peer-input" id="peer-label">Invite a station <span class="optional">(optional)</span></label>
+          <input id="peer-input" class="field" autocomplete="off" placeholder="Opponent callsign" aria-label="Opponent callsign">
           <button id="create-game" class="button primary full" type="button"><span>＋</span> Create table</button>
-          <p id="lobby-note" class="micro-copy">Local practice starts a private hot-seat game.</p>
+          <p id="lobby-note" class="micro-copy" role="status">Choose your game and table type to begin.</p>
         </section>
         <div id="session-actions" class="session-actions"></div>
       </aside>
@@ -64,6 +74,7 @@
             <p class="eyebrow">ONE ROOM · MANY WORLDS</p>
             <h2>Pick a game.<br><span>Make a little history.</span></h2>
             <p>Your table, your station, your next move. All game logic runs through the same engine as the desktop and terminal clients.</p>
+            <button type="button" class="button primary welcome-cta" data-open-tables>Browse games &amp; create a table →</button>
             <div class="welcome-chips"><span>✳ Live tables</span><span>⌘ Shared game engine</span><span>◉ Local practice</span></div>
           </div>
         </div>

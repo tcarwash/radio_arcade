@@ -327,47 +327,59 @@ class ArcadeWindow(QMainWindow):
         left_layout = left.layout()
         self.session_list = QListWidget(); self.session_list.setObjectName("sessionList")
         self.session_list.currentItemChanged.connect(self._select_item)
+        self.session_list.setMinimumHeight(150)
         left_layout.addWidget(self.session_list, 1)
-        left_layout.addWidget(QLabel("START A GAME"), 0)
+        tools_scroll = QScrollArea(); tools_scroll.setWidgetResizable(True)
+        tools_scroll.setObjectName("toolsScroll"); tools_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        tools_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tools_widget = QWidget(); tools_layout = QVBoxLayout(tools_widget)
+        tools_layout.setContentsMargins(0, 10, 2, 4); tools_layout.setSpacing(10)
+        tools_scroll.setWidget(tools_widget)
+        left_layout.addWidget(tools_scroll, 2)
+        tools_layout.addWidget(QLabel("START A GAME"), 0)
         self.game_choice = QComboBox(); self.game_choice.setObjectName("field")
         self.game_choice.addItem("Tic-tac-toe", "tic-tac-toe")
         self.game_choice.addItem("Nim · 2–4 players", "nim")
-        left_layout.addWidget(self.game_choice)
+        tools_layout.addWidget(self.game_choice)
         self.hosted_checkbox = QCheckBox("Host / dealer · public broadcast table")
         self.hosted_checkbox.setEnabled(self.settings.transport == "broadcast" and not self.settings.observer_mode)
-        left_layout.addWidget(self.hosted_checkbox)
+        self.hosted_checkbox.toggled.connect(self._update_new_game_mode)
+        tools_layout.addWidget(self.hosted_checkbox)
         self.peer_input = QLineEdit(); self.peer_input.setPlaceholderText("Opponent callsign")
-        left_layout.addWidget(self.peer_input)
+        tools_layout.addWidget(self.peer_input)
+        self.create_hint = QLabel(); self.create_hint.setObjectName("muted")
+        self.create_hint.setWordWrap(True); tools_layout.addWidget(self.create_hint)
+        self._update_new_game_mode()
         self.connect_button = QPushButton("Connect / resume peer"); self.connect_button.clicked.connect(self._connect_peer)
         self.disconnect_button = QPushButton("Disconnect radio link"); self.disconnect_button.clicked.connect(self._disconnect_peer)
         self.connect_button.setVisible(self.settings.transport == "connected")
         self.disconnect_button.setVisible(self.settings.transport == "connected")
-        left_layout.addWidget(self.connect_button); left_layout.addWidget(self.disconnect_button)
+        tools_layout.addWidget(self.connect_button); tools_layout.addWidget(self.disconnect_button)
         self.new_button = QPushButton("＋  New game"); self.new_button.setObjectName("primaryButton")
-        self.new_button.clicked.connect(self._new_game); left_layout.addWidget(self.new_button)
+        self.new_button.clicked.connect(self._new_game); tools_layout.addWidget(self.new_button)
         self.invite_button = QPushButton("Invite to selected lobby"); self.invite_button.clicked.connect(self._invite_player)
-        left_layout.addWidget(self.invite_button)
+        tools_layout.addWidget(self.invite_button)
         self.join_button = QPushButton("Join broadcast table"); self.join_button.clicked.connect(self._join_game)
-        left_layout.addWidget(self.join_button)
+        tools_layout.addWidget(self.join_button)
         self.announce_button = QPushButton("Re-announce lobby"); self.announce_button.clicked.connect(self._announce_game)
-        left_layout.addWidget(self.announce_button)
+        tools_layout.addWidget(self.announce_button)
         self.spot_button = QPushButton("✦  Spot my game · DX Cluster"); self.spot_button.clicked.connect(self._spot_game)
-        left_layout.addWidget(self.spot_button)
+        tools_layout.addWidget(self.spot_button)
         self.order_input = QLineEdit(); self.order_input.setPlaceholderText("Turn order: HOST,GUEST1,GUEST2")
-        left_layout.addWidget(self.order_input)
+        tools_layout.addWidget(self.order_input)
         self.order_button = QPushButton("Set dealer reply order"); self.order_button.clicked.connect(self._set_reply_order)
-        left_layout.addWidget(self.order_button)
+        tools_layout.addWidget(self.order_button)
         self.retry_button = QPushButton("Retry pending move"); self.retry_button.clicked.connect(self._retry_move)
-        left_layout.addWidget(self.retry_button)
+        tools_layout.addWidget(self.retry_button)
         self.cancel_invite_button = QPushButton("Cancel pending invitation")
         self.cancel_invite_button.clicked.connect(self._cancel_invitation)
-        left_layout.addWidget(self.cancel_invite_button)
+        tools_layout.addWidget(self.cancel_invite_button)
         self.start_button = QPushButton("Start selected game"); self.start_button.clicked.connect(self._start_game)
-        left_layout.addWidget(self.start_button)
+        tools_layout.addWidget(self.start_button)
         self.delete_button = QPushButton("Delete selected game…")
         self.delete_button.clicked.connect(self._delete_game)
         self.delete_button.setEnabled(False)
-        left_layout.addWidget(self.delete_button)
+        tools_layout.addWidget(self.delete_button)
         splitter.addWidget(left)
 
         center = self._card("ACTIVE TABLE", "Game workspace")
@@ -416,6 +428,20 @@ class ArcadeWindow(QMainWindow):
         heading = QLabel(title); heading.setObjectName("cardTitle"); box.addWidget(heading)
         return frame
 
+    def _update_new_game_mode(self, *_args):
+        practice = self.settings.transport == "practice"
+        hosted = self.hosted_checkbox.isChecked() and not practice
+        self.peer_input.setVisible(not practice and not hosted)
+        self.create_hint.setText(
+            "LOCAL PRACTICE  ·  Players take turns on this computer. No radio required."
+            if practice else
+            "OPEN BROADCAST  ·  Act as dealer. Other stations can discover and join."
+            if hosted else
+            "DIRECT TABLE  ·  Invite a callsign now or add a station after creating."
+        )
+        if hasattr(self, "new_button"):
+            self.new_button.setText("▶  Start local match" if practice else "✦  Open broadcast table" if hosted else "＋  Create table")
+
     def _apply_style(self):
         self.setStyleSheet("""
             QWidget#root { background:#0b1018; color:#e8edf6; font-family:'Inter','Segoe UI',sans-serif; font-size:14px; }
@@ -438,6 +464,7 @@ class ArcadeWindow(QMainWindow):
             QLineEdit, QComboBox, QSpinBox { background:#0c131e; color:#eaf0f8; border:1px solid #2e3d50; border-radius:8px; padding:9px; selection-background-color:#318b80; }
             QComboBox QAbstractItemView { background:#111a27; color:#eaf0f8; selection-background-color:#256c65; }
             QListWidget { background:transparent; border:0; outline:0; }
+            QScrollArea#toolsScroll { background:transparent; border:0; }
             QListWidget::item { padding:12px 10px; margin:2px 0; border-radius:9px; color:#abb8ca; }
             QListWidget::item:selected { background:#1c3438; color:#a2f1df; }
             QListWidget::item:hover { background:#1a2533; }
@@ -508,6 +535,10 @@ class ArcadeWindow(QMainWindow):
                         self.order_button, self.retry_button, self.connect_button,
                         self.disconnect_button):
             control.setEnabled(can_transmit)
+        self.hosted_checkbox.setEnabled(can_transmit and self.settings.transport == "broadcast")
+        if self.settings.transport != "broadcast":
+            self.hosted_checkbox.setChecked(False)
+        self._update_new_game_mode()
         self.spot_button.setEnabled(not self.settings.observer_mode)
         self.sync_button.setEnabled(self.settings.transport == "practice" or self.settings.tx_enabled)
         self.connect_button.setVisible(self.settings.transport == "connected")
@@ -1081,6 +1112,9 @@ class ArcadeWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.connect_button.setVisible(self.settings.transport == "connected")
             self.disconnect_button.setVisible(self.settings.transport == "connected")
+            if self.settings.transport != "broadcast":
+                self.hosted_checkbox.setChecked(False)
+            self._update_new_game_mode()
             self._apply_style()
             self.connect_service()
 

@@ -35,6 +35,8 @@ button, input, select { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #a993f5; outline-offset: 2px; }
 .app-frame { min-height: 100vh; display: flex; flex-direction: column; }
+.mobile-nav { display: none; }
+.optional { color: var(--quiet); font-weight: 400; }
 .topbar {
   height: 68px; padding: 0 clamp(18px, 3vw, 44px); display: flex; align-items: center;
   gap: 27px; border-bottom: 1px solid rgba(190, 208, 240, .09);
@@ -79,6 +81,10 @@ h1, h2, h3, p { margin-top: 0; }
 .session-summary .bullet { color: #505d73; }
 .empty-list { padding: 15px 10px; border: 1px dashed rgba(183, 200, 232, .12); border-radius: 10px; color: #748198; font-size: 11px; line-height: 1.6; }
 .new-table { border-top: 1px solid var(--line); padding: 15px 1px 0; }
+.game-preview { display: flex; align-items: center; gap: 11px; margin: 10px 0 14px; padding: 11px; border: 1px solid rgba(143,226,194,.14); border-radius: 11px; background: radial-gradient(circle at 0 0, rgba(76,160,142,.13), transparent 70%), rgba(255,255,255,.018); }
+.game-preview-icon { display: grid; flex: 0 0 43px; height: 43px; place-items: center; border-radius: 11px; background: linear-gradient(135deg, #365d61, #393a69); color: #dcfff4; font-size: 25px; box-shadow: inset 0 1px 0 rgba(255,255,255,.14); }
+.game-preview strong { display: block; color: #e8f4f0; font-size: 12px; margin-bottom: 4px; }
+.game-preview p { color: #8fa5b6; line-height: 1.4; margin: 0; font-size: 10px; }
 .section-rule { color: #8592a7; font: 700 9px 'Space Grotesk', sans-serif; letter-spacing: .13em; margin: 0 0 12px; }
 .field-label { display: block; color: #a0aec2; font-size: 10px; font-weight: 600; margin: 10px 0 6px; }
 .field, .settings-card input:not([type=checkbox]), .settings-card select { width: 100%; min-height: 38px; border: 1px solid rgba(184, 202, 235, .13); border-radius: 8px; background: rgba(6, 12, 20, .62); color: #e7edf6; padding: 0 10px; font-size: 11px; transition: border-color .16s, background .16s; }
@@ -98,6 +104,7 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .button.full { width: 100%; margin-top: 10px; }
 .button.full span { font-size: 15px; vertical-align: -1px; margin-right: 3px; }
 .micro-copy { color: #6f7e94; font-size: 9px; line-height: 1.5; margin: 8px 1px 0; }
+.welcome-cta { margin: 18px auto 14px; min-height: 44px; font-size: 13px; }
 .session-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
 .session-actions:empty { display: none; }
 .session-actions .button { width: 100%; text-align: left; min-height: 34px; padding-left: 10px; }
@@ -379,13 +386,27 @@ select.field, .settings-card select { appearance: none; background-image: linear
 @media (max-width: 800px) {
   .topbar { height: 58px; gap: 14px; }
   .brand-context { display: none; }
+  .mobile-nav { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 7px; position: sticky; top: 58px; z-index: 4; padding: 9px 13px; background: rgba(9, 14, 22, .96); border-bottom: 1px solid var(--line); backdrop-filter: blur(18px); }
+  .mobile-tab { position: relative; min-height: 46px; border: 1px solid var(--line); background: var(--panel-raised); border-radius: 11px; color: #aebdd0; font-weight: 700; font-size: 12px; cursor: pointer; }
+  .mobile-tab.active { background: linear-gradient(120deg, #284d48, #28384b); color: #c6f9e7; border-color: rgba(143, 226, 194, .4); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+  .mobile-tab > span:first-child { color: var(--mint); margin-right: 4px; }
+  .mobile-count { display: inline-grid; place-items: center; min-width: 18px; min-height: 18px; border-radius: 6px; background: rgba(255,255,255,.09); font-size: 10px; }
+  .mobile-turn-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 8px var(--amber); }
   .workspace { min-height: auto; grid-template-columns: minmax(0, 1fr); padding: 13px; gap: 11px; }
+  .workspace > .panel { display: none; }
+  .workspace[data-active-pane="lobby"] > .lobby-panel { display: flex; }
+  .workspace[data-active-pane="arena"] > .arena-panel { display: flex; }
+  .workspace[data-active-pane="station"] > .station-panel { display: flex; }
   .lobby-panel { min-height: auto; }
-  .session-list { max-height: 160px; }
-  .arena-panel { min-height: 620px; padding: 18px 16px 13px; }
+  .session-list { max-height: 34vh; }
+  .arena-panel { min-height: calc(100dvh - 145px); padding: 18px 16px 13px; }
+  .arena-panel > .session-actions:not(:empty) { display: flex; flex-direction: row; flex-wrap: wrap; gap: 8px; padding: 12px 0 2px; }
+  .arena-panel > .session-actions > .button { flex: 1 1 155px; text-align: center; }
+  .arena-panel > .session-actions > .action-row { flex: 1 1 100%; }
+  .arena-panel > .session-actions > .action-input { flex: 1 1 100%; }
   .arena-body { min-height: 320px; }
   .tank-layout { grid-template-columns: minmax(0, 1fr); }
-  .station-panel { grid-column: auto; min-height: 340px; display: flex; }
+  .station-panel { grid-column: auto; min-height: calc(100dvh - 145px); }
   .station-section { padding-bottom: 12px; }
   .chat-section { min-height: 210px; border-top: 1px solid var(--line); border-left: 0; padding: 14px 0 0; }
   .chat-list { max-height: 240px; }
@@ -394,6 +415,12 @@ select.field, .settings-card select { appearance: none; background-image: linear
   .island-side { display: grid; grid-template-columns: 1fr 1fr; }
   .island-goal, .resource-list { grid-column: 1 / -1; }
   .island-controls { grid-column: 1 / -1; }
+  .field, .button, .action-input, .session-actions .button, .chat-form input, .chat-form button { min-height: 44px; font-size: 13px; }
+  .field-label, .micro-copy { font-size: 12px; line-height: 1.55; }
+  .session-card { min-height: 66px; padding: 13px; }
+  .session-summary, .arena-subtitle { font-size: 12px; }
+  .turn-banner { font-size: 12px; line-height: 1.45; }
+  .station-panel .chat-list { max-height: 55vh; }
 }
 @media (max-width: 520px) {
   .topbar { padding: 0 13px; }
@@ -401,10 +428,10 @@ select.field, .settings-card select { appearance: none; background-image: linear
   .brand-mark { width: 22px; height: 22px; }
   .connection-status { padding: 7px 9px; font-size: 9px; }
   .workspace { padding: 9px; }
-  .arena-panel { min-height: 590px; padding: 16px 12px 12px; }
+  .arena-panel { min-height: calc(100dvh - 145px); padding: 16px 12px 12px; }
   .arena-head h1 { font-size: 25px; }
-  .arena-subtitle { font-size: 10px; }
-  .turn-banner { font-size: 9px; }
+  .arena-subtitle { font-size: 12px; }
+  .turn-banner { font-size: 12px; }
   .arena-foot { font-size: 7px; letter-spacing: .04em; }
   .word-controls { grid-template-columns: 75px 80px minmax(70px, 1fr); }
   .word-controls button { grid-column: 1 / -1; }
