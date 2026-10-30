@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import re
 
 from .connected import ConnectedConnection
 from .kiss import KissConnection
@@ -23,7 +24,8 @@ def group_name(value: str) -> str:
 class BroadcastConnection(KissConnection):
     """Own the command connection that keeps the Data2G group open."""
 
-    def __init__(self, host: str, kiss_port: int, command_port: int, group: str):
+    def __init__(self, host: str, kiss_port: int, command_port: int, group: str,
+                 modem_mode: str = ""):
         group = group_name(group)
         self._command = socket.create_connection((host, command_port), timeout=5)
         try:
@@ -41,6 +43,20 @@ class BroadcastConnection(KissConnection):
             if line is None:
                 raise RuntimeError(f"Data2G did not open {group}: {text.strip() or 'no response'}")
             group_port = int(line.rsplit(" ", 1)[1])
+            if modem_mode:
+                modem_mode = modem_mode.strip().lower()
+                if not re.fullmatch(r"[a-z0-9][a-z0-9/-]{0,63}", modem_mode):
+                    raise ValueError("broadcast modem mode must be a Data2G mode name")
+                self._command.sendall(f"BCAST MODE {group_port} {modem_mode}\r".encode("ascii"))
+                response = bytearray()
+                while b"\r" not in response and len(response) < 512:
+                    chunk = self._command.recv(128)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                reply = response.decode("ascii", "replace").split("\r", 1)[0].strip()
+                if reply != "OK":
+                    raise RuntimeError(f"Data2G rejected broadcast modem mode {modem_mode!r}: {reply or 'no response'}")
             self._command.settimeout(None)
             super().__init__(host, kiss_port, group_port)
             self._command_thread = threading.Thread(target=self._drain_commands, daemon=True)
@@ -79,13 +95,15 @@ def create_service(settings: Settings) -> ArcadeService:
         from .practice import PracticeService
         return PracticeService(call)
     if settings.transport == "broadcast":
-        transport = BroadcastConnection(settings.host, settings.kiss_port, settings.command_port, settings.group)
+        transport = BroadcastConnection(settings.host, settings.kiss_port, settings.command_port,
+                                        settings.group, settings.broadcast_mode)
     elif settings.transport == "connected":
         transport = ConnectedConnection(settings.host, settings.command_port, call)
     else:
         raise ValueError(f"unsupported transport {settings.transport!r}")
     try:
-        return ArcadeService(call, transport, observer_mode=settings.observer_mode)
+        return ArcadeService(call, transport, observer_mode=settings.observer_mode,
+                             tx_enabled=settings.tx_enabled)
     except Exception:
         transport.close()
         raise

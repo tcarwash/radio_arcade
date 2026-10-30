@@ -120,6 +120,8 @@ class SettingsScreen(ModalScreen[Settings | None]):
                          value=self.settings.transport, allow_blank=False, id="transport")
             yield Label("BROADCAST GROUP", classes="setting-label")
             yield Input(self.settings.group, placeholder="RAGAMES", id="group")
+            yield Label("BROADCAST MODEM MODE · blank keeps Data2G default", classes="setting-label")
+            yield Input(self.settings.broadcast_mode, placeholder="blank = default · e.g. n10-qpsk-r1/5", id="broadcast-mode")
             yield Label("COMMAND PORT", classes="setting-label")
             yield Input(str(self.settings.command_port), placeholder="8300", id="command-port")
             yield Label("KISS PORT", classes="setting-label")
@@ -166,6 +168,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
             return
         self.settings.observer_mode = observing
         self.settings.group, self.settings.transport = group, str(transport)
+        self.settings.broadcast_mode = self.query_one("#broadcast-mode", Input).value.strip().lower()
         self.settings.command_port, self.settings.kiss_port = command_port, kiss_port
         self.settings.color_scheme = str(self.query_one("#color-scheme", Select).value)
         self.settings.sound_enabled = self.query_one("#sound-enabled", Switch).value
@@ -375,6 +378,7 @@ class ArcadeTUI(App):
         self._word_board_view = None
         self._word_score_hint_key = None
         self._word_score_hint = ""
+        self._delete_confirm_id: str | None = None
         self._action_lock = threading.Lock()
         # Textual list mutations yield; never interleave two rebuilds.
         self._session_refresh_lock = asyncio.Lock()
@@ -386,6 +390,9 @@ class ArcadeTUI(App):
             with Horizontal(id="topline"):
                 yield Label("◈  RADIO / ARCADE", id="wordmark")
                 yield Static("DATA2G  ·  ON-AIR GAME ROOM", id="brand-note")
+                yield Static("", id="tx-activity")
+                yield Button("TX ENABLED" if self.settings.tx_enabled else "TX DISABLED", id="tx-toggle",
+                             disabled=self.settings.transport == "practice")
                 yield Static("●  OFFLINE", id="link-status")
             yield Static("1  TABLES     2  GAME BOARD     3  CHAT     S  SETTINGS", id="pane-tabs")
             with Horizontal(id="columns"):
@@ -414,6 +421,7 @@ class ArcadeTUI(App):
                         yield Button("Start lobby", id="start-game")
                         yield Button("Sync / recover state", id="sync-state")
                         yield Button("Retry pending move", id="retry-move")
+                        yield Button("Delete selected game", id="delete-game")
                 with Vertical(id="center", classes="panel"):
                     yield Label("02  /  GAME ARENA", classes="eyebrow")
                     with Horizontal(id="arena-header"):
@@ -500,19 +508,22 @@ class ArcadeTUI(App):
 
     def on_service_ready(self, message: ServiceReady):
         self.engine = message.service
+        self.engine.set_tx_enabled(self.settings.tx_enabled if self.settings.transport != "practice" else True)
         self._list_signature = None
         self._board_signature = None
         self.unsubscribe = self.engine.subscribe(lambda event: self.post_message(EngineNotice(event)))
         offline = hasattr(self.engine.transport, "closed") and self.engine.transport.closed.is_set()
         self.query_one("#link-status", Static).update("●  OFFLINE · press S to reconnect" if offline else f"●  {'OBSERVER · RX ONLY' if self.settings.observer_mode else self.settings.transport.upper()} · {self.settings.callsign}")
-        for name in ("#game-select", "#table-mode", "#peer-input", "#new-game", "#send-chat", "#chat-input"):
-            self.query_one(name).disabled = self.settings.observer_mode
+        for name in ("#game-select", "#table-mode", "#peer-input", "#new-game", "#send-chat", "#chat-input", "#connect-peer", "#disconnect-peer"):
+            self.query_one(name).disabled = self.settings.observer_mode or (self.settings.transport != "practice" and not self.settings.tx_enabled)
         self.query_one("#table-mode", Select).disabled = self.settings.observer_mode or self.settings.transport != "broadcast"
         self.query_one("#connect-peer", Button).display = self.settings.transport == "connected"
         self.query_one("#disconnect-peer", Button).display = self.settings.transport == "connected"
+        self.query_one("#tx-toggle", Button).disabled = self.settings.transport == "practice"
+        self.query_one("#tx-toggle", Button).label = "TX ENABLED" if self.settings.tx_enabled else "TX DISABLED"
         game_select = self.query_one("#game-select", Select)
         game_select.set_options((f"{game.name} · {game.min_players}–{game.max_players}", game.key)
-                                for game in self.engine.catalog())
+                                for game in self.engine.catalog() if "tui" in game.clients)
         self.call_later(self._refresh_sessions)
 
     def on_service_failed(self, message: ServiceFailed):
@@ -529,6 +540,12 @@ class ArcadeTUI(App):
             state = event.data.get("status")
             text = f"●  CONNECTED · {event.data.get('peer')}" if state == "connected" else "●  OFFLINE · press S to reconnect" if state == "offline" else "●  CONNECTED MODE · LISTENING"
             self.query_one("#link-status", Static).update(text)
+        if event.name == "transmitting":
+            activity = self.query_one("#tx-activity", Static)
+            activity.update(f"TX · {event.data.get('kind')} → {event.data.get('destination')} · {event.data.get('reason')}")
+            self.set_timer(6, lambda: activity.update(""))
+        if event.name == "tx_state":
+            self.query_one("#tx-toggle", Button).label = "TX ENABLED" if event.data.get("enabled") else "TX DISABLED"
         if event.name == "invitation":
             self.notify(f"{event.data['sender']} invited you to {event.data['game']} · select it and accept")
         if event.name == "protocol_error":
@@ -541,7 +558,7 @@ class ArcadeTUI(App):
             self.notify("No acknowledgement yet; the game is waiting for the other station.", severity="warning")
         if event.name in ("chat_message", "chat_delivery"):
             self._refresh_chat(event.session)
-        if event.name in ("session_updated", "invitation", "delivery"):
+        if event.name in ("session_updated", "invitation", "delivery", "session_deleted"):
             self.call_later(self._refresh_sessions)
 
     async def _refresh_sessions(self):
@@ -551,7 +568,8 @@ class ArcadeTUI(App):
     async def _refresh_sessions_locked(self):
         if not self.engine or not self.is_mounted: return
         listing = self.query_one("#session-list", ListView)
-        sessions = self.engine.sessions()
+        supported = {game.game_id for game in self.engine.catalog() if "tui" in game.clients}
+        sessions = [session for session in self.engine.sessions() if session["game_id"] in supported]
         signature = tuple((s["id"], s["game"], tuple(s["players"]), s["status"],
                            s.get("current_player")) for s in sessions)
         if signature == self._list_signature:
@@ -576,6 +594,10 @@ class ArcadeTUI(App):
             item = listing.children[listing.index]
             self.selected_id = item.id[1:] if item.id else None
             await self._show_session(self.selected_id)
+        else:
+            self.selected_id = None
+            self._board_signature = None
+            await self._show_session(None)
 
     @on(ListView.Selected, "#session-list")
     async def _session_selected(self, event: ListView.Selected):
@@ -588,16 +610,33 @@ class ArcadeTUI(App):
             await self._show_session_locked(sid)
 
     async def _show_session_locked(self, sid: str | None):
-        if not self.engine or not sid: return
+        if not self.engine or not sid:
+            self.query_one("#delete-game", Button).display = False
+            await self.query_one("#game-controls", Vertical).remove_children()
+            await self.query_one("#board", VerticalScroll).remove_children()
+            self.query_one("#game-title", Label).update("Choose a table")
+            self.query_one("#arena-meta", Static).update("")
+            self.query_one("#turn-line", Static).update("Open-information games for the airwaves.")
+            return
         try: session = self.engine.session(sid)
         except KeyError: return
         signature = (sid, session["status"], session["revision"], session["sequence"],
                      session["pending_action"], tuple(session["players"]),
                      tuple(session["invited"]), repr(session["view"]),
-                     repr(session.get("last_move")), session.get("error"), self.settings.transport)
+                     repr(session.get("last_move")), session.get("error"), self.settings.transport, self.settings.tx_enabled)
         if signature == self._board_signature:
             return
         self._board_signature = signature
+        self.query_one("#delete-game", Button).display = True
+        can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
+        for control_id in ("#accept-invite", "#join-game", "#announce-game",
+                           "#set-reply-order", "#invite-player", "#cancel-invite", "#start-game",
+                           "#retry-move", "#send-chat", "#chat-input"):
+            self.query_one(control_id).disabled = not can_transmit
+        self.query_one("#sync-state", Button).disabled = self.settings.transport != "practice" and not self.settings.tx_enabled
+        self.query_one("#spot-game", Button).disabled = self.settings.observer_mode
+        self.query_one("#connect-peer", Button).disabled = not can_transmit
+        self.query_one("#disconnect-peer", Button).disabled = not can_transmit
         self.query_one("#game-title", Label).update(session["game"])
         state = session["view"]
         arena_meta = f"GAME {sid[-6:]}  ·  REV {session['revision']}"
@@ -652,12 +691,12 @@ class ArcadeTUI(App):
                     for x in range(state["width"]):
                         index = y * state["width"] + x
                         text = state["cells"][index].strip() or str(state["labels"][index])
-                        active = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                        active = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                         button = Button(text, id=f"cell-{index}", classes="cell", disabled=not active or bool(state["cells"][index].strip()))
                         cells.append(button)
                     await board.mount(Horizontal(*cells, classes="board-row"))
             elif state["kind"] == "connect-four":
-                active = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                active = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                 await board.mount(Static("CONNECT FOUR  ·  X = turquoise   O = amber", classes="muted"))
                 await board.mount(Horizontal(*(
                     Button(f"▼{col+1}", id=f"connect-{col}", classes="connect-column",
@@ -681,7 +720,7 @@ class ArcadeTUI(App):
                            allow_blank=False, id="nim-pile"),
                     Input("1", placeholder="Amount", id="nim-amount"),
                     Button("Take", id="nim-take", variant="primary",
-                           disabled=(self.settings.transport != "practice" and turn != self.settings.callsign) or session["status"] != "active"),
+                           disabled=(self.settings.transport != "practice" and (not self.settings.tx_enabled or turn != self.settings.callsign)) or session["status"] != "active"),
                     id="nim-controls")
                 await board.mount(row)
             elif state["kind"] == "word-tiles":
@@ -690,7 +729,7 @@ class ArcadeTUI(App):
                 await board.mount(Static(f"OPEN RACKS   ·   {state['lexicon']} DICTIONARY", classes="word-meta"))
                 for player, rack in state["racks"].items():
                     await board.mount(Static(f"{player} RACK  " + "  ".join(rack), classes="word-meta"))
-                enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                 await controls.mount(Horizontal(Input("H8", placeholder="Start", id="word-start"),
                     Button("— Horizontal", id="word-horizontal", classes="word-direction-button"),
                     Button("│ Vertical", id="word-vertical", classes="word-direction-button"),
@@ -706,7 +745,7 @@ class ArcadeTUI(App):
                 await board.mount(Static(str(state), classes="muted"))
                 await board.mount(Input(placeholder="Plugin action · hex bytes", id="plugin-action"))
                 await board.mount(Button("Submit action", id="plugin-submit", variant="primary",
-                                         disabled=(self.settings.transport != "practice" and turn != self.settings.callsign) or session["status"] != "active"))
+                                         disabled=self.settings.observer_mode or (self.settings.transport != "practice" and (not self.settings.tx_enabled or turn != self.settings.callsign)) or session["status"] != "active"))
         else:
             await board.mount(Static("Waiting for the host to start this lobby.", id="empty-state"))
         self._refresh_chat(sid)
@@ -738,6 +777,45 @@ class ArcadeTUI(App):
             try: self.post_message(ActionResult(fn(), select_session=select_session))
             except Exception as exc: self.post_message(ActionResult(error=str(exc)))
         threading.Thread(target=worker, daemon=True).start()
+
+    @on(Button.Pressed, "#tx-toggle")
+    def _toggle_tx(self):
+        if self.settings.transport == "practice":
+            return
+        self.settings.tx_enabled = not self.settings.tx_enabled
+        self.settings.save()
+        if self.engine:
+            self.engine.set_tx_enabled(self.settings.tx_enabled)
+        self.query_one("#tx-toggle", Button).label = "TX ENABLED" if self.settings.tx_enabled else "TX DISABLED"
+        can_transmit = self.settings.transport == "practice" or self.settings.tx_enabled
+        for control_id in ("#game-select", "#table-mode", "#peer-input", "#new-game", "#send-chat", "#chat-input", "#connect-peer", "#disconnect-peer"):
+            self.query_one(control_id).disabled = self.settings.observer_mode or not can_transmit
+        self._board_signature = None
+        self.call_later(self._refresh_sessions)
+
+    @on(Button.Pressed, "#delete-game")
+    def _delete_selected_game(self):
+        if not self.engine or not self.selected_id:
+            return
+        sid = self.selected_id
+        button = self.query_one("#delete-game", Button)
+        if self._delete_confirm_id == sid:
+            self._delete_confirm_id = None
+            button.label = "Delete selected game"
+            self.selected_id = None
+            self._list_signature = None
+            self._board_signature = None
+            self._run_action(partial(self.engine.delete_game, sid))
+            return
+        self._delete_confirm_id = sid
+        button.label = "Confirm delete?"
+        self.notify("Press again within 5 seconds to delete local game data and queued messages.", severity="warning")
+        self.set_timer(5, lambda: self._clear_delete_confirmation(sid))
+
+    def _clear_delete_confirmation(self, sid: str):
+        if self._delete_confirm_id == sid:
+            self._delete_confirm_id = None
+            self.query_one("#delete-game", Button).label = "Delete selected game"
 
     def on_action_result(self, message: ActionResult):
         if message.error: self.notify(message.error, severity="error")

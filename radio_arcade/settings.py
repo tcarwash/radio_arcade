@@ -18,6 +18,7 @@ class Settings:
     kiss_port: int = 8100
     command_port: int = 8300
     group: str = "RAGAMES"
+    broadcast_mode: str = ""
     color_scheme: str = "midnight"
     sound_enabled: bool = False
     observer_mode: bool = False

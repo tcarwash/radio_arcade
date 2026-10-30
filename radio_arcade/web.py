@@ -42,6 +42,7 @@ class WebController:
         self.engine = None
         try:
             self.engine = self.service_factory(self.settings)
+            self.engine.set_tx_enabled(self.settings.tx_enabled if self.settings.transport != "practice" else True)
             self.engine.subscribe(self._engine_event)
             self.last_error = ""
         except Exception as exc:
@@ -73,11 +74,14 @@ class WebController:
 
     def _state(self) -> dict[str, Any]:
         engine = self.engine
+        catalog = [asdict(game) for game in engine.catalog()] if engine else []
+        web_game_ids = {game["game_id"] for game in catalog if "web" in game.get("clients", ("web",))}
         return {
             "callsign": self.settings.callsign,
             "host": self.settings.host,
             "transport": self.settings.transport,
             "group": self.settings.group,
+            "broadcast_mode": self.settings.broadcast_mode,
             "command_port": self.settings.command_port,
             "kiss_port": self.settings.kiss_port,
             "color_scheme": self.settings.color_scheme,
@@ -91,8 +95,9 @@ class WebController:
                 or not getattr(engine.transport, "closed", threading.Event()).is_set()
             )),
             "error": self.last_error,
-            "catalog": [asdict(game) for game in engine.catalog()] if engine else [],
-            "sessions": [self._public_session(session) for session in engine.sessions()] if engine else [],
+            "catalog": catalog,
+            "sessions": [self._public_session(session) for session in engine.sessions()
+                         if session["game_id"] in web_game_ids] if engine else [],
         }
 
     def _configure(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -118,6 +123,7 @@ class WebController:
             host=str(data.get("host", self.settings.host)).strip() or "127.0.0.1",
             transport=transport,
             group=group_name(str(data.get("group", self.settings.group))),
+            broadcast_mode=str(data.get("broadcast_mode", self.settings.broadcast_mode)).strip().lower(),
             command_port=integer("command_port"),
             kiss_port=integer("kiss_port"),
             color_scheme=scheme,
@@ -222,6 +228,8 @@ class WebController:
                         raise ValueError("TX enabled must be true or false")
                     self.settings.tx_enabled = enabled
                     self.settings.save(self.settings_path)
+                    if self.engine:
+                        self.engine.set_tx_enabled(enabled if self.settings.transport != "practice" else True)
                     return 200, self._state()
                 if method == "POST" and route == "/api/command":
                     return 200, self._command(data)

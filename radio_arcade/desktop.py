@@ -8,7 +8,7 @@ import html
 import sys
 from typing import Callable
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
@@ -45,6 +45,8 @@ class SettingsDialog(QDialog):
         self.transport.addItem("Local practice · play both sides", "practice")
         self.transport.setCurrentIndex(max(0, self.transport.findData(settings.transport)))
         self.group = QLineEdit(settings.group)
+        self.broadcast_mode = QLineEdit(settings.broadcast_mode)
+        self.broadcast_mode.setPlaceholderText("Blank = Data2G default · e.g. n10-qpsk-r1/5")
         self.command_port = QSpinBox(); self.command_port.setRange(1, 65535); self.command_port.setValue(settings.command_port)
         self.kiss_port = QSpinBox(); self.kiss_port.setRange(1, 65535); self.kiss_port.setValue(settings.kiss_port)
         self.scheme = QComboBox(); self.scheme.addItem("Midnight", "midnight"); self.scheme.addItem("Daylight", "daylight")
@@ -59,6 +61,7 @@ class SettingsDialog(QDialog):
         form.addRow("Data2G host", self.host)
         form.addRow("Transport", self.transport)
         form.addRow("Broadcast group", self.group)
+        form.addRow("Broadcast modem mode", self.broadcast_mode)
         form.addRow("Command port", self.command_port)
         form.addRow("KISS port", self.kiss_port)
         form.addRow("Color scheme", self.scheme)
@@ -86,6 +89,7 @@ class SettingsDialog(QDialog):
             return
         self.settings.observer_mode = self.observer.isChecked()
         self.settings.group = group
+        self.settings.broadcast_mode = self.broadcast_mode.text().strip().lower()
         self.settings.command_port = self.command_port.value()
         self.settings.kiss_port = self.kiss_port.value()
         self.settings.color_scheme = self.scheme.currentData()
@@ -154,6 +158,14 @@ class ArcadeWindow(QMainWindow):
         self.link_dot = QLabel("●"); self.link_dot.setObjectName("statusDot")
         self.status_label = QLabel("Starting up"); self.status_label.setObjectName("statusText")
         top.addWidget(self.link_dot); top.addWidget(self.status_label)
+        self.tx_activity = QLabel(""); self.tx_activity.setObjectName("muted")
+        top.addWidget(self.tx_activity)
+        self.tx_toggle = QPushButton("TX ENABLED" if self.settings.tx_enabled else "TX DISABLED")
+        self.tx_toggle.setCheckable(True); self.tx_toggle.setChecked(self.settings.tx_enabled)
+        self.tx_toggle.setToolTip("Allow or block outgoing Data2G traffic")
+        self.tx_toggle.toggled.connect(self._set_tx_enabled)
+        self.tx_toggle.setEnabled(self.settings.transport != "practice")
+        top.addWidget(self.tx_toggle)
         settings_button = QPushButton("⚙  Settings"); settings_button.clicked.connect(self._edit_settings)
         top.addWidget(settings_button)
         layout.addLayout(top)
@@ -200,6 +212,10 @@ class ArcadeWindow(QMainWindow):
         left_layout.addWidget(self.cancel_invite_button)
         self.start_button = QPushButton("Start selected game"); self.start_button.clicked.connect(self._start_game)
         left_layout.addWidget(self.start_button)
+        self.delete_button = QPushButton("Delete selected game…")
+        self.delete_button.clicked.connect(self._delete_game)
+        self.delete_button.setEnabled(False)
+        left_layout.addWidget(self.delete_button)
         splitter.addWidget(left)
 
         center = self._card("ACTIVE TABLE", "Game workspace")
@@ -327,24 +343,62 @@ class ArcadeWindow(QMainWindow):
     @Slot(object)
     def _service_ready(self, engine: ArcadeService):
         self.engine = engine
+        engine.set_tx_enabled(self.settings.tx_enabled if self.settings.transport != "practice" else True)
         self._board_signature = None
         self.unsubscribe = engine.subscribe(lambda event: self._event_bridge.received.emit(event))
         offline = hasattr(engine.transport, "closed") and engine.transport.closed.is_set()
         self._update_status("Offline · reconnect in settings" if offline else "Local practice" if self.settings.transport == "practice" else "Data2G ready", not offline)
         self.mode_label.setText(f"{self.settings.callsign}  ·  {'OBSERVER · RX' if self.settings.observer_mode else self.settings.transport.title()}")
-        for control in (self.game_choice, self.peer_input, self.new_button, self.invite_button,
-                        self.cancel_invite_button, self.start_button, self.chat_input, self.chat_send):
-            control.setEnabled(not self.settings.observer_mode)
+        can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
+        for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,
+                        self.invite_button, self.cancel_invite_button, self.start_button, self.chat_input,
+                        self.chat_send, self.join_button, self.announce_button, self.order_input,
+                        self.order_button, self.retry_button, self.connect_button,
+                        self.disconnect_button):
+            control.setEnabled(can_transmit)
+        self.spot_button.setEnabled(not self.settings.observer_mode)
+        self.sync_button.setEnabled(self.settings.transport == "practice" or self.settings.tx_enabled)
         self.connect_button.setVisible(self.settings.transport == "connected")
         self.disconnect_button.setVisible(self.settings.transport == "connected")
         self._populate_games()
+        self.tx_toggle.setEnabled(self.settings.transport != "practice")
         self._refresh_sessions()
+
+    @Slot(bool)
+    def _set_tx_enabled(self, enabled: bool):
+        if self.settings.transport == "practice":
+            enabled = True
+        self.settings.tx_enabled = enabled
+        self.settings.save()
+        self.tx_toggle.setText("TX ENABLED" if enabled else "TX DISABLED")
+        can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or enabled)
+        for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,
+                        self.invite_button, self.cancel_invite_button, self.start_button, self.chat_input,
+                        self.chat_send, self.join_button, self.announce_button, self.order_input,
+                        self.order_button, self.retry_button, self.connect_button, self.disconnect_button):
+            control.setEnabled(can_transmit)
+        self.sync_button.setEnabled(self.settings.transport == "practice" or enabled)
+        self.spot_button.setEnabled(not self.settings.observer_mode)
+        if self.engine:
+            self.engine.set_tx_enabled(enabled)
+            self._show_session(self.selected_id)
+
+    def _delete_game(self):
+        if not self.engine or not self.selected_id:
+            return
+        answer = QMessageBox.question(self, "Delete game", "Delete this game's saved state, chat, and queued messages from this device? This does not notify other stations.")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        sid = self.selected_id
+        self._run(partial(self.engine.delete_game, sid), lambda _result: setattr(self, "selected_id", None))
 
     def _populate_games(self):
         if not self.engine: return
         current = self.game_choice.currentData()
         self.game_choice.clear()
         for game in self.engine.catalog():
+            if "desktop" not in game.clients:
+                continue
             self.game_choice.addItem(f"{game.name} · {game.min_players}–{game.max_players}", game.key)
         index = self.game_choice.findData(current)
         if index >= 0: self.game_choice.setCurrentIndex(index)
@@ -355,6 +409,14 @@ class ArcadeWindow(QMainWindow):
         self.mode_label.setText(error)
 
     def _on_event(self, event: EngineEvent):
+        if event.name == "transmitting":
+            self.tx_activity.setText(f"TX · {event.data.get('kind')} → {event.data.get('destination')} · {event.data.get('reason')}")
+            QTimer.singleShot(6000, lambda: self.tx_activity.setText(""))
+        elif event.name == "tx_state":
+            self.tx_toggle.blockSignals(True)
+            self.tx_toggle.setChecked(bool(event.data.get("enabled")))
+            self.tx_toggle.setText("TX ENABLED" if event.data.get("enabled") else "TX DISABLED")
+            self.tx_toggle.blockSignals(False)
         if self.settings.sound_enabled and (event.name == "invitation" or
                 (event.name == "session_updated" and event.data.get("committed") and
                  event.data["session"].get("current_player") == self.settings.callsign)):
@@ -374,7 +436,7 @@ class ArcadeWindow(QMainWindow):
             self.footer_label.setText(f"Ignored malformed frame · {event.data.get('error','')}")
         elif event.name == "unsupported_game":
             self.footer_label.setText(f"Unsupported game ID {event.data['game_id']} from {event.data['sender']}")
-        if event.name in ("session_updated", "invitation", "delivery"):
+        if event.name in ("session_updated", "invitation", "delivery", "session_deleted"):
             self._refresh_sessions()
             if event.session and event.session == self.selected_id:
                 self._show_session(event.session)
@@ -384,7 +446,10 @@ class ArcadeWindow(QMainWindow):
             return
         selected = self.selected_id
         self.session_list.blockSignals(True); self.session_list.clear()
+        supported = {game.game_id for game in self.engine.catalog() if "desktop" in game.clients}
         for session in self.engine.sessions():
+            if session["game_id"] not in supported:
+                continue
             opponent = (" / ".join(session["players"]) or session["coordinator"]) if self.settings.observer_mode else next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
             turn = "your move" if session.get("current_player") == self.settings.callsign else session["status"]
             item = QListWidgetItem(f"{session['game']}\n{opponent}  ·  {turn}  ·  {session['id'][-6:]}")
@@ -393,6 +458,7 @@ class ArcadeWindow(QMainWindow):
             if session["id"] == selected:
                 self.session_list.setCurrentItem(item)
         self.session_list.blockSignals(False)
+        self.delete_button.setEnabled(bool(self.engine and self.engine.sessions()))
         if self.session_list.currentItem():
             self.selected_id = self.session_list.currentItem().data(Qt.ItemDataRole.UserRole)
         elif self.session_list.count():
@@ -400,6 +466,8 @@ class ArcadeWindow(QMainWindow):
             self.session_list.setCurrentRow(0)
             self.session_list.blockSignals(False)
             self.selected_id = self.session_list.currentItem().data(Qt.ItemDataRole.UserRole)
+        else:
+            self.selected_id = None
         self._show_session(self.selected_id)
 
     def _select_item(self, current, _previous):
@@ -413,24 +481,35 @@ class ArcadeWindow(QMainWindow):
             except KeyError: return
             signature = (sid, session["status"], session["revision"], session["sequence"],
                          session["pending_action"], tuple(session["players"]), tuple(session["invited"]),
-                         repr(session["view"]), repr(session.get("last_move")), session.get("error"), self.settings.transport)
+                         repr(session["view"]), repr(session.get("last_move")), session.get("error"), self.settings.transport, self.settings.tx_enabled)
             if signature == self._board_signature:
                 return
             self._board_signature = signature
         else:
             self._board_signature = None
         self._clear_board()
+        self.delete_button.setEnabled(bool(session))
         self.accept_button.setVisible(False); self.start_button.setVisible(False); self.invite_button.setVisible(False); self.cancel_invite_button.setVisible(False)
         self.join_button.setVisible(False); self.announce_button.setVisible(False); self.retry_button.setVisible(False)
         self.spot_button.setVisible(False)
         self.order_input.setVisible(False); self.order_button.setVisible(False)
         self.chat_list.clear()
         if not self.engine or not sid:
+            self.delete_button.setEnabled(False)
             self.game_heading.setText("Welcome to the airwaves")
             self.game_subtitle.setText("Start a game or accept an invitation to take a seat.")
             self.turn_badge.setText("NO GAME SELECTED"); self.players_label.setText("Stations appear here when a lobby opens.")
             return
         game = session["game"]; players = session["players"]
+        can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
+        for control in (self.new_button, self.peer_input, self.invite_button, self.cancel_invite_button,
+                        self.start_button, self.join_button, self.announce_button, self.order_input,
+                        self.order_button, self.retry_button, self.accept_button,
+                        self.chat_input, self.chat_send, self.connect_button, self.disconnect_button):
+            control.setEnabled(can_transmit)
+        self.sync_button.setEnabled(self.settings.transport == "practice" or self.settings.tx_enabled)
+        self.spot_button.setEnabled(not self.settings.observer_mode)
+        self.delete_button.setEnabled(True)
         self.spot_button.setVisible(not self.settings.observer_mode and session.get("hosted", False)
                                     and session["status"] in ("lobby", "active")
                                     and session["coordinator"] == self.settings.callsign)
@@ -495,7 +574,7 @@ class ArcadeWindow(QMainWindow):
         view = session["view"]
         if view["kind"] == "grid":
             board = QWidget(); grid = QGridLayout(board); grid.setSpacing(10)
-            my_turn = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+            my_turn = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"] and (self.settings.transport == "practice" or self.settings.tx_enabled)
             for cell, value in enumerate(view["cells"]):
                 text = value if value.strip() else str(cell + 1)
                 button = QPushButton(text); button.setObjectName(f"boardCell{cell}")
@@ -509,7 +588,7 @@ class ArcadeWindow(QMainWindow):
             host = QWidget(); box = QVBoxLayout(host)
             board = QWidget(); grid = QGridLayout(board); grid.setSpacing(4)
             grid.setContentsMargins(0, 0, 0, 0)
-            enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+            enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active" and not session["pending_action"] and (self.settings.transport == "practice" or self.settings.tx_enabled)
             for col in range(7):
                 choose = QPushButton(f"▼ {col+1}"); choose.setFixedSize(54, 40)
                 choose.setEnabled(enabled and view["cells"][col] == " ")
@@ -539,7 +618,7 @@ class ArcadeWindow(QMainWindow):
             controls = QHBoxLayout(); pile = QComboBox(); amount = QSpinBox(); amount.setRange(1, 7)
             pile.addItems([f"Pile {i+1}" for i in range(len(view["piles"]))])
             take = QPushButton("Take items"); take.setObjectName("primaryButton")
-            take.setEnabled((self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active")
+            take.setEnabled(not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active")
             take.clicked.connect(lambda: self._submit_action(bytes((pile.currentIndex(), amount.value()))))
             controls.addWidget(pile); controls.addWidget(amount); controls.addWidget(take); box.addLayout(controls)
             self.board_layout.addWidget(host)
@@ -571,7 +650,7 @@ class ArcadeWindow(QMainWindow):
             box.addWidget(grid_host, alignment=Qt.AlignmentFlag.AlignHCenter)
             for player, rack in view["racks"].items():
                 box.addWidget(QLabel(f"{player} RACK  " + "  ".join(rack)))
-            enabled = (self.settings.transport == "practice" or current == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+            enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or current == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
             form = QHBoxLayout(); start = QLineEdit(); start.setObjectName("wordStart"); start.setPlaceholderText("H8")
             direction = QComboBox(); direction.setObjectName("wordDirection"); direction.addItem("Across", "H"); direction.addItem("Down", "V")
             word = QLineEdit(); word.setObjectName("wordText"); word.setPlaceholderText("Word · use {A} for a blank tile")
@@ -593,7 +672,7 @@ class ArcadeWindow(QMainWindow):
             box.addWidget(QLabel("Plugin action · hexadecimal bytes"))
             raw = QLineEdit(); raw.setPlaceholderText("e.g. 0102")
             send = QPushButton("Submit action"); send.setObjectName("primaryButton")
-            send.setEnabled((self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active")
+            send.setEnabled(not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active")
             send.clicked.connect(lambda: self._submit_hex_action(raw.text()))
             box.addWidget(raw); box.addWidget(send); self.board_layout.addWidget(panel)
 

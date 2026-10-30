@@ -70,6 +70,8 @@ The service owns the transport and store passed to it. It schedules bounded retr
 
 Implement the game contract in `radio_arcade.games.base.Game`: API version, stable one-byte `game_id`, unique ASCII `key`, name, player limits, deterministic `new_state`, `current_player`, `apply_action`, state encode/decode, action description, and a UI-neutral `view_model`. Rules receive bytes for actions and never import a UI toolkit or transport. Register an installed factory under the `radio_arcade.games` Python entry-point group:
 
+Set optional `ui_clients` on a game to a tuple drawn from `"desktop"`, `"tui"`, and `"web"` to limit which game pickers show it. The default is all three clients. This is for games whose complete playable frontend is only available on selected interfaces; shared transport, session, and rule behavior remains in the engine.
+
 Game state is a dictionary with a boolean `finished` key. Return it from `new_state`, `apply_action`, and `decode_state`; the engine uses it to mark the session complete and restore its status from snapshots. `current_player` returns `None` once the game is finished. The encoded state and actions must decode consistently on every participant's installed copy of the game.
 
 Games whose state depends on the roster can optionally implement `validate_roster(state, players)` and raise `ValueError` for a mismatch. The engine calls it before accepting a start or recovery snapshot.

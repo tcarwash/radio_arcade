@@ -39,9 +39,11 @@ class ArcadeService:
     """
 
     def __init__(self, callsign: str, transport: Any, store: SessionStore | None = None,
-                 registry: GameRegistry | None = None, observer_mode: bool = False):
+                 registry: GameRegistry | None = None, observer_mode: bool = False,
+                 tx_enabled: bool = True):
         self.callsign = station_name(callsign)
         self.observer_mode = observer_mode
+        self.tx_enabled = bool(tx_enabled)
         if observer_mode and hasattr(transport, "connect_peer"):
             raise ValueError("observer mode requires a broadcast transport")
         self.transport = transport
@@ -157,6 +159,10 @@ class ArcadeService:
             self.store.delete_session(sid)
             self._emit("session_deleted", sid)
 
+    def set_tx_enabled(self, enabled: bool) -> None:
+        self.tx_enabled = bool(enabled)
+        self._emit("tx_state", enabled=self.tx_enabled)
+
     def catalog(self):
         return self.registry.catalog()
 
@@ -196,6 +202,9 @@ class ArcadeService:
                              self.callsign, target.upper(), payload, flags))
 
     def _transmit(self, frame: bytes) -> None:
+        if not self.tx_enabled:
+            self._emit("transmission_blocked", reason="TX is disabled")
+            return
         try:
             packet = decode(frame)
             reasons = {
@@ -227,6 +236,8 @@ class ArcadeService:
                   flags: int = 0) -> None:
         if self.observer_mode:
             raise ValueError("observer mode is receive-only except for explicit sync requests")
+        if not self.tx_enabled:
+            raise ValueError("TX is disabled. Enable TX to send radio traffic.")
         frame = self._make(session, target, kind, sequence, revision, payload, flags)
         self.store.save_outgoing(session["id"], target.upper(), int(kind), sequence, frame)
         self._transmit(frame)
@@ -1098,6 +1109,8 @@ class ArcadeService:
 
     def _retry_loop(self) -> None:
         while not self._stop.wait(0.5):
+            if not self.tx_enabled:
+                continue
             retry_target = getattr(self.transport, "retry_target", None)
             target = retry_target() if callable(retry_target) else None
             if callable(retry_target) and target is None:

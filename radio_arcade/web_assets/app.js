@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (selector, root = document) => root.querySelector(selector);
-const state = { snapshot: null, selectedId: null, session: null, sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null };
+const state = { snapshot: null, selectedId: null, session: null, sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null };
 const RESOURCE_META = [
   ["timber", "♣"], ["clay", "⬟"], ["wool", "✿"], ["grain", "✳"], ["ore", "◈"],
 ];
@@ -70,6 +70,7 @@ function setConnection(snapshot) {
 }
 
 function populateGames(catalog) {
+  catalog = catalog.filter(game => !game.clients || game.clients.includes("web"));
   const select = $("#game-select");
   const keys = catalog.map(game => game.key).join("|");
   if (select.dataset.keys === keys) return;
@@ -518,9 +519,197 @@ function renderPlugin(session, view, host) {
   host.append(form);
 }
 
+function renderScorchedEarth(session, view, host) {
+  const wrap = node("div", "tank-layout");
+  const arena = node("div", "tank-arena");
+  const svg = svgElement("svg", { class: "tank-map", viewBox: `0 0 ${view.width * 24} ${view.sky_height * 24}`,
+    role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
+  const width = view.width * 24, height = view.sky_height * 24;
+  svg.append(svgElement("rect", { x: 0, y: 0, width, height, class: "tank-sky" }));
+  for (let x = 0; x < view.width; x++) for (let y = 0; y < view.height; y++)
+    svg.append(svgElement("rect", { x: x * 24, y: y * 24, width: 24, height: 24, class: "tank-grid-cell" }));
+  const terrainPoints = [`0,${height}`];
+  view.terrain.forEach((elevation, x) => terrainPoints.push(`${x * 24 + 12},${height - elevation * 24}`));
+  terrainPoints.push(`${width},${height}`);
+  svg.append(svgElement("polygon", { points: terrainPoints.join(" "), class: "tank-ground" }));
+  for (const tank of view.tanks) {
+    const isLocalTank = tank.player === state.snapshot.callsign;
+    const seatLabel = isPractice() ? tank.player : isLocalTank ? "YOU" : "OPPONENT";
+    const group = svgElement("g", { class: `tank-unit ${isLocalTank ? "friendly" : "enemy"}` });
+    const cy = (view.sky_height - tank.world_y) * 24;
+    group.append(svgElement("rect", { x: tank.x * 24 - 17, y: cy - 8, width: 34, height: 16, rx: 4, class: "tank-body" }),
+      svgElement("line", { x1: tank.x * 24, y1: cy - 1, x2: tank.x * 24 + (tank.facing === 0 ? 20 : -20), y2: cy - 1, class: "tank-barrel" }),
+      svgElement("text", { x: tank.x * 24, y: cy + 23, class: "tank-label" }));
+    if (tank.shielded) group.prepend(svgElement("ellipse", { cx: tank.x * 24, cy, rx: 23, ry: 15, class: "tank-shield" }));
+    group.lastChild.textContent = seatLabel;
+    svg.append(group);
+    const motionKey = `${session.id}:${session.revision}`;
+    if (tank.player === view.last_actor && view.last_action_code === view.actions.drive && state.lastTankMotion !== motionKey) {
+      const oldX = tank.x + (view.last_action_parameter === 0 ? 2 : -2);
+      const oldY = view.terrain[Math.max(0, Math.min(view.width - 1, oldX))] + 0.65;
+      const offsetX = (oldX - tank.x) * 24, offsetY = (tank.world_y - oldY) * 24;
+      const motionStarted = performance.now();
+      function driveTank(now) {
+        const progress = Math.min(1, (now - motionStarted) / 420);
+        const eased = 1 - (1 - progress) ** 3;
+        group.setAttribute("transform", `translate(${offsetX * (1 - eased)} ${offsetY * (1 - eased)})`);
+        if (progress < 1) requestAnimationFrame(driveTank);
+        else group.removeAttribute("transform");
+      }
+      requestAnimationFrame(driveTank);
+      state.lastTankMotion = motionKey;
+    }
+  }
+  const trail = svgElement("polyline", { class: "tank-last-trajectory", points: "" });
+  if (view.trajectory.length > 1) {
+    trail.setAttribute("points", view.trajectory.map(([x, y]) => `${x * 24},${(view.sky_height - y) * 24}`).join(" "));
+    svg.append(trail);
+  }
+  if (view.impact) svg.append(svgElement("circle", { cx: view.impact.x * 24, cy: (view.sky_height - view.impact.y) * 24,
+    r: Math.max(8, view.weapons[view.impact.weapon].radius * 24), class: "tank-impact" }));
+  const preview = svgElement("polyline", { class: "tank-preview-trajectory", points: "" });
+  arena.append(svg);
+  const side = node("aside", "tank-side");
+  side.append(node("div", "tank-map-name", view.map_name), node("div", "tank-wind", `${view.wind.direction} ${view.wind.label} · shifts each turn`), node("div", "tank-help", isPractice()
+    ? "Aim with the wind and reshape the hills. Weapons are unlimited; fuel and repair kits are scarce."
+    : "Your browser pilots one tank. The other station pilots the opponent; both browsers resolve each turn and shot."));
+  for (const tank of view.tanks) {
+    const card = node("div", `tank-health${tank.player === view.turn ? " active" : ""}`);
+    const isLocalTank = tank.player === state.snapshot.callsign;
+    const label = isPractice() ? tank.player : `${isLocalTank ? "YOU" : "OPPONENT"} · ${tank.player}`;
+    const head = node("div", "tank-health-head"); head.append(node("span", "", label), node("strong", "", `${tank.hp} HP`));
+    const bar = svgElement("svg", { class: "tank-health-track", viewBox: "0 0 100 5", role: "img", "aria-label": `${tank.hp} health` });
+    const fill = svgElement("rect", { x: 0, y: 0, width: tank.hp, height: 5, rx: 2.5, class: "tank-health-fill" });
+    card.append(head, bar, node("div", "tank-supplies", `${tank.fuel} drive · ${tank.repair_kits} repair · ${tank.shielded ? "shield up" : "shield available"}`));
+    bar.append(svgElement("rect", { x: 0, y: 0, width: 100, height: 5, rx: 2.5, class: "tank-health-background" }), fill); side.append(card);
+  }
+  const form = node("form", "tank-controls");
+  const weapon = node("select", "field"); weapon.setAttribute("aria-label", "Weapon");
+  for (const item of view.weapons) { const option = node("option", "", `${item.name} · ${item.tag} · blast ${item.radius.toFixed(1)}`); option.value = item.id; weapon.append(option); }
+  const angleLabel = node("label", "tank-angle-label", "Firing angle · 45°");
+  const angle = node("input", "field tank-angle"); angle.type = "range"; angle.min = String(view.min_angle); angle.max = String(view.max_angle); angle.value = "45";
+  angleLabel.append(angle);
+  const submit = node("button", "button primary", "Fire weapon"); submit.type = "submit"; submit.disabled = !canAct(session);
+  form.append(weapon, angleLabel, submit);
+  function updatePreview() {
+    angleLabel.firstChild.textContent = `Firing angle · ${angle.value}°`;
+    const shooterName = isPractice() ? view.turn : state.snapshot.callsign;
+    const shooter = view.tanks.find(tank => tank.player === shooterName);
+    if (!shooter || !canAct(session)) { preview.remove(); return; }
+    const points = traceTankPreview(view, shooter, view.weapons[Number(weapon.value)], Number(angle.value));
+    preview.setAttribute("points", points.map(([x, y]) => `${x * 24},${(view.sky_height - y) * 24}`).join(" "));
+    if (!preview.isConnected) svg.append(preview);
+  }
+  angle.addEventListener("input", updatePreview);
+  weapon.addEventListener("change", updatePreview);
+  updatePreview();
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    const degrees = Number(angle.value);
+    if (!Number.isInteger(degrees) || degrees < view.min_angle || degrees > view.max_angle) { notify(`Firing angle must be between ${view.min_angle}° and ${view.max_angle}°.`); return; }
+    submitAction([Number(weapon.value), degrees]);
+  });
+  const activeTank = view.tanks.find(tank => tank.player === (isPractice() ? view.turn : state.snapshot.callsign));
+  const tactics = node("div", "tank-tactics");
+  const drive = node("div", "tank-drive-controls");
+  const left = node("button", "button secondary", "◀ Drive"); left.type = "button"; left.disabled = !canAct(session) || !activeTank?.fuel;
+  const right = node("button", "button secondary", "Drive ▶"); right.type = "button"; right.disabled = !canAct(session) || !activeTank?.fuel;
+  left.addEventListener("click", () => submitAction([view.actions.drive, 0]));
+  right.addEventListener("click", () => submitAction([view.actions.drive, 1]));
+  drive.append(left, right); tactics.append(drive);
+  const repair = node("button", "button secondary", "Repair +24 HP"); repair.type = "button";
+  repair.disabled = !canAct(session) || !activeTank || activeTank.repair_kits <= 0 || activeTank.hp >= 100;
+  repair.addEventListener("click", () => submitAction([view.actions.repair, 0]));
+  const shield = node("button", "button secondary", "Raise shield"); shield.type = "button";
+  shield.disabled = !canAct(session) || !activeTank || activeTank.shielded;
+  shield.addEventListener("click", () => submitAction([view.actions.shield, 0]));
+  tactics.append(repair, shield); side.append(tactics);
+  side.append(form);
+  const callout = node("div", "tank-shot-result", view.last_action ? `${view.last_actor} ${view.last_action}` : "Take the first turn");
+  side.append(callout);
+  wrap.append(arena, side); host.append(wrap);
+  const actor = view.last_actor;
+  const shotKey = `${session.id}:${session.revision}`;
+  if (actor && view.impact && view.trajectory.length > 1 && state.lastTankAnimation !== shotKey) {
+    state.lastTankAnimation = shotKey;
+    animateTankShot(svg, view, actor, callout);
+  }
+}
+
+function traceTankPreview(view, shooter, weapon, angle) {
+  const direction = shooter.facing === 0 ? 1 : -1;
+  let x = shooter.x + direction * 0.85, y = shooter.world_y;
+  const theta = angle * Math.PI / 180;
+  let vx = direction * weapon.speed * Math.cos(theta);
+  let vy = weapon.speed * Math.sin(theta);
+  const target = view.tanks.find(tank => tank.player !== shooter.player);
+  const points = [[x, y]];
+  for (let step = 0; step < 240; step++) {
+    x += vx; y += vy; vy -= view.gravity; vx += view.wind.acceleration;
+    if (direction * vx < 0) vx = 0;
+    points.push([x, y]);
+    if (target && (x - target.x) ** 2 + (y - target.world_y) ** 2 <= 0.82 ** 2) break;
+    if (x < 0 || x >= view.width || y < 0 || y > view.sky_height) break;
+    const column = Math.max(0, Math.min(view.width - 1, Math.round(x)));
+    if (y <= view.terrain[column]) { points[points.length - 1] = [x, view.terrain[column]]; break; }
+  }
+  return points;
+}
+
+function animateTankShot(svg, view, actor, callout) {
+  const shooter = view.tanks.find(tank => tank.player === actor);
+  if (!shooter || view.trajectory.length < 2) return;
+  const damaged = view.tanks.map((tank, player) => ({ tank, damage: view.last_damage?.[player] ?? 0 }))
+    .filter(item => item.damage > 0);
+  const hit = damaged.length > 0;
+  const totalDamage = damaged.reduce((total, item) => total + item.damage, 0);
+  callout.textContent = hit ? `HIT · ${damaged.map(item => `${item.damage} damage to ${item.tank.player}`).join(" · ")}`
+    : `MISS · ${view.impact.kind}, no damage`;
+  callout.classList.toggle("hit", hit);
+  callout.classList.toggle("miss", !hit);
+  const points = view.trajectory;
+  const first = points[0];
+  const flightTrail = svgElement("polyline", { class: "tank-flight-trail", points: "" });
+  const projectile = svgElement("circle", { cx: first[0] * 24,
+    cy: (view.sky_height - first[1]) * 24, r: 6, class: "tank-projectile" });
+  svg.append(flightTrail, projectile);
+  const started = performance.now();
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const duration = reducedMotion ? 1500 : Math.min(3200, Math.max(2200, points.length * 42));
+  function fly(now) {
+    const t = duration ? Math.min(1, (now - started) / duration) : 1;
+    const position = t * (points.length - 1);
+    const index = Math.min(points.length - 2, Math.floor(position));
+    const fraction = position - index;
+    const x = points[index][0] + (points[index + 1][0] - points[index][0]) * fraction;
+    const y = points[index][1] + (points[index + 1][1] - points[index][1]) * fraction;
+    projectile.setAttribute("cx", String(x * 24));
+    projectile.setAttribute("cy", String((view.sky_height - y) * 24));
+    const trailPoints = points.slice(0, index + 1).map(([px, py]) => `${px * 24},${(view.sky_height - py) * 24}`);
+    trailPoints.push(`${x * 24},${(view.sky_height - y) * 24}`);
+    flightTrail.setAttribute("points", trailPoints.join(" "));
+    if (t < 1) { requestAnimationFrame(fly); return; }
+    projectile.remove();
+    setTimeout(() => flightTrail.remove(), reducedMotion ? 350 : 800);
+    const impact = view.impact;
+    const x1 = impact.x * 24, y1 = (view.sky_height - impact.y) * 24;
+    const offsets = impact.weapon === 3 ? [-1.2, 0, 1.2] : [0];
+    const blasts = offsets.map(offset => svgElement("circle", { cx: x1 + offset * 24, cy: y1 - (offset === 0 || offsets.length === 1 ? 0 : 5),
+      r: Math.max(9, view.weapons[impact.weapon].radius * 17), class: `tank-blast${hit ? " hit" : " miss"}` }));
+    svg.append(...blasts);
+    const label = svgElement("text", { x: x1, y: y1 - 19, class: `tank-hit-label${hit ? " hit" : " miss"}` });
+    label.textContent = hit ? `−${totalDamage} HP` : "MISS";
+    svg.append(label);
+    setTimeout(() => { label.remove(); }, 1700);
+    setTimeout(() => { blasts.forEach(blast => blast.remove()); }, 1100);
+  }
+  requestAnimationFrame(fly);
+}
+
 function renderGame(session) {
   const view = session.view;
   const host = $("#arena-body"); host.replaceChildren();
+  host.classList.toggle("tank-arena-body", view?.kind === "scorched-earth");
   state.islandSelection = view?.kind === "settlement" ? state.islandSelection : null;
   if (!view) {
     const empty = node("div", "welcome-state");
@@ -533,6 +722,7 @@ function renderGame(session) {
   const block = node("div", "game-block");
   switch (view.kind) {
     case "grid": renderGrid(session, view, block); break;
+    case "scorched-earth": renderScorchedEarth(session, view, block); break;
     case "piles": renderNim(session, view, block); break;
     case "word-tiles": renderWordTiles(session, view, block); break;
     case "settlement": renderIsland(session, view, block); break;
@@ -623,6 +813,7 @@ async function refresh() {
       $("#chat-input").disabled = true; $("#chat-send").disabled = true;
     }
   } catch (error) {
+    console.error("Radio Arcade refresh failed:", error);
     $("#connection-status").classList.add("offline");
     $("#connection-status").lastElementChild.textContent = "Web service offline";
     if (!state.snapshot) notify(error.message);
@@ -664,7 +855,7 @@ function submitAction(bytes) {
 function openSettings() {
   const form = $("#settings-form");
   if (state.snapshot) {
-    for (const key of ["callsign", "host", "transport", "group", "command_port", "kiss_port", "color_scheme"]) {
+    for (const key of ["callsign", "host", "transport", "group", "broadcast_mode", "command_port", "kiss_port", "color_scheme"]) {
       if (form.elements[key]) form.elements[key].value = state.snapshot[key] ?? "";
     }
     form.elements.observer_mode.checked = Boolean(state.snapshot.observer_mode);
