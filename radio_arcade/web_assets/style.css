@@ -221,18 +221,23 @@ select.field, .settings-card select { appearance: none; background-image: linear
 
 .island-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(190px, .8fr); gap: 14px; align-items: start; }
 .tank-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .45fr); gap: 14px; align-items: start; }
-.tank-arena { min-width: 0; overflow: hidden; border: 1px solid rgba(178,198,230,.12); border-radius: 13px; background: #111b29; }
+.tank-arena { min-width: 0; overflow: hidden; border: 1px solid rgba(178,198,230,.24); border-radius: 13px; background: #111b29; box-shadow: inset 0 0 40px rgba(95,160,193,.08), 0 12px 36px rgba(0,0,0,.19); }
 .tank-map { display: block; width: 100%; height: auto; max-height: 500px; }
-.tank-sky { fill: #18283a; }
+.tank-sky { fill: url(#scorched-sky); }
+.tank-moon { fill: #e6edcf; opacity: .75; filter: drop-shadow(0 0 20px rgba(223,236,194,.48)); }
+.tank-distant-hills { fill: rgba(114,149,150,.16); stroke: rgba(163,189,174,.16); stroke-width: 2; }
 .tank-grid-cell { fill: transparent; stroke: rgba(180,205,229,.075); stroke-width: 1; }
-.tank-ground { fill: #66583f; stroke: #d2a76d; stroke-width: 2; }
+.tank-ground { fill: url(#scorched-ground); stroke: #a3c58e; stroke-width: 2.5; filter: drop-shadow(0 -2px 4px rgba(141,184,117,.25)); }
 .tank-map { cursor: default; }
 .tank-unit { pointer-events: none; }
 .tank-body { stroke: #101923; stroke-width: 2; }
-.tank-unit.friendly .tank-body { fill: #79cba7; }
-.tank-unit.enemy .tank-body { fill: #e67e68; }
+.tank-treads { fill: #1b2c35; stroke: #65818a; stroke-width: 1.5; }
+.tank-turret { fill: #d0e3dc; stroke: #21303a; stroke-width: 2; }
+.tank-shadow { fill: rgba(0,0,0,.26); }
+.tank-unit.friendly .tank-body { fill: #79cba7; filter: drop-shadow(0 0 6px rgba(121,203,167,.24)); }
+.tank-unit.enemy .tank-body { fill: #e67e68; filter: drop-shadow(0 0 6px rgba(230,126,104,.25)); }
 .tank-shield { fill: rgba(118,206,255,.13); stroke: rgba(164,225,255,.82); stroke-width: 1.5; stroke-dasharray: 3 2; filter: drop-shadow(0 0 4px rgba(85,193,255,.55)); }
-.tank-barrel { stroke: #dce6eb; stroke-width: 4; stroke-linecap: round; }
+.tank-barrel { stroke: #dce6eb; stroke-width: 4; stroke-linecap: round; filter: drop-shadow(0 1px 2px #0b1825); }
 .tank-label { fill: #e8edf4; text-anchor: middle; font: 700 8px 'Space Grotesk', sans-serif; paint-order: stroke; stroke: #111923; stroke-width: 3px; }
 .tank-aim-ring { fill: rgba(249,211,124,.16); stroke: #f5d081; stroke-width: 2; }
 .tank-aim-label { fill: #fff0c9; text-anchor: middle; font: 700 8px 'Space Grotesk', sans-serif; }

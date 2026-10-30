@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 from functools import partial
 import html
+from math import cos, sin
 import sys
+import time
 from typing import Callable
 
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
@@ -27,13 +29,30 @@ from .games.scorched_earth import _trace_shot, _wind
 class ScorchedBattlefield(QWidget):
     """Resolution-independent native rendering of the shared artillery state."""
 
-    def __init__(self, view: dict, parent=None):
+    def __init__(self, view: dict, animate: bool = False, parent=None):
         super().__init__(parent)
         self.view = view
         self.preview: list[tuple[int, int]] = []
+        self.flight_progress = 1.0
+        self._flight_started = 0.0
+        self._flight_timer = QTimer(self)
+        self._flight_timer.setInterval(16)
+        self._flight_timer.timeout.connect(self._advance_flight)
         self.setMinimumSize(240, 165)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setObjectName("scorchedBattlefield")
+        if animate and len(view.get("trajectory", [])) > 1:
+            self.flight_progress = 0.0
+            self._flight_started = time.monotonic()
+            self._flight_timer.start()
+
+    def _advance_flight(self):
+        self.flight_progress = min(1.0, (time.monotonic() - self._flight_started) / 2.0)
+        self.update()
+        if self.flight_progress >= 1:
+            # Keep a short impact flash after the projectile lands.
+            if time.monotonic() - self._flight_started >= 2.55:
+                self._flight_timer.stop()
 
     def set_preview(self, path: list[tuple[int, int]]):
         self.preview = path
@@ -53,6 +72,12 @@ class ScorchedBattlefield(QWidget):
         sky.setColorAt(0, QColor("#091525")); sky.setColorAt(1, QColor("#28445b"))
         painter.fillRect(0, 0, 32, 24, QBrush(sky))
         painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(132, 173, 188, 28))
+        distant = QPolygonF([QPointF(0, 22)] +
+                            [QPointF(x, 15 + ((x * 13 + 7) % 9) / 3) for x in range(33)] +
+                            [QPointF(32, 24), QPointF(0, 24)])
+        painter.drawPolygon(distant)
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(217, 232, 251, 95))
         for i in range(46):
             painter.drawEllipse(QPointF(((i * 187 + 43) % 768) / 24,
@@ -61,7 +86,9 @@ class ScorchedBattlefield(QWidget):
         terrain = QPolygonF([QPointF(0, 24)] +
                             [QPointF(x + .5, 24 - height) for x, height in enumerate(view["terrain"])] +
                             [QPointF(32, 24)])
-        painter.setBrush(QColor("#455f48"))
+        earth = QLinearGradient(0, 9, 0, 24)
+        earth.setColorAt(0, QColor("#62825c")); earth.setColorAt(1, QColor("#293b35"))
+        painter.setBrush(QBrush(earth))
         painter.setPen(QPen(QColor("#91bd89"), .11))
         painter.drawPolygon(terrain)
         def draw_path(points, color, dotted=False):
@@ -74,15 +101,37 @@ class ScorchedBattlefield(QWidget):
             if dotted:
                 pen.setStyle(Qt.PenStyle.DashLine)
             painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush); painter.drawPath(path)
-        draw_path(view.get("trajectory", []), "#ec996f", True)
+        trajectory = view.get("trajectory", [])
+        if self.flight_progress >= 1:
+            draw_path(trajectory, "#ec996f", True)
+        elif trajectory:
+            position = self.flight_progress * (len(trajectory) - 1)
+            index = min(len(trajectory) - 2, int(position))
+            fraction = position - index
+            start = trajectory[index]; end = trajectory[index + 1]
+            location = (start[0] + (end[0] - start[0]) * fraction,
+                        start[1] + (end[1] - start[1]) * fraction)
+            draw_path(trajectory[:index + 1] + [location], "#ffdb8c")
+            painter.setPen(QPen(QColor("#ffb55d"), .23))
+            painter.setBrush(QColor("#fff5c1"))
+            painter.drawEllipse(QPointF(location[0], 24 - location[1]), .18, .18)
         draw_path([(x / 1000, y / 1000) for x, y in self.preview], "#dceeff", True)
         impact = view.get("impact")
-        if impact and impact["kind"] != "edge":
+        if impact and impact["kind"] != "edge" and self.flight_progress >= 1:
             painter.setPen(QPen(QColor("#ef9767"), .09, Qt.PenStyle.DashLine))
-            painter.setBrush(QColor(240, 125, 76, 28))
+            flashing = self._flight_timer.isActive()
+            painter.setBrush(QColor(255, 147, 68, 110 if flashing else 28))
             painter.drawEllipse(QPointF(impact["x"], 24 - impact["y"]),
                                 view["weapons"][impact["weapon"]]["radius"],
                                 view["weapons"][impact["weapon"]]["radius"])
+            if flashing:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(255, 200, 95, 220))
+                for i in range(18):
+                    direction = i * 6.283185307 / 18
+                    distance = .6 + (i * 7 % 13) / 8
+                    painter.drawEllipse(QPointF(impact["x"] + cos(direction) * distance,
+                                                24 - impact["y"] + sin(direction) * distance), .07, .07)
         for index, tank in enumerate(view["tanks"]):
             x, y = tank["x"], 24 - tank["world_y"]
             if tank["shielded"]:
@@ -215,6 +264,7 @@ class ArcadeWindow(QMainWindow):
         self.unsubscribe = None
         self.selected_id: str | None = None
         self._board_signature = None
+        self._last_scorched_animation_key = None
         self._event_bridge = EventBridge(self)
         self._event_bridge.received.connect(self._on_event, Qt.ConnectionType.QueuedConnection)
         self._pool = QThreadPool.globalInstance()
@@ -770,7 +820,11 @@ class ArcadeWindow(QMainWindow):
     def _render_scorched(self, session: dict, view: dict):
         """Native artillery controls; only two-byte moves enter the shared engine."""
         host = QWidget(); layout = QHBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0)
-        battlefield = ScorchedBattlefield(view)
+        shot_key = (session["id"], session["revision"])
+        animate = bool(view.get("impact") and self._last_scorched_animation_key != shot_key)
+        if animate:
+            self._last_scorched_animation_key = shot_key
+        battlefield = ScorchedBattlefield(view, animate=animate)
         layout.addWidget(battlefield, 3)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(180)
         scroll.setFrameShape(QFrame.Shape.NoFrame)

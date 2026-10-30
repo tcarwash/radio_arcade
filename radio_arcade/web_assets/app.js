@@ -539,7 +539,21 @@ function renderScorchedEarth(session, view, host) {
   const svg = svgElement("svg", { class: "tank-map", viewBox: `0 0 ${view.width * 24} ${view.sky_height * 24}`,
     role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
   const width = view.width * 24, height = view.sky_height * 24;
+  const defs = svgElement("defs");
+  const skyGradient = svgElement("linearGradient", { id: "scorched-sky", x1: "0%", y1: "0%", x2: "0%", y2: "100%" });
+  skyGradient.append(svgElement("stop", { offset: "0%", "stop-color": "#081426" }),
+    svgElement("stop", { offset: "68%", "stop-color": "#1e3850" }),
+    svgElement("stop", { offset: "100%", "stop-color": "#58726c" }));
+  const landGradient = svgElement("linearGradient", { id: "scorched-ground", x1: "0%", y1: "0%", x2: "0%", y2: "100%" });
+  landGradient.append(svgElement("stop", { offset: "0%", "stop-color": "#739067" }),
+    svgElement("stop", { offset: "100%", "stop-color": "#27382f" }));
+  defs.append(skyGradient, landGradient); svg.append(defs);
   svg.append(svgElement("rect", { x: 0, y: 0, width, height, class: "tank-sky" }));
+  svg.append(svgElement("circle", { cx: width * .75, cy: height * .18, r: 28, class: "tank-moon" }));
+  const hills = [`0,${height}`];
+  for (let i = 0; i <= view.width; i++) hills.push(`${i * 24},${height * (.59 + ((i * 13 + 7) % 9) / 90)}`);
+  hills.push(`${width},${height}`);
+  svg.append(svgElement("polygon", { points: hills.join(" "), class: "tank-distant-hills" }));
   const stars = svgElement("g", { class: "tank-stars" });
   for (let i = 0; i < 45; i++) {
     const sx = ((i * 187 + 43) % width), sy = ((i * 79 + 17) % (height * .52));
@@ -557,7 +571,10 @@ function renderScorchedEarth(session, view, host) {
     const seatLabel = isPractice() ? tank.player : isLocalTank ? "YOU" : "OPPONENT";
     const group = svgElement("g", { class: `tank-unit ${isLocalTank ? "friendly" : "enemy"}` });
     const cy = (view.sky_height - tank.world_y) * 24;
-    group.append(svgElement("rect", { x: tank.x * 24 - 17, y: cy - 8, width: 34, height: 16, rx: 4, class: "tank-body" }),
+    group.append(svgElement("ellipse", { cx: tank.x * 24, cy: cy + 11, rx: 21, ry: 4, class: "tank-shadow" }),
+      svgElement("rect", { x: tank.x * 24 - 19, y: cy + 1, width: 38, height: 10, rx: 5, class: "tank-treads" }),
+      svgElement("rect", { x: tank.x * 24 - 17, y: cy - 8, width: 34, height: 16, rx: 4, class: "tank-body" }),
+      svgElement("rect", { x: tank.x * 24 - 9, y: cy - 12, width: 18, height: 8, rx: 3, class: "tank-turret" }),
       svgElement("line", { x1: tank.x * 24, y1: cy - 1, x2: tank.x * 24 + (tank.facing === 0 ? 20 : -20), y2: cy - 1, class: "tank-barrel" }),
       svgElement("text", { x: tank.x * 24, y: cy + 23, class: "tank-label" }));
     if (tank.shielded) group.prepend(svgElement("ellipse", { cx: tank.x * 24, cy, rx: 23, ry: 15, class: "tank-shield" }));

@@ -37,6 +37,11 @@ class DesktopScenarios(unittest.TestCase):
                 while engine.session(sid)["revision"] < 1 and time.monotonic() < deadline:
                     app.processEvents(); time.sleep(.01)
                 self.assertEqual(engine.session(sid)["revision"], 1)
+                window._show_session(sid)
+                animated = window.findChild(ScorchedBattlefield, "scorchedBattlefield")
+                self.assertIsNotNone(animated)
+                self.assertLess(animated.flight_progress, 1)
+                self.assertTrue(animated._flight_timer.isActive())
             finally:
                 window.close(); engine.close(); app.processEvents()
 
