@@ -118,6 +118,11 @@ class WebControllerScenarios(unittest.TestCase):
                 state = json.load(response)
                 self.assertEqual(state["callsign"], "N0CALL")
                 self.assertEqual(response.headers["Content-Type"], "application/json; charset=utf-8")
+            for sprite in ("tank-teal.png", "tank-amber.png"):
+                with urlopen(base + "/" + sprite) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers["Content-Type"], "image/png")
+                    self.assertTrue(response.read().startswith(b"\x89PNG\r\n\x1a\n"))
         finally:
             server.shutdown()
             server.server_close()

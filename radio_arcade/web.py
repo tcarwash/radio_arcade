@@ -274,7 +274,8 @@ class ArcadeRequestHandler(BaseHTTPRequestHandler):
             self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
             return
         asset_names = {"/": "index.html", "/index.html": "index.html",
-                       "/app.js": "app.js", "/style.css": "style.css"}
+                       "/app.js": "app.js", "/style.css": "style.css",
+                       "/tank-teal.png": "tank-teal.png", "/tank-amber.png": "tank-amber.png"}
         name = asset_names.get(path)
         if not name:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
@@ -285,7 +286,7 @@ class ArcadeRequestHandler(BaseHTTPRequestHandler):
             self._send(500, b"Web assets are missing", "text/plain; charset=utf-8")
             return
         content_type = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-                        ".css": "text/css; charset=utf-8"}[Path(name).suffix]
+                        ".css": "text/css; charset=utf-8", ".png": "image/png"}[Path(name).suffix]
         self._send(200, payload, content_type, "no-cache")
 
     def do_POST(self) -> None:

@@ -6,12 +6,13 @@ import argparse
 from functools import partial
 import html
 from math import cos, sin
+from pathlib import Path
 import sys
 import time
 from typing import Callable
 
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
@@ -33,6 +34,10 @@ class ScorchedBattlefield(QWidget):
         super().__init__(parent)
         self.view = view
         self.preview: list[tuple[int, int]] = []
+        self.aim_angle = 45
+        self.aim_player = view.get("turn")
+        assets = Path(__file__).with_name("web_assets")
+        self.sprites = [QPixmap(str(assets / name)) for name in ("tank-teal.png", "tank-amber.png")]
         self.flight_progress = 1.0
         self._flight_started = 0.0
         self._flight_timer = QTimer(self)
@@ -54,8 +59,10 @@ class ScorchedBattlefield(QWidget):
             if time.monotonic() - self._flight_started >= 2.55:
                 self._flight_timer.stop()
 
-    def set_preview(self, path: list[tuple[int, int]]):
+    def set_preview(self, path: list[tuple[int, int]], angle: int = 45, player: str | None = None):
         self.preview = path
+        self.aim_angle = angle
+        self.aim_player = player
         self.update()
 
     def paintEvent(self, _event):
@@ -134,15 +141,30 @@ class ScorchedBattlefield(QWidget):
                                                 24 - impact["y"] + sin(direction) * distance), .07, .07)
         for index, tank in enumerate(view["tanks"]):
             x, y = tank["x"], 24 - tank["world_y"]
+            if self._flight_timer.isActive() and self.flight_progress < .18 and tank["player"] == view.get("last_actor"):
+                x += (-.14 if index == 0 else .14) * sin(self.flight_progress / .18 * 3.14159)
+            if self._flight_timer.isActive() and self.flight_progress >= 1 and view.get("last_damage", [0, 0])[index]:
+                x += .12 * sin(time.monotonic() * 45)
             if tank["shielded"]:
                 painter.setPen(QPen(QColor("#74d9fb"), .12))
                 painter.setBrush(QColor(91, 197, 241, 35))
                 painter.drawEllipse(QPointF(x, y), 1.0, .8)
             painter.setPen(QPen(QColor("#142333"), .11))
             painter.setBrush(QColor("#76e5c8" if index == 0 else "#f3b476"))
-            painter.drawRoundedRect(QRectF(x - .65, y - .25, 1.3, .55), .15, .15)
+            if not self.sprites[index].isNull():
+                painter.drawPixmap(QRectF(x - 1.05, y - .96, 2.1, 1.45), self.sprites[index],
+                                   QRectF(self.sprites[index].rect()))
+            else:
+                painter.drawRoundedRect(QRectF(x - .65, y - .25, 1.3, .55), .15, .15)
             painter.setPen(QPen(QColor("#e7edf4"), .15, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            painter.drawLine(QPointF(x, y), QPointF(x + (.9 if index == 0 else -.9), y))
+            angle = (self.aim_angle if tank["player"] == self.aim_player else
+                     view["last_action_parameter"] if tank["player"] == view.get("last_actor") and
+                     view.get("impact") else 45)
+            direction = 1 if index == 0 else -1
+            barrel_x, barrel_y = x + direction * .15, y - .48
+            theta = angle * 3.1415926535 / 180
+            painter.drawLine(QPointF(barrel_x, barrel_y),
+                             QPointF(barrel_x + direction * 1.0 * cos(theta), barrel_y - 1.0 * sin(theta)))
             painter.setPen(QColor("#ffffff"))
             painter.setFont(QFont("Sans Serif", 7))
             painter.save(); painter.scale(1 / scale, 1 / scale)
@@ -862,7 +884,7 @@ class ArcadeWindow(QMainWindow):
             saved = game.decode_state(session["state"])
             shot = _trace_shot(saved["terrain"], saved["x"], saved["turn"],
                                int(weapon.currentData()), angle.value(), _wind(saved["map"], saved["round"]))
-            battlefield.set_preview(shot["path"])
+            battlefield.set_preview(shot["path"], angle.value(), actor)
         angle.valueChanged.connect(preview)
         weapon.currentIndexChanged.connect(preview)
         fire = QPushButton("Fire weapon"); fire.setObjectName("scorchedFire")

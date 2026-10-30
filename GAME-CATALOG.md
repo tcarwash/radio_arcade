@@ -43,3 +43,8 @@ compatible with older clients using game ID 7. Avoid mixed-version radio matches
 Each browser presents one local pilot against an opponent seat. In a connected
 match, the other station controls that seat; both browsers render the synced
 turn, shot, and result locally.
+
+Desktop and browser battlefields use two transparent, bundled tank sprites
+(`tank-teal.png` and `tank-amber.png`), with independently aimed barrels and
+local-only recoil, flight, and damage animations. The artwork does not change
+the game rules or add anything to radio packets.

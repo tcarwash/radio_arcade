@@ -566,19 +566,33 @@ function renderScorchedEarth(session, view, host) {
   view.terrain.forEach((elevation, x) => terrainPoints.push(`${x * 24 + 12},${height - elevation * 24}`));
   terrainPoints.push(`${width},${height}`);
   svg.append(svgElement("polygon", { points: terrainPoints.join(" "), class: "tank-ground" }));
-  for (const tank of view.tanks) {
+  const barrels = new Map(), tankArtwork = new Map();
+  for (const [index, tank] of view.tanks.entries()) {
     const isLocalTank = tank.player === state.snapshot.callsign;
     const seatLabel = isPractice() ? tank.player : isLocalTank ? "YOU" : "OPPONENT";
     const group = svgElement("g", { class: `tank-unit ${isLocalTank ? "friendly" : "enemy"}` });
     const cy = (view.sky_height - tank.world_y) * 24;
-    group.append(svgElement("ellipse", { cx: tank.x * 24, cy: cy + 11, rx: 21, ry: 4, class: "tank-shadow" }),
-      svgElement("rect", { x: tank.x * 24 - 19, y: cy + 1, width: 38, height: 10, rx: 5, class: "tank-treads" }),
-      svgElement("rect", { x: tank.x * 24 - 17, y: cy - 8, width: 34, height: 16, rx: 4, class: "tank-body" }),
-      svgElement("rect", { x: tank.x * 24 - 9, y: cy - 12, width: 18, height: 8, rx: 3, class: "tank-turret" }),
-      svgElement("line", { x1: tank.x * 24, y1: cy - 1, x2: tank.x * 24 + (tank.facing === 0 ? 20 : -20), y2: cy - 1, class: "tank-barrel" }),
-      svgElement("text", { x: tank.x * 24, y: cy + 23, class: "tank-label" }));
+    const art = svgElement("g", { class: "tank-art" });
+    const barrel = svgElement("line", { class: "tank-barrel" });
+    const sprite = svgElement("image", { href: index === 0 ? "/tank-teal.png" : "/tank-amber.png",
+      x: tank.x * 24 - 24, y: cy - 22, width: 48, height: 35, preserveAspectRatio: "xMidYMid meet", class: "tank-sprite" });
+    const label = svgElement("text", { x: tank.x * 24, y: cy + 23, class: "tank-label" });
+    label.textContent = seatLabel;
+    art.append(svgElement("ellipse", { cx: tank.x * 24, cy: cy + 11, rx: 21, ry: 4, class: "tank-shadow" }),
+      barrel, sprite);
+    group.append(art, label);
     if (tank.shielded) group.prepend(svgElement("ellipse", { cx: tank.x * 24, cy, rx: 23, ry: 15, class: "tank-shield" }));
-    group.lastChild.textContent = seatLabel;
+    barrels.set(tank.player, barrel); tankArtwork.set(tank.player, art);
+    function setBarrelAngle(degrees) {
+      const direction = tank.facing === 0 ? 1 : -1;
+      const theta = degrees * Math.PI / 180;
+      const x = tank.x * 24 + direction * 3, y = cy - 10;
+      barrel.setAttribute("x1", x); barrel.setAttribute("y1", y);
+      barrel.setAttribute("x2", x + direction * Math.cos(theta) * 25);
+      barrel.setAttribute("y2", y - Math.sin(theta) * 25);
+    }
+    setBarrelAngle(tank.player === view.last_actor && view.impact ? view.last_action_parameter : 45);
+    barrel.setAngle = setBarrelAngle;
     svg.append(group);
     const motionKey = `${session.id}:${session.revision}`;
     if (tank.player === view.last_actor && view.last_action_code === view.actions.drive && state.lastTankMotion !== motionKey) {
@@ -637,6 +651,7 @@ function renderScorchedEarth(session, view, host) {
     angleLabel.firstChild.textContent = `Firing angle · ${angle.value}°`;
     const shooterName = isPractice() ? view.turn : state.snapshot.callsign;
     const shooter = view.tanks.find(tank => tank.player === shooterName);
+    barrels.get(shooterName)?.setAngle(Number(angle.value));
     if (!shooter || !canAct(session)) { preview.remove(); return; }
     const points = traceTankPreview(view, shooter, view.weapons[Number(weapon.value)], Number(angle.value));
     preview.setAttribute("points", points.map(([x, y]) => `${x * 24},${(view.sky_height - y) * 24}`).join(" "));
@@ -683,6 +698,14 @@ function renderScorchedEarth(session, view, host) {
   const shotKey = `${session.id}:${session.revision}`;
   if (actor && view.impact && view.trajectory.length > 1 && state.lastTankAnimation !== shotKey) {
     state.lastTankAnimation = shotKey;
+    const firingArt = tankArtwork.get(actor);
+    if (firingArt) { firingArt.classList.add("recoiling"); setTimeout(() => firingArt.classList.remove("recoiling"), 550); }
+    view.tanks.forEach((tank, i) => {
+      if (view.last_damage?.[i] > 0) {
+        const art = tankArtwork.get(tank.player);
+        if (art) { art.classList.add("damaged"); setTimeout(() => art.classList.remove("damaged"), 900); }
+      }
+    });
     animateTankShot(svg, view, actor, callout);
   }
 }

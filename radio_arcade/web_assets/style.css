@@ -230,6 +230,13 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .tank-ground { fill: url(#scorched-ground); stroke: #a3c58e; stroke-width: 2.5; filter: drop-shadow(0 -2px 4px rgba(141,184,117,.25)); }
 .tank-map { cursor: default; }
 .tank-unit { pointer-events: none; }
+.tank-sprite { image-rendering: auto; filter: drop-shadow(0 2px 2px rgba(0,0,0,.65)); }
+.tank-art { transform-box: fill-box; transform-origin: center bottom; }
+.tank-art.recoiling { animation: tank-recoil 520ms cubic-bezier(.18,.74,.35,1) both; }
+.tank-art.damaged { animation: tank-damage 850ms ease-out both; }
+@keyframes tank-recoil { 0%,100% { transform:translateX(0); } 16% { transform:translateX(-5px) rotate(-2deg); } 44% { transform:translateX(2px) rotate(1deg); } }
+@keyframes tank-damage { 0%,100% { filter:none; transform:translateX(0); } 14%,40% { filter:brightness(2.3) sepia(.6); transform:translateX(4px); } 25%,55% { filter:brightness(1.6); transform:translateX(-4px); } }
+@media (prefers-reduced-motion: reduce) { .tank-art.recoiling, .tank-art.damaged { animation:none; } }
 .tank-body { stroke: #101923; stroke-width: 2; }
 .tank-treads { fill: #1b2c35; stroke: #65818a; stroke-width: 1.5; }
 .tank-turret { fill: #d0e3dc; stroke: #21303a; stroke-width: 2; }
