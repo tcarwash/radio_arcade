@@ -54,6 +54,19 @@ function setConnection(snapshot) {
   else label.textContent = `${snapshot.transport === "broadcast" ? "Broadcast" : "Connected"} · ${snapshot.callsign}`;
   $("#transport-label").textContent = !snapshot.ready ? "STATION OFFLINE" : isPractice() ? "LOCAL PRACTICE · HOT-SEAT" : `${snapshot.transport.toUpperCase()} · ${snapshot.group}`;
   document.documentElement.dataset.scheme = snapshot.color_scheme || "midnight";
+  const tx = $("#tx-toggle");
+  tx.textContent = snapshot.tx_enabled ? "TX ENABLED" : "TX DISABLED";
+  tx.setAttribute("aria-pressed", String(Boolean(snapshot.tx_enabled)));
+  tx.classList.toggle("tx-off", !snapshot.tx_enabled);
+  tx.disabled = isPractice();
+  tx.title = isPractice() ? "Local practice does not use radio transmission" : "Allow or block radio transmission";
+  const activity = $("#tx-activity"), lastTx = snapshot.last_transmission;
+  const recentTx = lastTx && Date.now() / 1000 - (lastTx.completed || lastTx.started) < 6;
+  activity.classList.toggle("active", Boolean(snapshot.transmitting));
+  activity.textContent = snapshot.transmitting && lastTx
+    ? `SENDING · ${lastTx.kind} to ${lastTx.destination} · ${lastTx.reason}`
+    : recentTx && lastTx ? `TX SENT · ${lastTx.kind} to ${lastTx.destination} · ${lastTx.reason}` : "";
+  activity.title = activity.textContent;
 }
 
 function populateGames(catalog) {
@@ -216,6 +229,10 @@ function renderSessionActions(session) {
     addButton(row, "Connect / resume", () => sendCommand("connect_peer", { peer: peer.value }));
     addButton(row, "Disconnect", () => sendCommand("disconnect_peer"));
   }
+  addButton(actions, "Delete game from this device", () => {
+    if (!window.confirm("Delete this game's saved state, chat, and queued messages from this device? This does not notify other stations.")) return;
+    command("delete_game");
+  });
 }
 
 function renderScoreStrip(session, view) {
@@ -631,6 +648,9 @@ async function sendCommand(command, extra = {}) {
     if (command === "create_game" && result.session_id) {
       state.selectedId = result.session_id; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
     }
+    if (command === "delete_game") {
+      state.selectedId = null; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
+    }
     await refresh();
     return result;
   } catch (error) { notify(error.message); return null; }
@@ -654,6 +674,13 @@ function openSettings() {
 }
 
 $("#settings-open").addEventListener("click", openSettings);
+$("#tx-toggle").addEventListener("click", async () => {
+  if (!state.snapshot || isPractice()) return;
+  try {
+    state.snapshot = await request("/api/tx", { method: "POST", body: JSON.stringify({ enabled: !state.snapshot.tx_enabled }) });
+    setConnection(state.snapshot);
+  } catch (error) { notify(error.message); }
+});
 $("#settings-close").addEventListener("click", () => $("#settings-dialog").close());
 $("#settings-cancel").addEventListener("click", () => $("#settings-dialog").close());
 $("#settings-form").addEventListener("submit", async event => {

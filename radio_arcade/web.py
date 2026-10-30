@@ -7,6 +7,7 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
@@ -31,6 +32,8 @@ class WebController:
         self.settings_path = settings_path
         self.engine: ArcadeService | None = None
         self.last_error = ""
+        self.last_transmission: dict[str, Any] | None = None
+        self.transmitting = False
         self._lock = threading.RLock()
         if self.settings.callsign:
             self._connect()
@@ -39,9 +42,20 @@ class WebController:
         self.engine = None
         try:
             self.engine = self.service_factory(self.settings)
+            self.engine.subscribe(self._engine_event)
             self.last_error = ""
         except Exception as exc:
             self.last_error = str(exc)
+
+    def _engine_event(self, event: Any) -> None:
+        if event.name == "transmitting":
+            self.transmitting = True
+            self.last_transmission = {**event.data, "started": time.time(), "active": True}
+        elif event.name == "transmission_complete":
+            self.transmitting = False
+            if self.last_transmission:
+                self.last_transmission["active"] = False
+                self.last_transmission["completed"] = time.time()
 
     def close(self) -> None:
         with self._lock:
@@ -68,6 +82,9 @@ class WebController:
             "kiss_port": self.settings.kiss_port,
             "color_scheme": self.settings.color_scheme,
             "observer_mode": self.settings.observer_mode,
+            "tx_enabled": self.settings.tx_enabled,
+            "transmitting": self.transmitting,
+            "last_transmission": self.last_transmission,
             "ready": engine is not None,
             "connected": bool(engine and (
                 self.settings.transport == "practice"
@@ -106,6 +123,7 @@ class WebController:
             color_scheme=scheme,
             sound_enabled=bool(data.get("sound_enabled", self.settings.sound_enabled)),
             observer_mode=observer,
+            tx_enabled=self.settings.tx_enabled,
         )
         previous, self.engine = self.engine, None
         if previous:
@@ -120,6 +138,9 @@ class WebController:
             raise ValueError(self.last_error or "save station settings before using the game room")
         engine = self.engine
         name = data.get("command")
+        transmit_commands = {"create_game", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer"}
+        if name in transmit_commands and self.settings.transport != "practice" and not self.settings.tx_enabled:
+            raise ValueError("TX is disabled. Enable TX to send radio traffic.")
         sid = data.get("session_id")
         def place_word() -> None:
             from .games.scrabble import make_placement
@@ -162,12 +183,16 @@ class WebController:
             "resend_pending_action": lambda: engine.resend_pending_action(sid),
             "connect_peer": lambda: engine.connect_peer(str(data.get("peer", ""))),
             "disconnect_peer": engine.disconnect,
+            "delete_game": lambda: engine.delete_game(sid),
         }
         if name not in commands:
             raise ValueError("unknown game-room command")
         result = commands[name]()
         selected_id = result if name == "create_game" else sid
         response: dict[str, Any] = {"ok": True}
+        if name == "delete_game":
+            response["deleted"] = True
+            return response
         if selected_id is not None:
             response["session_id"] = str(selected_id)
             try:
@@ -191,6 +216,13 @@ class WebController:
                     return 200, self._state()
                 if method == "POST" and route == "/api/settings":
                     return 200, self._configure(data)
+                if method == "POST" and route == "/api/tx":
+                    enabled = data.get("enabled")
+                    if not isinstance(enabled, bool):
+                        raise ValueError("TX enabled must be true or false")
+                    self.settings.tx_enabled = enabled
+                    self.settings.save(self.settings_path)
+                    return 200, self._state()
                 if method == "POST" and route == "/api/command":
                     return 200, self._command(data)
                 prefix = "/api/session/"

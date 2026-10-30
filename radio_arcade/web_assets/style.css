@@ -89,6 +89,10 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .button { min-height: 37px; padding: 0 13px; border-radius: 8px; background: rgba(255,255,255,.035); border: 1px solid rgba(184,202,235,.14); color: #dce4ef; cursor: pointer; font-size: 11px; font-weight: 600; transition: .17s ease; }
 .button:hover:not(:disabled) { background: rgba(255,255,255,.085); border-color: rgba(184,202,235,.25); }
 .button.primary { border-color: rgba(157, 222, 194, .35); color: #08150f; background: linear-gradient(110deg, #a1e7c9, #80d4b2); box-shadow: 0 5px 18px rgba(88, 189, 147, .12); }
+.tx-toggle { min-height: 34px; white-space: nowrap; color: #08150f; border-color: rgba(157, 222, 194, .35); background: linear-gradient(110deg, #a1e7c9, #80d4b2); }
+.tx-toggle.tx-off { color: #f3bf7a; border-color: rgba(243,191,122,.35); background: rgba(243,191,122,.08); }
+.tx-activity { max-width: min(38vw, 470px); color: #aebbd0; font: 600 10px 'Space Grotesk', sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tx-activity.active { color: #f3bf7a; }
 .button.primary:hover:not(:disabled) { background: linear-gradient(110deg, #c0f2dc, #96e1c1); transform: translateY(-1px); }
 .button:disabled { opacity: .4; cursor: not-allowed; }
 .button.full { width: 100%; margin-top: 10px; }
@@ -97,6 +101,7 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .session-actions { display: flex; flex-direction: column; gap: 6px; margin-top: 7px; }
 .session-actions:empty { display: none; }
 .session-actions .button { width: 100%; text-align: left; min-height: 34px; padding-left: 10px; }
+.session-actions .button:last-child { color: #f3bf7a; border-color: rgba(243,191,122,.25); }
 .action-input { min-height: 34px; border: 1px solid rgba(184,202,235,.13); border-radius: 8px; background: rgba(6,12,20,.62); color: #e7edf6; padding: 0 10px; font-size: 11px; width: 100%; }
 .action-row { display: flex; gap: 6px; }
 .arena-panel { padding: 23px clamp(18px, 2vw, 30px) 15px; display: flex; flex-direction: column; min-height: min(800px, calc(100vh - 116px)); overflow: hidden; position: relative; background: radial-gradient(ellipse at 50% 20%, rgba(66, 78, 117, .105), transparent 55%), linear-gradient(160deg, rgba(17, 24, 37, .98), rgba(11, 17, 27, .98)); }

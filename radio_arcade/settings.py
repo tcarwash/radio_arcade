@@ -21,6 +21,7 @@ class Settings:
     color_scheme: str = "midnight"
     sound_enabled: bool = False
     observer_mode: bool = False
+    tx_enabled: bool = True
     dx_cluster_url: str = ""
 
     @classmethod

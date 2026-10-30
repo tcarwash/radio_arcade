@@ -116,13 +116,19 @@ class SessionStore:
             self.db.execute("INSERT OR REPLACE INTO outbox VALUES(?,?,?,?,?,?,?,?)",
                             (session, target, kind, sequence, frame, 1, time.time() + 3.0, ""))
 
+    @staticmethod
+    def _retry_limit_sql() -> str:
+        # Invitations and cancellations become stale quickly and should not
+        # keep prompting the channel long after the station has moved on.
+        return "CASE WHEN kind IN (1, 13) THEN 2 ELSE 12 END"
+
     def due_outgoing(self, now: float | None = None, target: str | None = None) -> list[dict[str, Any]]:
         now = time.time() if now is None else now
         with self._lock, self.db:
             if target is None:
-                rows = self.db.execute("SELECT * FROM outbox WHERE next_at<=? AND attempts<12", (now,)).fetchall()
+                rows = self.db.execute(f"SELECT * FROM outbox WHERE next_at<=? AND attempts<{self._retry_limit_sql()}", (now,)).fetchall()
             else:
-                rows = self.db.execute("SELECT * FROM outbox WHERE next_at<=? AND attempts<12 AND target=?",
+                rows = self.db.execute(f"SELECT * FROM outbox WHERE next_at<=? AND attempts<{self._retry_limit_sql()} AND target=?",
                                        (now, target.upper())).fetchall()
             for row in rows:
                 attempts = row["attempts"] + 1
@@ -135,16 +141,16 @@ class SessionStore:
 
     def failed_outgoing(self) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self.db.execute("SELECT session,target,kind,sequence FROM outbox WHERE attempts>=12").fetchall()
+            rows = self.db.execute(f"SELECT session,target,kind,sequence FROM outbox WHERE attempts>={self._retry_limit_sql()}").fetchall()
         return [dict(row) for row in rows]
 
     def resume_outgoing(self, target: str | None = None) -> None:
-        """Give retained, unconfirmed packets a fresh retry window."""
+        """Retry eligible retained packets promptly without resetting their limits."""
         with self._lock, self.db:
             if target is None:
-                self.db.execute("UPDATE outbox SET attempts=0,next_at=?", (time.time(),))
+                self.db.execute(f"UPDATE outbox SET next_at=? WHERE attempts<{self._retry_limit_sql()}", (time.time(),))
             else:
-                self.db.execute("UPDATE outbox SET attempts=0,next_at=? WHERE target=?",
+                self.db.execute(f"UPDATE outbox SET next_at=? WHERE target=? AND attempts<{self._retry_limit_sql()}",
                                 (time.time(), target))
 
     def upgrade_v3_outbox(self) -> None:
@@ -176,6 +182,12 @@ class SessionStore:
         with self._lock, self.db:
             self.db.execute("DELETE FROM outbox WHERE session=? AND target=? AND kind=?",
                             (session, target, kind))
+
+    def delete_session(self, session: str) -> None:
+        """Remove one local game's saved state and related queued data."""
+        with self._lock, self.db:
+            for table in ("sessions", "outbox", "chat", "opaque_states", "cancelled_invites"):
+                self.db.execute(f"DELETE FROM {table} WHERE session=?", (session,))
 
     def remember_cancelled_invite(self, session: str, target: str) -> None:
         with self._lock, self.db:

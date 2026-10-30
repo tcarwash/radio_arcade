@@ -62,7 +62,6 @@ class ArcadeService:
         self._reported_failed: set[tuple[str, str, int, int]] = set()
         if not observer_mode:
             self.store.upgrade_v3_outbox()
-            self.store.resume_outgoing()
         self._stop = threading.Event()
         self._closed = False
         self.transport.on_frame = self.receive_frame
@@ -148,6 +147,16 @@ class ArcadeService:
                                    if row.get("last_actor") and row.get("last_action") is not None else None)
             return result
 
+    def delete_game(self, session_id: str | int) -> None:
+        """Delete a game from this station without sending radio traffic."""
+        sid = self._sid(session_id)
+        with self._lock:
+            if sid not in self._sessions:
+                raise ValueError("game no longer exists")
+            self._sessions.pop(sid)
+            self.store.delete_session(sid)
+            self._emit("session_deleted", sid)
+
     def catalog(self):
         return self.registry.catalog()
 
@@ -188,9 +197,30 @@ class ArcadeService:
 
     def _transmit(self, frame: bytes) -> None:
         try:
+            packet = decode(frame)
+            reasons = {
+                Kind.INVITE: "inviting a station", Kind.ACCEPT: "accepting an invitation",
+                Kind.START: "starting a game", Kind.ACTION: "sending a move",
+                Kind.COMMIT: "sharing a validated move", Kind.SYNC_REQUEST: "requesting a game sync",
+                Kind.SNAPSHOT: "sending game state", Kind.REJECT: "rejecting an invalid request",
+                Kind.RESIGN: "resigning", Kind.CHAT: "sending table chat",
+                Kind.ACK: "automatically acknowledging a received packet",
+                Kind.OPAQUE_STATE: "sharing game state", Kind.CANCEL_INVITE: "cancelling an invitation",
+                Kind.HOST_ANNOUNCE: "announcing an open table", Kind.JOIN_REQUEST: "requesting to join a table",
+                Kind.HOST_ROSTER: "updating the hosted table roster", Kind.HOST_CHAT: "relaying table chat",
+            }
+            details = {"kind": packet.kind.name, "destination": packet.destination,
+                       "reason": reasons.get(packet.kind, "sending a game packet")}
+            self._emit("transmitting", f"{packet.session:016X}", **details)
+        except (ValueError, TypeError):
+            details = {"kind": "DATA", "destination": "", "reason": "sending game data"}
+            self._emit("transmitting", **details)
+        try:
             self.transport.send(frame)
         except (OSError, RuntimeError, ValueError) as exc:
             self._emit("transport_send_error", error=str(exc))
+        finally:
+            self._emit("transmission_complete", **details)
 
     def _reliable(self, session: dict[str, Any], target: str, kind: Kind,
                   sequence: int = 0, revision: int | None = None, payload: bytes = b"",
