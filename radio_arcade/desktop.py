@@ -70,30 +70,31 @@ class ScorchedBattlefield(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         margin = 12
-        scale = min((self.width() - 2 * margin) / 32, (self.height() - 2 * margin) / 24)
-        ox = (self.width() - 32 * scale) / 2
-        oy = (self.height() - 24 * scale) / 2
+        world_width, world_height = view["width"], view["sky_height"]
+        scale = min((self.width() - 2 * margin) / world_width, (self.height() - 2 * margin) / world_height)
+        ox = (self.width() - world_width * scale) / 2
+        oy = (self.height() - world_height * scale) / 2
         painter.translate(ox, oy)
         painter.scale(scale, scale)
-        sky = QLinearGradient(0, 0, 0, 24)
+        sky = QLinearGradient(0, 0, 0, world_height)
         sky.setColorAt(0, QColor("#091525")); sky.setColorAt(1, QColor("#28445b"))
-        painter.fillRect(0, 0, 32, 24, QBrush(sky))
+        painter.fillRect(0, 0, world_width, world_height, QBrush(sky))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(132, 173, 188, 28))
-        distant = QPolygonF([QPointF(0, 22)] +
-                            [QPointF(x, 15 + ((x * 13 + 7) % 9) / 3) for x in range(33)] +
-                            [QPointF(32, 24), QPointF(0, 24)])
+        distant = QPolygonF([QPointF(0, world_height)] +
+                            [QPointF(x, world_height - 9 + ((x * 13 + 7) % 9) / 3) for x in range(world_width + 1)] +
+                            [QPointF(world_width, world_height), QPointF(0, world_height)])
         painter.drawPolygon(distant)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(217, 232, 251, 95))
         for i in range(46):
-            painter.drawEllipse(QPointF(((i * 187 + 43) % 768) / 24,
-                                        ((i * 79 + 17) % 288) / 24), .035 if i % 5 else .07,
+            painter.drawEllipse(QPointF(((i * 187 + 43) % (world_width * 24)) / 24,
+                                        ((i * 79 + 17) % (world_height * 12)) / 24), .035 if i % 5 else .07,
                                 .035 if i % 5 else .07)
-        terrain = QPolygonF([QPointF(0, 24)] +
-                            [QPointF(x + .5, 24 - height) for x, height in enumerate(view["terrain"])] +
-                            [QPointF(32, 24)])
-        earth = QLinearGradient(0, 9, 0, 24)
+        terrain = QPolygonF([QPointF(0, world_height)] +
+                            [QPointF(x + .5, world_height - height) for x, height in enumerate(view["terrain"])] +
+                            [QPointF(world_width, world_height)])
+        earth = QLinearGradient(0, world_height - 15, 0, world_height)
         earth.setColorAt(0, QColor("#62825c")); earth.setColorAt(1, QColor("#293b35"))
         painter.setBrush(QBrush(earth))
         painter.setPen(QPen(QColor("#91bd89"), .11))
@@ -101,9 +102,9 @@ class ScorchedBattlefield(QWidget):
         def draw_path(points, color, dotted=False):
             if len(points) < 2:
                 return
-            path = QPainterPath(QPointF(points[0][0], 24 - points[0][1]))
+            path = QPainterPath(QPointF(points[0][0], world_height - points[0][1]))
             for x, y in points[1:]:
-                path.lineTo(x, 24 - y)
+                path.lineTo(x, world_height - y)
             pen = QPen(QColor(color), .09 if dotted else .12)
             if dotted:
                 pen.setStyle(Qt.PenStyle.DashLine)
@@ -121,14 +122,14 @@ class ScorchedBattlefield(QWidget):
             draw_path(trajectory[:index + 1] + [location], "#ffdb8c")
             painter.setPen(QPen(QColor("#ffb55d"), .23))
             painter.setBrush(QColor("#fff5c1"))
-            painter.drawEllipse(QPointF(location[0], 24 - location[1]), .18, .18)
+            painter.drawEllipse(QPointF(location[0], world_height - location[1]), .18, .18)
         draw_path([(x / 1000, y / 1000) for x, y in self.preview], "#dceeff", True)
         impact = view.get("impact")
         if impact and impact["kind"] != "edge" and self.flight_progress >= 1:
             painter.setPen(QPen(QColor("#ef9767"), .09, Qt.PenStyle.DashLine))
             flashing = self._flight_timer.isActive()
             painter.setBrush(QColor(255, 147, 68, 110 if flashing else 28))
-            painter.drawEllipse(QPointF(impact["x"], 24 - impact["y"]),
+            painter.drawEllipse(QPointF(impact["x"], world_height - impact["y"]),
                                 view["weapons"][impact["weapon"]]["radius"],
                                 view["weapons"][impact["weapon"]]["radius"])
             if flashing:
@@ -138,9 +139,9 @@ class ScorchedBattlefield(QWidget):
                     direction = i * 6.283185307 / 18
                     distance = .6 + (i * 7 % 13) / 8
                     painter.drawEllipse(QPointF(impact["x"] + cos(direction) * distance,
-                                                24 - impact["y"] + sin(direction) * distance), .07, .07)
+                                                world_height - impact["y"] + sin(direction) * distance), .07, .07)
         for index, tank in enumerate(view["tanks"]):
-            x, y = tank["x"], 24 - tank["world_y"]
+            x, y = tank["x"], world_height - tank["world_y"]
             if self._flight_timer.isActive() and self.flight_progress < .18 and tank["player"] == view.get("last_actor"):
                 x += (-.14 if index == 0 else .14) * sin(self.flight_progress / .18 * 3.14159)
             if self._flight_timer.isActive() and self.flight_progress >= 1 and view.get("last_damage", [0, 0])[index]:
@@ -412,7 +413,9 @@ class ArcadeWindow(QMainWindow):
         self.chat_input.textChanged.connect(lambda text: self.chat_count.setText(f"{len(text.strip().encode('utf-8'))} / 150 bytes"))
         right_layout.addWidget(self.chat_count)
         splitter.addWidget(right)
-        splitter.setSizes([275, 690, 315])
+        # Prioritize the battlefield at desktop resolutions. The side panels
+        # remain resizable, while Scorched Earth itself pans inside the arena.
+        splitter.setSizes([225, 850, 245])
         layout.addWidget(splitter, 1)
         foot = QHBoxLayout()
         self.footer_label = QLabel("Public radio · keep moves short, keep the good sport")
@@ -878,7 +881,12 @@ class ArcadeWindow(QMainWindow):
         if animate:
             self._last_scorched_animation_key = shot_key
         battlefield = ScorchedBattlefield(view, animate=animate)
-        layout.addWidget(battlefield, 3)
+        battlefield.setFixedSize(view["width"] * 23, view["sky_height"] * 23)
+        map_scroll = QScrollArea(); map_scroll.setObjectName("battlefieldScroll")
+        map_scroll.setWidgetResizable(False); map_scroll.setWidget(battlefield)
+        map_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        map_scroll.setToolTip("Scroll horizontally to pan across the larger battlefield")
+        layout.addWidget(map_scroll, 4)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(180)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         controls = QWidget(); box = QVBoxLayout(controls)
@@ -925,7 +933,7 @@ class ArcadeWindow(QMainWindow):
         movement = QHBoxLayout()
         for direction, label in ((0, "◀ Drive"), (1, "Drive ▶")):
             button = QPushButton(label)
-            candidate = max(1, min(30, tank["x"] + (-2 if direction == 0 else 2))) if tank else 0
+            candidate = max(1, min(view["width"] - 2, tank["x"] + (-2 if direction == 0 else 2))) if tank else 0
             other = next((item for item in view["tanks"] if item is not tank), None)
             button.setEnabled(bool(can_play and tank and tank["fuel"] and other and
                                    abs(candidate - other["x"]) >= 6 and candidate != tank["x"]))
@@ -948,6 +956,8 @@ class ArcadeWindow(QMainWindow):
             box.addWidget(buy)
         box.addStretch(1)
         scroll.setWidget(controls); layout.addWidget(scroll, 2)
+        if tank:
+            map_scroll.horizontalScrollBar().setValue(max(0, int(tank["x"] * 23 - map_scroll.viewport().width() / 2)))
         self.board_layout.addWidget(host)
         preview()
 

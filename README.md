@@ -26,3 +26,5 @@ All stations must use the same protocol version. See [PROTOCOL.md](PROTOCOL.md) 
 The UI-independent engine API is documented in [ENGINE-API.md](ENGINE-API.md). Games register through the `radio_arcade.games` entry-point group; assigned IDs are in [GAME-CATALOG.md](GAME-CATALOG.md). Radio Civ is a separate desktop game: [apps/civ/README.md](apps/civ/README.md).
 
 To open a two-window Scorched Earth match over a local simulated radio link, run `uv run python scripts/scorched_earth_two_window.py`. It uses no Data2G or RF hardware; press Ctrl+C to stop it.
+
+Scorched Earth uses 64-column panoramic terrain with horizontal panning on the desktop and web clients. Its wider snapshots are approximately 32 bytes larger than the original 32-column format; old local snapshots are migrated on load, but stations playing together must upgrade to the same version before starting a new match.

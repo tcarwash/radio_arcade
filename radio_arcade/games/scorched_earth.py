@@ -6,7 +6,7 @@ from math import cos, isqrt, radians, sin
 from secrets import randbelow
 from typing import Any
 
-WIDTH, HEIGHT, SKY_HEIGHT = 32, 16, 24
+WIDTH, HEIGHT, SKY_HEIGHT = 64, 16, 32
 SCALE = 1000
 GRAVITY = 60
 MIN_ANGLE, MAX_ANGLE = 10, 80
@@ -18,24 +18,27 @@ MIN_SEPARATION = 6
 STARTING_CREDITS = 70
 
 # Shared map profiles never travel over the radio. Heights fit in four bits.
-MAPS = (
+# Mirroring the classic 32-column profiles makes larger, continuous arenas
+# without sacrificing their recognisable terrain features or map identifiers.
+CLASSIC_MAPS = (
     ("Dust Bowl", (2, 2, 3, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6, 5, 4, 3, 3, 2, 2)),
     ("Split Ridge", (2, 2, 3, 4, 6, 8, 10, 12, 13, 14, 12, 10, 8, 6, 4, 3, 3, 4, 6, 8, 10, 12, 14, 13, 12, 10, 8, 6, 4, 3, 2, 2)),
     ("Dry River", (4, 4, 5, 6, 7, 8, 9, 10, 11, 12, 11, 10, 9, 8, 7, 6, 6, 7, 8, 9, 10, 11, 12, 11, 10, 9, 8, 7, 6, 5, 4, 4)),
     ("Broken Mesa", (3, 3, 4, 5, 7, 10, 13, 13, 12, 10, 8, 6, 5, 5, 6, 8, 11, 14, 14, 12, 9, 7, 6, 7, 9, 12, 13, 11, 8, 6, 4, 3)),
     ("Cinder Valley", (5, 5, 4, 3, 3, 4, 5, 7, 10, 12, 11, 8, 5, 3, 2, 2, 3, 5, 8, 11, 13, 12, 9, 6, 4, 3, 4, 6, 8, 7, 6, 5)),
 )
+MAPS = tuple((name, profile + tuple(reversed(profile))) for name, profile in CLASSIC_MAPS)
 
 # Speed, blast radius, direct damage, and crater depth are fixed game rules.
 WEAPONS = (
-    {"name": "Cannon", "speed": 1600, "radius": 1800, "damage": 38, "crater": 2, "cost": 0, "tag": "free / balanced"},
-    {"name": "High explosive", "speed": 1450, "radius": 3200, "damage": 30, "crater": 4, "cost": 18, "tag": "wide blast"},
-    {"name": "Armor piercing", "speed": 2050, "radius": 850, "damage": 62, "crater": 1, "cost": 22, "tag": "direct hit"},
-    {"name": "Cluster", "speed": 1550, "radius": 1600, "damage": 12, "crater": 2, "cost": 26, "tag": "three-burst spread"},
-    {"name": "Bunker buster", "speed": 1250, "radius": 1200, "damage": 48, "crater": 6, "cost": 30, "tag": "terrain breaker"},
-    {"name": "Mega nuke", "speed": 1200, "radius": 5200, "damage": 52, "crater": 7, "cost": 55, "tag": "massive blast"},
-    {"name": "Needle", "speed": 2350, "radius": 600, "damage": 90, "crater": 1, "cost": 34, "tag": "precision strike"},
-    {"name": "Earth mover", "speed": 1300, "radius": 1400, "damage": 8, "crater": 9, "cost": 28, "tag": "extreme excavation"},
+    {"name": "Cannon", "speed": 2400, "radius": 1800, "damage": 38, "crater": 2, "cost": 0, "tag": "free / balanced"},
+    {"name": "High explosive", "speed": 2200, "radius": 3200, "damage": 30, "crater": 4, "cost": 18, "tag": "wide blast"},
+    {"name": "Armor piercing", "speed": 2850, "radius": 850, "damage": 62, "crater": 1, "cost": 22, "tag": "direct hit"},
+    {"name": "Cluster", "speed": 2300, "radius": 1600, "damage": 12, "crater": 2, "cost": 26, "tag": "three-burst spread"},
+    {"name": "Bunker buster", "speed": 1950, "radius": 1200, "damage": 48, "crater": 6, "cost": 30, "tag": "terrain breaker"},
+    {"name": "Mega nuke", "speed": 1950, "radius": 5200, "damage": 52, "crater": 7, "cost": 55, "tag": "massive blast"},
+    {"name": "Needle", "speed": 3200, "radius": 600, "damage": 90, "crater": 1, "cost": 34, "tag": "precision strike"},
+    {"name": "Earth mover", "speed": 2050, "radius": 1400, "damage": 8, "crater": 9, "cost": 28, "tag": "extreme excavation"},
 )
 WIND_ACCEL = (-3, -2, -1, 0, 1, 2, 3)
 
@@ -146,8 +149,11 @@ class ScorchedEarthGame:
             raise ValueError("Scorched Earth requires two different players")
         map_id = randbelow(len(MAPS))
         terrain = list(MAPS[map_id][1])
+        # Spawn on an early ridge so the expanded arena doesn't put an
+        # impassable mountain directly in front of either cannon.
+        left_spawn = max(range(4, 13), key=lambda x: terrain[x])
         return {"map": map_id, "turn": 0, "round": 0, "hp": [MAX_HP, MAX_HP],
-                "x": [2, WIDTH - 3], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
+                "x": [left_spawn, WIDTH - 1 - left_spawn], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
                 "credits": [STARTING_CREDITS, STARTING_CREDITS],
                 "ammo": [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)],
                 "terrain": terrain, "last_terrain": list(terrain), "last": [NO_ACTION, NO_ACTION],
@@ -258,21 +264,28 @@ class ScorchedEarthGame:
                             (result == 3 and hp0 == 0 and hp1 == 0))
             if not valid_result or (old_weapon == NO_ACTION and (damage0 or damage1)):
                 raise ValueError("inconsistent legacy Scorched Earth snapshot")
-            terrain = list(MAPS[map_id][1])
+            terrain = list(CLASSIC_MAPS[map_id][1])
+            terrain += list(reversed(terrain))
             last_wind = 3 if old_weapon != NO_ACTION else NO_ACTION
             return {"map": map_id, "turn": turn, "round": 0, "hp": [hp0, hp1],
-                    "x": [2, WIDTH - 3], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
+                    "x": [2, 29], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
                     "credits": [STARTING_CREDITS] * 2, "ammo": [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)],
                     "terrain": terrain, "last_terrain": list(terrain), "last": [old_weapon, old_angle],
                     "last_wind": last_wind, "last_damage": [damage0, damage1],
                     "winner": result - 1 if result in (1, 2) else -1, "finished": result != 0}
-        current_size = 52 + 2 * len(WEAPONS)
-        if len(payload) not in (50, current_size):
+        classic_size = 52 + 2 * len(WEAPONS)
+        current_size = 84 + 2 * len(WEAPONS)
+        if len(payload) not in (50, classic_size, 82, current_size):
             raise ValueError("invalid Scorched Earth snapshot length")
         (map_id, turn, round_number, hp0, hp1, x0, x1, kits0, kits1, fuel0, fuel1,
          shields, last_code, last_parameter, last_wind, damage0, damage1, result) = payload[:18]
-        terrain = _unpack_heights(payload[18:34])
-        last_terrain = _unpack_heights(payload[34:50])
+        classic = len(payload) in (50, classic_size)
+        packed_size = 16 if classic else WIDTH // 2
+        terrain = [height for byte in payload[18:18 + packed_size] for height in (byte >> 4, byte & 15)]
+        last_terrain = [height for byte in payload[18 + packed_size:18 + packed_size * 2] for height in (byte >> 4, byte & 15)]
+        if classic:
+            terrain += list(reversed(terrain))
+            last_terrain += list(reversed(last_terrain))
         if (map_id >= len(MAPS) or turn > 1 or max(hp0, hp1) > MAX_HP or
                 not (1 <= x0 < x1 <= WIDTH - 2) or x1 - x0 < MIN_SEPARATION or
                 max(kits0, kits1) > 2 or max(fuel0, fuel1) > 3 or shields > 3 or
@@ -299,9 +312,11 @@ class ScorchedEarthGame:
                         (result == 3 and hp0 == 0 and hp1 == 0))
         if not valid_result:
             raise ValueError("inconsistent Scorched Earth result")
-        if len(payload) == current_size:
-            credits = list(payload[50:52])
-            ammo = [list(payload[52:52 + len(WEAPONS)]), list(payload[52 + len(WEAPONS):])]
+        if len(payload) in (classic_size, current_size):
+            shop_offset = 18 + packed_size * 2
+            credits = list(payload[shop_offset:shop_offset + 2])
+            ammo = [list(payload[shop_offset + 2:shop_offset + 2 + len(WEAPONS)]),
+                    list(payload[shop_offset + 2 + len(WEAPONS):])]
             if ammo[0][0] != 255 or ammo[1][0] != 255:
                 raise ValueError("invalid unlimited cannon ammunition")
         else:

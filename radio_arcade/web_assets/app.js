@@ -597,6 +597,8 @@ function renderPlugin(session, view, host) {
 function renderScorchedEarth(session, view, host) {
   const wrap = node("div", "tank-layout");
   const arena = node("div", "tank-arena");
+  arena.setAttribute("tabindex", "0");
+  arena.setAttribute("aria-label", "Scrollable battlefield. Swipe, drag the scrollbar, or use horizontal arrow keys to pan.");
   const svg = svgElement("svg", { class: "tank-map", viewBox: `0 0 ${view.width * 24} ${view.sky_height * 24}`,
     role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
   const width = view.width * 24, height = view.sky_height * 24;
@@ -681,6 +683,7 @@ function renderScorchedEarth(session, view, host) {
     r: Math.max(8, view.weapons[view.impact.weapon].radius * 24), class: "tank-impact" }));
   const preview = svgElement("polyline", { class: "tank-preview-trajectory", points: "" });
   arena.append(svg);
+  const panHint = node("p", "tank-pan-hint", `↔ ${view.width}-column battlefield · Scroll sideways to scout the entire map`);
   const side = node("aside", "tank-side");
   side.append(node("div", "tank-map-name", view.map_name), node("div", "tank-wind", `${view.wind.direction} ${view.wind.label} · shifts each turn`), node("div", "tank-help", isPractice()
     ? "Aim with the wind and reshape the hills. Weapons are unlimited; fuel and repair kits are scarce."
@@ -754,7 +757,14 @@ function renderScorchedEarth(session, view, host) {
   side.append(shop);
   const callout = node("div", "tank-shot-result", view.last_action ? `${view.last_actor} ${view.last_action}` : "Take the first turn");
   side.append(callout);
-  wrap.append(arena, side); host.append(wrap);
+  wrap.append(arena, panHint, side); host.append(wrap);
+  // On a panoramic map, start near the tank whose turn it is; players can pan
+  // across the entire battlefield with touch, trackpad or the scrollbar.
+  const activeViewTank = view.tanks.find(tank => tank.player === view.turn);
+  if (activeViewTank) requestAnimationFrame(() => {
+    const x = activeViewTank.x / view.width * svg.getBoundingClientRect().width;
+    arena.scrollLeft = Math.max(0, x - arena.clientWidth * .35);
+  });
   const actor = view.last_actor;
   const shotKey = `${session.id}:${session.revision}`;
   if (actor && view.impact && view.trajectory.length > 1 && state.lastTankAnimation !== shotKey) {
