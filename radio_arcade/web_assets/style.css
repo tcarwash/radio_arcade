@@ -242,6 +242,9 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .tank-preview-trajectory { stroke: rgba(200,225,255,.78); stroke-width: 2; stroke-dasharray: 4 5; filter: drop-shadow(0 0 3px rgba(180,214,255,.4)); }
 .tank-flight-trail { fill: none; stroke: #ffe39a; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 5px rgba(255,200,94,.9)); pointer-events: none; }
 .tank-projectile { fill: #ffe39a; stroke: #fff7d6; stroke-width: 2; filter: drop-shadow(0 0 8px #ffc85e); pointer-events: none; }
+.tank-stars { fill: #d8eaff; opacity: .38; pointer-events: none; }
+.tank-spark { fill: #ffc060; filter: drop-shadow(0 0 4px #ff753a); animation: tank-spark 1s ease-out var(--delay) both; pointer-events: none; }
+@keyframes tank-spark { from { opacity: 1; transform: translate(0,0) scale(1.25); } to { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(.2); } }
 .tank-blast { transform-box: fill-box; transform-origin: center; animation: tank-blast 850ms ease-out both; pointer-events: none; }
 .tank-blast.hit { fill: rgba(255,111,75,.4); stroke: #ff9a66; stroke-width: 2; }
 .tank-blast.miss { fill: rgba(203,218,230,.28); stroke: #d5e3ec; stroke-width: 2; }
@@ -266,6 +269,9 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .tank-tactics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .tank-drive-controls { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .tank-tactics .button { width: 100%; font-size: 9px; }
+.tank-shop { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 9px; border: 1px solid rgba(224,174,93,.25); border-radius: 9px; background: linear-gradient(135deg,rgba(205,135,53,.09),rgba(29,43,65,.35)); }
+.tank-shop-title { grid-column: 1 / -1; color: #f6cd8a; font: 700 9px 'Space Grotesk', sans-serif; letter-spacing: .08em; padding-bottom: 4px; }
+.tank-buy { font-size: 9px; white-space: normal; min-height: 30px; }
 .tank-coordinate { color: #d7c58f; font: 600 10px 'Space Grotesk', sans-serif; }
 .tank-angle-label { color: #9aa8bb; font-size: 9px; }
 .tank-angle-label input { display: block; margin-top: 5px; }

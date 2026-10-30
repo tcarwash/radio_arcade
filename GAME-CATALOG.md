@@ -30,6 +30,16 @@ repair kits, and one-hit shields make each turn a choice between attacking and
 preparing. The compact shared snapshot carries the changed terrain and player
 supplies so reconnecting clients see the same battlefield.
 
+The armory adds Mega Nuke, Needle, and Earth Mover to the original five weapons.
+Each player starts with 70 credits and one round of every limited weapon.
+The basic cannon is always free and unlimited. A shot earns 8 credits plus a
+bonus for damage dealt to the opponent (one credit per three HP). Buying one
+round of ammunition costs credits and consumes a turn; ammunition and balances
+are included in the snapshot. The expanded snapshot is 68 bytes; old 50-byte
+snapshots can still be loaded with default armory balances, but **both connected
+stations must upgrade together** because the new rules and snapshot are not
+compatible with older clients using game ID 7. Avoid mixed-version radio matches.
+
 Each browser presents one local pilot against an opponent seat. In a connected
 match, the other station controls that seat; both browsers render the synced
 turn, shot, and result locally.

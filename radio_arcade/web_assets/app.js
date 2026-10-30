@@ -526,6 +526,12 @@ function renderScorchedEarth(session, view, host) {
     role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
   const width = view.width * 24, height = view.sky_height * 24;
   svg.append(svgElement("rect", { x: 0, y: 0, width, height, class: "tank-sky" }));
+  const stars = svgElement("g", { class: "tank-stars" });
+  for (let i = 0; i < 45; i++) {
+    const sx = ((i * 187 + 43) % width), sy = ((i * 79 + 17) % (height * .52));
+    stars.append(svgElement("circle", { cx: sx, cy: sy, r: i % 7 === 0 ? 1.4 : .65 }));
+  }
+  svg.append(stars);
   for (let x = 0; x < view.width; x++) for (let y = 0; y < view.height; y++)
     svg.append(svgElement("rect", { x: x * 24, y: y * 24, width: 24, height: 24, class: "tank-grid-cell" }));
   const terrainPoints = [`0,${height}`];
@@ -580,12 +586,17 @@ function renderScorchedEarth(session, view, host) {
     const head = node("div", "tank-health-head"); head.append(node("span", "", label), node("strong", "", `${tank.hp} HP`));
     const bar = svgElement("svg", { class: "tank-health-track", viewBox: "0 0 100 5", role: "img", "aria-label": `${tank.hp} health` });
     const fill = svgElement("rect", { x: 0, y: 0, width: tank.hp, height: 5, rx: 2.5, class: "tank-health-fill" });
-    card.append(head, bar, node("div", "tank-supplies", `${tank.fuel} drive · ${tank.repair_kits} repair · ${tank.shielded ? "shield up" : "shield available"}`));
+    card.append(head, bar, node("div", "tank-supplies", `¤${tank.credits} credits · ${tank.fuel} drive · ${tank.repair_kits} repair · ${tank.shielded ? "shield up" : "shield available"}`));
     bar.append(svgElement("rect", { x: 0, y: 0, width: 100, height: 5, rx: 2.5, class: "tank-health-background" }), fill); side.append(card);
   }
   const form = node("form", "tank-controls");
   const weapon = node("select", "field"); weapon.setAttribute("aria-label", "Weapon");
-  for (const item of view.weapons) { const option = node("option", "", `${item.name} · ${item.tag} · blast ${item.radius.toFixed(1)}`); option.value = item.id; weapon.append(option); }
+  const activeTank = view.tanks.find(tank => tank.player === (isPractice() ? view.turn : state.snapshot.callsign));
+  for (const item of view.weapons) {
+    const stock = activeTank?.ammo[item.id] ?? 0;
+    const option = node("option", "", `${item.name} · ${item.tag} · ${item.id ? `${stock} rounds` : "∞ rounds"}`);
+    option.value = item.id; option.disabled = !stock; weapon.append(option);
+  }
   const angleLabel = node("label", "tank-angle-label", "Firing angle · 45°");
   const angle = node("input", "field tank-angle"); angle.type = "range"; angle.min = String(view.min_angle); angle.max = String(view.max_angle); angle.value = "45";
   angleLabel.append(angle);
@@ -609,7 +620,15 @@ function renderScorchedEarth(session, view, host) {
     if (!Number.isInteger(degrees) || degrees < view.min_angle || degrees > view.max_angle) { notify(`Firing angle must be between ${view.min_angle}° and ${view.max_angle}°.`); return; }
     submitAction([Number(weapon.value), degrees]);
   });
-  const activeTank = view.tanks.find(tank => tank.player === (isPractice() ? view.turn : state.snapshot.callsign));
+  const shop = node("div", "tank-shop");
+  shop.append(node("div", "tank-shop-title", "ARMORY · BUY AMMUNITION (USES TURN)"));
+  for (const item of view.weapons.slice(1)) {
+    const buy = node("button", "button secondary tank-buy", `${item.name} · ¤${item.cost}`);
+    buy.type = "button";
+    buy.disabled = !canAct(session) || !activeTank || activeTank.credits < item.cost || activeTank.ammo[item.id] >= 254;
+    buy.addEventListener("click", () => submitAction([view.actions.buy, item.id]));
+    shop.append(buy);
+  }
   const tactics = node("div", "tank-tactics");
   const drive = node("div", "tank-drive-controls");
   const left = node("button", "button secondary", "◀ Drive"); left.type = "button"; left.disabled = !canAct(session) || !activeTank?.fuel;
@@ -625,6 +644,7 @@ function renderScorchedEarth(session, view, host) {
   shield.addEventListener("click", () => submitAction([view.actions.shield, 0]));
   tactics.append(repair, shield); side.append(tactics);
   side.append(form);
+  side.append(shop);
   const callout = node("div", "tank-shot-result", view.last_action ? `${view.last_actor} ${view.last_action}` : "Take the first turn");
   side.append(callout);
   wrap.append(arena, side); host.append(wrap);
@@ -697,6 +717,16 @@ function animateTankShot(svg, view, actor, callout) {
     const blasts = offsets.map(offset => svgElement("circle", { cx: x1 + offset * 24, cy: y1 - (offset === 0 || offsets.length === 1 ? 0 : 5),
       r: Math.max(9, view.weapons[impact.weapon].radius * 17), class: `tank-blast${hit ? " hit" : " miss"}` }));
     svg.append(...blasts);
+    if (!reducedMotion && impact.kind !== "edge") {
+      for (let i = 0; i < 28; i++) {
+        const direction = i * Math.PI * 2 / 28;
+        const distance = (16 + (i * 19) % 66) * (impact.weapon === 5 ? 1.45 : 1);
+        const spark = svgElement("circle", { cx: x1, cy: y1, r: i % 4 === 0 ? 3.1 : 1.8,
+          class: "tank-spark", style: `--dx:${Math.cos(direction) * distance}px;--dy:${Math.sin(direction) * distance}px;--delay:${(i % 5) * 22}ms` });
+        svg.append(spark);
+        setTimeout(() => spark.remove(), 1250);
+      }
+    }
     const label = svgElement("text", { x: x1, y: y1 - 19, class: `tank-hit-label${hit ? " hit" : " miss"}` });
     label.textContent = hit ? `−${totalDamage} HP` : "MISS";
     svg.append(label);

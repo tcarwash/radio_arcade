@@ -42,7 +42,7 @@ class WebControllerScenarios(unittest.TestCase):
         self.assertEqual(value["callsign"], "N0CALL")
         self.assertEqual(value["transport"], "practice")
         self.assertEqual({game["key"] for game in value["catalog"]},
-                         {"tic-tac-toe", "nim", "open-word-tiles", "connect-four"})
+                         {"tic-tac-toe", "nim", "open-word-tiles", "connect-four", "scorched-earth"})
 
     def test_create_play_and_chat_round_trip_through_web_api(self):
         status, created = self.request("POST", "/api/command", {

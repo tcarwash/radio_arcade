@@ -12,8 +12,10 @@ GRAVITY = 60
 MIN_ANGLE, MAX_ANGLE = 10, 80
 NO_ACTION = 255
 DRIVE, REPAIR, SHIELD = 0x80, 0x81, 0x82
+BUY = 0x90
 MAX_HP = 100
 MIN_SEPARATION = 6
+STARTING_CREDITS = 70
 
 # Shared map profiles never travel over the radio. Heights fit in four bits.
 MAPS = (
@@ -26,11 +28,14 @@ MAPS = (
 
 # Speed, blast radius, direct damage, and crater depth are fixed game rules.
 WEAPONS = (
-    {"name": "Cannon", "speed": 1600, "radius": 1800, "damage": 38, "crater": 2, "tag": "balanced"},
-    {"name": "High explosive", "speed": 1450, "radius": 3200, "damage": 30, "crater": 4, "tag": "wide blast"},
-    {"name": "Armor piercing", "speed": 2050, "radius": 850, "damage": 62, "crater": 1, "tag": "direct hit"},
-    {"name": "Cluster", "speed": 1550, "radius": 1600, "damage": 12, "crater": 2, "tag": "three-burst spread"},
-    {"name": "Bunker buster", "speed": 1250, "radius": 1200, "damage": 48, "crater": 6, "tag": "terrain breaker"},
+    {"name": "Cannon", "speed": 1600, "radius": 1800, "damage": 38, "crater": 2, "cost": 0, "tag": "free / balanced"},
+    {"name": "High explosive", "speed": 1450, "radius": 3200, "damage": 30, "crater": 4, "cost": 18, "tag": "wide blast"},
+    {"name": "Armor piercing", "speed": 2050, "radius": 850, "damage": 62, "crater": 1, "cost": 22, "tag": "direct hit"},
+    {"name": "Cluster", "speed": 1550, "radius": 1600, "damage": 12, "crater": 2, "cost": 26, "tag": "three-burst spread"},
+    {"name": "Bunker buster", "speed": 1250, "radius": 1200, "damage": 48, "crater": 6, "cost": 30, "tag": "terrain breaker"},
+    {"name": "Mega nuke", "speed": 1200, "radius": 5200, "damage": 52, "crater": 7, "cost": 55, "tag": "massive blast"},
+    {"name": "Needle", "speed": 2350, "radius": 600, "damage": 90, "crater": 1, "cost": 34, "tag": "precision strike"},
+    {"name": "Earth mover", "speed": 1300, "radius": 1400, "damage": 8, "crater": 9, "cost": 28, "tag": "extreme excavation"},
 )
 WIND_ACCEL = (-3, -2, -1, 0, 1, 2, 3)
 
@@ -143,6 +148,8 @@ class ScorchedEarthGame:
         terrain = list(MAPS[map_id][1])
         return {"map": map_id, "turn": 0, "round": 0, "hp": [MAX_HP, MAX_HP],
                 "x": [2, WIDTH - 3], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
+                "credits": [STARTING_CREDITS, STARTING_CREDITS],
+                "ammo": [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)],
                 "terrain": terrain, "last_terrain": list(terrain), "last": [NO_ACTION, NO_ACTION],
                 "last_wind": NO_ACTION, "last_damage": [0, 0], "winner": -1, "finished": False}
 
@@ -160,6 +167,8 @@ class ScorchedEarthGame:
         code, parameter = action
         hp, positions = list(state["hp"]), list(state["x"])
         kits, fuel, shields = list(state["kits"]), list(state["fuel"]), list(state["shields"])
+        credits = list(state["credits"])
+        ammo = [list(stock) for stock in state["ammo"]]
         terrain = list(state["terrain"])
         last_terrain = list(state["last_terrain"])
         damage = [0, 0]
@@ -168,11 +177,19 @@ class ScorchedEarthGame:
         if code < len(WEAPONS):
             if not MIN_ANGLE <= parameter <= MAX_ANGLE:
                 raise ValueError(f"firing angle must be from {MIN_ANGLE}° through {MAX_ANGLE}°")
+            if ammo[player][code] == 0:
+                raise ValueError("out of ammunition; buy another round")
+            if code:
+                ammo[player][code] -= 1
             last_terrain = list(terrain)
             last_wind = _wind(state["map"], state["round"])
             shot = _trace_shot(terrain, positions, player, code, parameter, last_wind)
-            hp, shields = _resolve_blast(terrain, positions, code, shot["x"], shot["y"], hp, shields)
+            # A projectile that leaves the battlefield cannot explode against
+            # a tank near the boundary. Only actual impacts produce a blast.
+            if shot["kind"] != "edge":
+                hp, shields = _resolve_blast(terrain, positions, code, shot["x"], shot["y"], hp, shields)
             damage = [state["hp"][i] - hp[i] for i in (0, 1)]
+            credits[player] = min(255, credits[player] + 8 + damage[1 - player] // 3)
             if shot["kind"] != "edge":
                 terrain = _make_crater(terrain, shot["x"], WEAPONS[code]["crater"])
         elif code == DRIVE:
@@ -196,6 +213,14 @@ class ScorchedEarthGame:
             if parameter != 0 or shields[player]:
                 raise ValueError("the shield is already active")
             shields[player] = True
+        elif code == BUY:
+            if not 1 <= parameter < len(WEAPONS):
+                raise ValueError("unknown shop item")
+            cost = WEAPONS[parameter]["cost"]
+            if credits[player] < cost or ammo[player][parameter] >= 254:
+                raise ValueError("insufficient credits or ammunition full")
+            credits[player] -= cost
+            ammo[player][parameter] += 1
         else:
             raise ValueError("unknown Scorched Earth turn")
 
@@ -204,6 +229,7 @@ class ScorchedEarthGame:
         winner = -1 if dead[0] and dead[1] else 1 if dead[0] else 0 if dead[1] else -1
         return {"map": state["map"], "turn": 1 - player, "round": (state["round"] + 1) & 255,
                 "hp": hp, "x": positions, "kits": kits, "fuel": fuel, "shields": shields,
+                "credits": credits, "ammo": ammo,
                 "terrain": terrain, "last_terrain": last_terrain, "last": [code, parameter],
                 "last_wind": last_wind, "last_damage": damage, "winner": winner, "finished": finished}
 
@@ -215,7 +241,7 @@ class ScorchedEarthGame:
         shields = int(state["shields"][0]) | (int(state["shields"][1]) << 1)
         return bytes((state["map"], state["turn"], state["round"], *state["hp"], *state["x"],
                       *state["kits"], *state["fuel"], shields, *state["last"], state["last_wind"],
-                      *state["last_damage"], result)) + _pack_heights(state["terrain"]) + _pack_heights(state["last_terrain"])
+                      *state["last_damage"], result)) + _pack_heights(state["terrain"]) + _pack_heights(state["last_terrain"]) + bytes((*state["credits"], *(n for stock in state["ammo"] for n in stock)))
 
     def decode_state(self, payload: bytes) -> dict[str, Any]:
         # Preserve locally stored 9-byte development sessions from the first
@@ -236,10 +262,12 @@ class ScorchedEarthGame:
             last_wind = 3 if old_weapon != NO_ACTION else NO_ACTION
             return {"map": map_id, "turn": turn, "round": 0, "hp": [hp0, hp1],
                     "x": [2, WIDTH - 3], "kits": [2, 2], "fuel": [3, 3], "shields": [False, False],
+                    "credits": [STARTING_CREDITS] * 2, "ammo": [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)],
                     "terrain": terrain, "last_terrain": list(terrain), "last": [old_weapon, old_angle],
                     "last_wind": last_wind, "last_damage": [damage0, damage1],
                     "winner": result - 1 if result in (1, 2) else -1, "finished": result != 0}
-        if len(payload) != 50:
+        current_size = 52 + 2 * len(WEAPONS)
+        if len(payload) not in (50, current_size):
             raise ValueError("invalid Scorched Earth snapshot length")
         (map_id, turn, round_number, hp0, hp1, x0, x1, kits0, kits1, fuel0, fuel1,
          shields, last_code, last_parameter, last_wind, damage0, damage1, result) = payload[:18]
@@ -256,10 +284,12 @@ class ScorchedEarthGame:
         elif last_code < len(WEAPONS):
             if not MIN_ANGLE <= last_parameter <= MAX_ANGLE or last_wind >= len(WIND_ACCEL):
                 raise ValueError("invalid last shot")
-        elif last_code in (DRIVE, REPAIR, SHIELD):
+        elif last_code in (DRIVE, REPAIR, SHIELD, BUY):
             if last_wind != NO_ACTION or damage0 or damage1:
                 raise ValueError("invalid last tactical action")
-            if (last_code == DRIVE and last_parameter > 1) or (last_code in (REPAIR, SHIELD) and last_parameter != 0):
+            if ((last_code == DRIVE and last_parameter > 1) or
+                    (last_code in (REPAIR, SHIELD) and last_parameter != 0) or
+                    (last_code == BUY and not 1 <= last_parameter < len(WEAPONS))):
                 raise ValueError("invalid last tactical action")
         else:
             raise ValueError("invalid last action")
@@ -269,8 +299,17 @@ class ScorchedEarthGame:
                         (result == 3 and hp0 == 0 and hp1 == 0))
         if not valid_result:
             raise ValueError("inconsistent Scorched Earth result")
+        if len(payload) == current_size:
+            credits = list(payload[50:52])
+            ammo = [list(payload[52:52 + len(WEAPONS)]), list(payload[52 + len(WEAPONS):])]
+            if ammo[0][0] != 255 or ammo[1][0] != 255:
+                raise ValueError("invalid unlimited cannon ammunition")
+        else:
+            credits = [STARTING_CREDITS] * 2
+            ammo = [[255] + [1] * (len(WEAPONS) - 1) for _ in range(2)]
         return {"map": map_id, "turn": turn, "round": round_number, "hp": [hp0, hp1], "x": [x0, x1],
                 "kits": [kits0, kits1], "fuel": [fuel0, fuel1], "shields": [bool(shields & 1), bool(shields & 2)],
+                "credits": credits, "ammo": ammo,
                 "terrain": terrain, "last_terrain": last_terrain, "last": [last_code, last_parameter],
                 "last_wind": last_wind, "last_damage": [damage0, damage1],
                 "winner": result - 1 if result in (1, 2) else -1, "finished": result != 0}
@@ -287,6 +326,8 @@ class ScorchedEarthGame:
             return "uses a repair kit"
         if code == SHIELD and parameter == 0:
             return "raises a shield"
+        if code == BUY and 1 <= parameter < len(WEAPONS):
+            return f"buys {WEAPONS[parameter]['name']} ammunition"
         raise ValueError("invalid Scorched Earth turn")
 
     def view_model(self, state: dict[str, Any], players: tuple[str, ...]) -> dict[str, Any]:
@@ -298,6 +339,8 @@ class ScorchedEarthGame:
                           "world_y": _tank_world_y(terrain, x) / SCALE, "hp": state["hp"][player],
                           "facing": 0 if player == 0 else 128, "repair_kits": state["kits"][player],
                           "fuel": state["fuel"][player], "shielded": state["shields"][player]})
+            tanks[-1]["credits"] = state["credits"][player]
+            tanks[-1]["ammo"] = list(state["ammo"][player])
         last_code, last_parameter = state["last"]
         trajectory: list[list[float]] = []
         impact = None
@@ -325,9 +368,10 @@ class ScorchedEarthGame:
                          "direction": "←" if WIND_ACCEL[wind_id] < 0 else "→" if WIND_ACCEL[wind_id] > 0 else "—"},
                 "round": state["round"], "tanks": tanks,
                 "weapons": [{"id": i, "name": item["name"], "speed": item["speed"] / SCALE,
-                             "radius": item["radius"] / SCALE, "damage": item["damage"], "tag": item["tag"]}
+                             "radius": item["radius"] / SCALE, "damage": item["damage"],
+                             "cost": item["cost"], "tag": item["tag"]}
                             for i, item in enumerate(WEAPONS)],
-                "actions": {"drive": DRIVE, "repair": REPAIR, "shield": SHIELD},
+                "actions": {"drive": DRIVE, "repair": REPAIR, "shield": SHIELD, "buy": BUY},
                 "min_angle": MIN_ANGLE, "max_angle": MAX_ANGLE,
                 "turn": self.current_player(state, players),
                 "winner": players[state["winner"]] if state["winner"] >= 0 else None,
