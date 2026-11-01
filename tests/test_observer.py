@@ -58,6 +58,16 @@ class ObserverTests(unittest.TestCase):
         self.guest.accept_invite(sid)
         return sid
 
+    def test_forfeit_and_late_snapshot_preserve_observer_result(self):
+        sid = self.start()
+        self.guest.forfeit_game(sid)
+        self.assertEqual(self.observer.session(sid)["view"]["winner"], "N0AAA")
+        late = self.radio.attach("N0LATE", observer=True)
+        self.host._send_snapshot(self.host._sessions[sid], "N0BBB")
+        self.assertEqual(late.session(sid)["status"], "finished")
+        self.assertEqual(late.session(sid)["forfeited_by"], "N0BBB")
+        self.assertFalse(any(call in ("N0OBS", "N0LATE") for call, _ in self.radio.sent))
+
     def test_passive_start_and_move_never_transmit(self):
         sid = self.start()
         self.assertEqual(self.observer.session(sid)["players"], ["N0AAA", "N0BBB"])

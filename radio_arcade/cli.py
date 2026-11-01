@@ -39,7 +39,7 @@ def main() -> None:
     unsubscribe = engine.subscribe(_print_event)
     print("Radio Arcade headless client. Commands: games, new GAME [CALL], invite ID CALL,")
     print("accept ID, start ID, move ID CELL | move ID PILE AMOUNT, chat ID TEXT,")
-    print("connect CALL, disconnect, sync ID, show ID, sessions, quit")
+    print("connect CALL, disconnect, sync ID, forfeit ID, show ID, sessions, quit")
     try:
         while True:
             try:
@@ -92,7 +92,7 @@ def main() -> None:
                 elif cmd == "disconnect" and len(words) == 1:
                     engine.disconnect()
                 else:
-                    print("Unknown command; use games, new, invite, accept, start, move, chat, connect, disconnect, sync, show, sessions, quit")
+                    print("Unknown command; use games, new, invite, accept, start, move, chat, connect, disconnect, sync, forfeit, show, sessions, quit")
             except (ValueError, KeyError, IndexError, OSError, RuntimeError) as exc:
                 print(f"Could not run command: {exc}")
     finally:

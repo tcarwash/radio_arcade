@@ -154,12 +154,12 @@ class SessionStore:
                                 (time.time(), target))
 
     def upgrade_v3_outbox(self) -> None:
-        """Upgrade retained version 3 envelopes, whose existing kinds are unchanged."""
+        """Upgrade retained version 3/4 envelopes; existing ordinary packet layouts are unchanged."""
         from .wire import decode, PROTOCOL_VERSION
         with self._lock, self.db:
             for row in self.db.execute("SELECT session,target,kind,sequence,frame FROM outbox").fetchall():
                 frame = bytearray(row["frame"])
-                if len(frame) < 2 or frame[1] != 3:
+                if len(frame) < 2 or frame[1] not in (3, 4):
                     continue
                 frame[1] = PROTOCOL_VERSION
                 decode(bytes(frame))

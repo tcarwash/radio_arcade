@@ -412,6 +412,7 @@ class ArcadeTUI(App):
         self._word_board_view = None
         self._word_score_hint_key = None
         self._word_score_hint = ""
+        self._forfeit_confirm_id = None
         self._delete_confirm_id: str | None = None
         self._action_lock = threading.Lock()
         # Textual list mutations yield; never interleave two rebuilds.
@@ -455,6 +456,7 @@ class ArcadeTUI(App):
                         yield Button("Start lobby", id="start-game")
                         yield Button("Sync / recover state", id="sync-state")
                         yield Button("Retry pending move", id="retry-move")
+                        yield Button("Forfeit game", id="forfeit-game", variant="warning")
                         yield Button("Delete selected game", id="delete-game")
                 with Vertical(id="center", classes="panel"):
                     yield Label("02  /  GAME ARENA", classes="eyebrow")
@@ -645,6 +647,7 @@ class ArcadeTUI(App):
     async def _show_session_locked(self, sid: str | None):
         if not self.engine or not sid:
             self.query_one("#scoreboard", Horizontal).display = False
+            self.query_one("#forfeit-game", Button).display = False
             self.query_one("#delete-game", Button).display = False
             await self.query_one("#game-controls", Vertical).remove_children()
             await self.query_one("#board", VerticalScroll).remove_children()
@@ -662,6 +665,9 @@ class ArcadeTUI(App):
             return
         self._board_signature = signature
         self.query_one("#delete-game", Button).display = True
+        self.query_one("#forfeit-game", Button).display = session["status"] == "active" and not self.settings.observer_mode
+        self.query_one("#forfeit-game", Button).disabled = (session["pending_action"] is not None or
+            (self.settings.transport != "practice" and not self.settings.tx_enabled))
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
         for control_id in ("#accept-invite", "#join-game", "#announce-game",
                            "#set-reply-order", "#invite-player", "#cancel-invite", "#start-game",
@@ -690,6 +696,7 @@ class ArcadeTUI(App):
                     else "LOBBY · invite players, then start")
         elif session["status"] == "joining": line = "WAITING FOR SESSION START"
         elif session["status"] == "cancelled": line = "INVITATION CANCELLED"
+        elif session.get("forfeited_by"): line = f"{session['forfeited_by']} FORFEITED"
         elif session["pending_action"]: line = "MOVE SENT · WAITING FOR COMMIT"
         elif state and state.get("winner"): line = f"GAME WON BY {state['winner']}"
         elif session["status"] == "finished": line = "GAME OVER · DRAW"
@@ -790,7 +797,11 @@ class ArcadeTUI(App):
         if self.engine and self.selected_id and not isinstance(self.screen, ResultScreen):
             session = self.engine.session(self.selected_id)
             if session["status"] == "finished":
-                self.push_screen(ResultScreen(session, self.settings), lambda _: self.call_later(self._refresh_sessions))
+                self.push_screen(ResultScreen(session, self.settings), self._result_closed)
+
+    def _result_closed(self, _result):
+        self.call_later(self._refresh_sessions)
+        self.call_later(self._refresh_chat, self.selected_id)
 
     async def _update_scoreboard(self, session):
         panel = self.query_one("#scoreboard", Horizontal)
@@ -836,6 +847,25 @@ class ArcadeTUI(App):
             self.query_one(control_id).disabled = self.settings.observer_mode or not can_transmit
         self._board_signature = None
         self.call_later(self._refresh_sessions)
+
+    @on(Button.Pressed, "#forfeit-game")
+    def _forfeit_game(self):
+        if not self.engine or not self.selected_id:
+            return
+        sid = self.selected_id
+        button = self.query_one("#forfeit-game", Button)
+        if self._forfeit_confirm_id == sid:
+            self._forfeit_confirm_id = None
+            button.label = "Forfeit game"
+            self._run_action(partial(self.engine.forfeit_game, sid))
+        else:
+            self._forfeit_confirm_id = sid
+            button.label = "Confirm forfeit · others win"
+            def reset():
+                self._forfeit_confirm_id = None
+                if self.query("#forfeit-game"):
+                    self.query_one("#forfeit-game", Button).label = "Forfeit game"
+            self.set_timer(5, reset)
 
     @on(Button.Pressed, "#delete-game")
     def _delete_selected_game(self):
@@ -974,9 +1004,10 @@ class ArcadeTUI(App):
         threading.Thread(target=worker, daemon=True).start()
 
     def on_chat_sent(self, message: ChatSent):
-        input_box = self.query_one("#chat-input", Input)
+        input_box = self.screen_stack[0].query_one("#chat-input", Input)
         if self.selected_id == message.session and input_box.value.strip() == message.text:
             input_box.value = ""
+        self._refresh_chat(message.session)
 
     @on(Input.Submitted, "#chat-input")
     def _chat_enter(self): self._send_chat()

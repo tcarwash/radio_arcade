@@ -99,3 +99,16 @@ engine = ArcadeService("N0CALL", transport, registry=registry)
 ```
 
 Every participating station needs the same rules and ID. The example ID is for local experiments; coordinate an ID before transmitting with a new game.
+
+### Forfeiting a table
+
+`engine.forfeit_game(session_id)` ends an active game and awards the result to
+all remaining players. It is available off-turn, but requires a participant
+and enabled TX (practice uses the current hot-seat player). The coordinator
+commits the result; callers on another station wait for that commit. Results
+include `forfeited_by` and `view.winners`, with `view.winner` also populated for
+a single winner. `current_player` becomes `None`. The outcome survives save
+reload and synchronization, while the plugin's original state remains intact.
+Use `session.status` and `session.view` for the authoritative final result.
+The game remains in the list and chat remains available. Wire version 5 is
+required on all stations.

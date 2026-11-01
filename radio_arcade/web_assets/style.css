@@ -489,3 +489,5 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .tank-arena { cursor:grab; touch-action:none; user-select:none; max-height:65dvh; overflow-y:auto; }
 .tank-arena.panning { cursor:grabbing; }
 .tank-minimap:focus-visible, .tank-arena:focus-visible { outline:2px solid var(--mint); outline-offset:3px; }
+
+.session-actions .button.forfeit-game-action { color:var(--amber); border-color:#755b3c; }

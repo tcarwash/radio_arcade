@@ -1,4 +1,4 @@
-# Radio Arcade wire protocol, version 4
+# Radio Arcade wire protocol, version 5
 
 This describes the current implementation in `radio_arcade/wire.py` and `service.py`. All radio traffic is public. Multi-byte envelope integers use network (big-endian) byte order. One complete packet is at most 240 bytes. The first byte identifies the game type; it is not the identity of an individual game.
 
@@ -7,7 +7,7 @@ This describes the current implementation in `radio_arcade/wire.py` and `service
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 1 | Game type ID: 1 tic-tac-toe, 2 Nim, 3 Open Word Tiles; ID 4 retired |
-| 1 | 1 | Envelope version: 4 |
+| 1 | 1 | Envelope version: 5 |
 | 2 | 1 | Message kind |
 | 3 | 1 | Flags |
 | 4 | 8 | Random game instance ID |
@@ -29,7 +29,7 @@ Callsign fields are 1–10 ASCII bytes. Flag `0x01` is required for opaque state
 | SYNC_REQUEST | 6 | empty |
 | SNAPSHOT | 7 | roster, state and optional last action |
 | REJECT | 8 | UTF-8 reason |
-| RESIGN | 9 | reserved; not implemented |
+| RESIGN | 9 | empty; participant requests a table forfeit from the coordinator |
 | CHAT | 10 | 1–150 UTF-8 bytes |
 | ACK | 11 | empty; sequence matches acknowledged packet, revision contains its kind |
 | OPAQUE_STATE | 12 | 1–200 readable UTF-8 bytes; UI-hidden flag required |
@@ -43,13 +43,13 @@ Roster encoding is `[count:u8][length:u8, ASCII callsign]...`. START is `[roster
 
 The creator coordinates the locked roster. ACTION specifies the next sequence and expected revision; COMMIT advances both and carries the actor and action. Important messages are acknowledged and retried; a snapshot repairs a missed commit. Sequence numbers for chat and opaque state are independent of game revisions. Delivery acknowledgements indicate peer processing, not privacy or authentication. Opaque state remains plaintext, is recorded in debug logs, and is hidden only by the player interfaces.
 
-## Passive broadcast observers (version 4 compatible)
+## Passive broadcast observers
 
 An optional observer client listens to all packets on the configured KISS broadcast group, including packets addressed to other callsigns. It does not register as a game participant and does not send ACKs, moves, invitations or chat. START or SNAPSHOT supplies the roster and current board. A COMMIT for an unknown game reveals its type, instance and coordinator but no initial board; the observer displays **Awaiting snapshot**. Subsequent contiguous COMMIT packets advance a known board. Missing revisions trigger a visible stale-state warning, never an automatic transmission.
 
 An observer may explicitly transmit one existing `SYNC_REQUEST` (kind 6, empty payload) addressed to the game's coordinator. The coordinator accepts this request from a non-rostered callsign for an active/finished game and sends one `SNAPSHOT` (kind 7) to that callsign without requiring an ACK; it does not add the observer to the roster. There is no retry guarantee for this optional exchange. Observer mode is broadcast-only, and receive-only except for this deliberate request. No new packet kind or version change is required. An observer cannot discover entirely silent games.
 
-## Hosted dealer tables (version 4 extension)
+## Hosted dealer tables
 
 A hosted table uses the existing broadcast KISS group, never a connected Data2G session. The creating station is the **dealer** and owns the authoritative state. This is separate from the original directed-invitation mode; old tables keep their existing ACK-and-retry behavior. All participants need this extension to join a hosted table.
 
@@ -78,4 +78,29 @@ Game IDs and their rules are permanent; see `GAME-CATALOG.md`. Game-specific cod
 
 Opaque state uses the same game ID and the `OPAQUE_STATE` kind/flag. A game may provide optional `encode_opaque_state(value) -> str` and `decode_opaque_state(text)` methods; the engine routes decoded values to `game_opaque_state` events while the bundled UIs show only a synchronization notice. Each game's own format is readable UTF-8, at most 200 bytes per message, and remains public on air.
 
-A cancelled invitation leaves a tombstone even when cancellation arrives before the invitation. To avoid ambiguity from reordered packets, a cancelled station cannot be invited again to the same game instance; create another game instead. Version 4 adds `CANCEL_INVITE`; version 3 and version 4 clients reject each other's packets, so all participants must upgrade together. Hosted kinds 14–17 extend version 4 without changing legacy packet layouts; older version 4 clients do not understand the new kinds. Locally retained game state is not erased, and retained version 3 outbox envelopes are upgraded on startup because existing message layouts are unchanged.
+A cancelled invitation leaves a tombstone even when cancellation arrives before the invitation. To avoid ambiguity from reordered packets, a cancelled station cannot be invited again to the same game instance; create another game instead. Version 4 adds `CANCEL_INVITE`; version 3 and version 4 clients reject each other's packets, so all participants must upgrade together. Hosted kinds 14–17 extend version 4 without changing legacy packet layouts; older version 4 clients do not understand the new kinds. Locally retained game state is not erased, and retained version 3/4 outbox envelopes are upgraded to version 5 on startup because existing message layouts are unchanged.
+
+## Forfeit (version 5)
+
+A participant may forfeit an active table even when it is not their turn.
+A non-coordinator sends a reliable, directed `RESIGN` with empty payload, next
+sequence, and current revision. The coordinator validates the participant and
+commits the result with a normal `COMMIT` envelope whose action bytes are the
+reserved core marker `FF 52 41`. This marker cannot be submitted as an ordinary
+game action. It is processed by the shared service, never by a game plugin.
+The table ends; all other participants share the win. A two-player table has
+one winner. Local practice forfeits the seat whose turn it is.
+
+Plugin state stays unchanged so all game codecs remain usable. The final
+session status, last actor/action, and shared presentation override carry the
+forfeit outcome. A snapshot represents that outcome with a one-byte trailer
+containing the forfeiting player's zero-based roster index; a zero-length
+trailer still means no last move. Trailers of two or more bytes retain the
+normal actor/action format. Duplicate requests cannot change a final result.
+Lost commits can be recovered using `SYNC_REQUEST` / `SNAPSHOT`, including by
+observers. Forfeiting does not delete chat or saved state.
+
+Version 5 also removes Scorched Earth's artificial upper sky collision limit;
+shots can rise above the original viewport and return under gravity. Both
+stations must run version 5. Version 4 peers reject these packets; this avoids
+mixed physics and mismatched forfeit interpretation. Local saves are retained.

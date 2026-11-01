@@ -58,6 +58,40 @@ class DesktopScenarios(unittest.TestCase):
             finally:
                 window.close(); app.processEvents()
 
+    def test_chat_rows_remain_visible_and_forfeit_ends_game(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from radio_arcade.desktop import ArcadeWindow
+        from radio_arcade.practice import PracticeService
+        from radio_arcade.settings import Settings
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            engine = PracticeService("AG7SU")
+            window = ArcadeWindow(Settings(callsign="AG7SU", transport="practice"))
+            window._service_ready(engine); sid = engine.create_game("tic-tac-toe")
+            window.selected_id = sid; window._show_session(sid); window.show(); app.processEvents()
+            try:
+                window.chat_input.setText("Hello <friend> & good luck!")
+                window.chat_send.click()
+                deadline = time.monotonic() + 3
+                while window._tasks and time.monotonic() < deadline:
+                    app.processEvents(); time.sleep(.01)
+                self.assertEqual(window.chat_list.count(), 1)
+                self.assertIn("Hello <friend>", window.chat_list.item(0).text())
+                self.assertGreater(window.chat_list.visualItemRect(window.chat_list.item(0)).height(), 30)
+                engine.legal_action(sid, b"\x00"); window._show_session(sid)
+                self.assertEqual(window.chat_list.count(), 1)
+                self.assertTrue(window.forfeit_button.isVisible())
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                    window.forfeit_button.click()
+                    while window._tasks and time.monotonic() < deadline:
+                        app.processEvents(); time.sleep(.01)
+                self.assertEqual(engine.session(sid)["status"], "finished")
+                self.assertEqual(engine.session(sid)["forfeited_by"], "LOCAL1")
+                self.assertIsNotNone(window._result_dialog)
+            finally:
+                window.close(); app.processEvents()
+
     def test_aim_preview_is_hidden_during_opponents_turn(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication

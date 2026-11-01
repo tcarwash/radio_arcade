@@ -168,7 +168,7 @@ def _trace_shot(terrain: list[int], positions: list[int], shooter: int,
             impact_kind = "tank"
             break
         column = x // SCALE
-        if column < 0 or column >= WIDTH or y < 0 or y > SKY_HEIGHT * SCALE:
+        if column < 0 or column >= WIDTH or y < 0:
             impact_kind = "edge"
             break
         if y <= _surface(terrain, round(x / SCALE)) * SCALE:
@@ -537,7 +537,7 @@ class ScorchedEarthGame:
         if last_actor:
             action_text = (self.describe_action(bytes(state["last"])) if last_code < len(WEAPONS)
                            else self.describe_action(bytes(state["last"])))
-        return {"kind": "scorched-earth", "width": WIDTH, "height": HEIGHT, "sky_height": SKY_HEIGHT,
+        return {"kind": "scorched-earth", "width": WIDTH, "height": HEIGHT, "sky_height": max(SKY_HEIGHT, int(max((y for _, y in trajectory), default=0)) + 4),
                 "map_name": MAPS[map_id][0], "terrain": list(terrain),
                 "previous_terrain": list(state["last_terrain"]), "gravity": GRAVITY / SCALE,
                 "wind": {"index": wind_id, "acceleration": WIND_ACCEL[wind_id] / SCALE, "label": wind_word,

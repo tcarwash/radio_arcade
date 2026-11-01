@@ -73,6 +73,20 @@ class HostedScenarios(unittest.TestCase):
         self.air.pump()
         return sid
 
+    def test_forfeit_ends_multiplayer_table_with_shared_winners(self):
+        from radio_arcade.presentation import result_title
+        sid = self.start()
+        loser = self.engines[2]
+        loser.forfeit_game(sid); self.air.pump()
+        expected = [engine.callsign for engine in self.engines if engine is not loser]
+        for engine in self.engines:
+            result = engine.session(sid)
+            self.assertEqual(result["status"], "finished")
+            self.assertEqual(result["view"]["winners"], expected)
+            self.assertEqual(result_title(result, loser.callsign), "DEFEAT")
+        loser.request_sync(sid); self.air.pump()
+        self.assertEqual(loser.session(sid)["view"]["winners"], expected)
+
     def test_joins_broadcast_roster_and_one_start(self):
         sid = self.start()
         for engine in self.engines:

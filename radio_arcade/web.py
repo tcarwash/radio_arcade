@@ -149,7 +149,7 @@ class WebController:
             raise ValueError(self.last_error or "save station settings before using the game room")
         engine = self.engine
         name = data.get("command")
-        transmit_commands = {"create_game", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer"}
+        transmit_commands = {"forfeit_game", "create_game", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer"}
         if name in transmit_commands and self.settings.transport != "practice" and not self.settings.tx_enabled:
             raise ValueError("TX is disabled. Enable TX to send radio traffic.")
         sid = data.get("session_id")
@@ -194,6 +194,7 @@ class WebController:
             "resend_pending_action": lambda: engine.resend_pending_action(sid),
             "connect_peer": lambda: engine.connect_peer(str(data.get("peer", ""))),
             "disconnect_peer": engine.disconnect,
+            "forfeit_game": lambda: engine.forfeit_game(sid),
             "delete_game": lambda: engine.delete_game(sid),
         }
         if name not in commands:

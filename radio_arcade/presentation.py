@@ -5,27 +5,29 @@ def scoreboard(session: dict) -> dict:
     view = session.get("view") or {}
     finished = session.get("status") == "finished"
     winner = view.get("winner")
+    winners = view.get("winners") or ([winner] if winner else [])
     scores = view.get("scores") or {}
     tanks = {tank["player"]: tank for tank in view.get("tanks", [])}
     unit = "HP" if tanks else "POINTS" if scores else "RESULT"
     entries = []
     for player in session.get("players", []):
-        result = "WIN" if winner == player else "LOSS" if winner else "DRAW"
+        result = "WIN" if player in winners else "LOSS" if winners else "DRAW"
         value = tanks[player]["hp"] if player in tanks else scores.get(player, result if finished else "—")
         entries.append({"player": player, "value": str(value), "unit": unit,
                         "active": not finished and player == session.get("current_player"),
-                        "winner": finished and winner == player})
+                        "winner": finished and player in winners})
     return {"entries": entries, "finished": finished, "winner": winner,
             "label": "FINAL" if finished else "LIVE"}
 
 
 def result_title(session: dict, callsign: str, *, practice=False, observer=False) -> str:
-    winner = (session.get("view") or {}).get("winner")
-    if not winner:
+    view = session.get("view") or {}
+    winners = view.get("winners") or ([view["winner"]] if view.get("winner") else [])
+    if not winners:
         return "DRAW"
     if practice or observer:
-        return f"{winner} WINS"
-    return "VICTORY" if winner == callsign else "DEFEAT"
+        return f"{' / '.join(winners)} WINS" if len(winners) == 1 else f"{' / '.join(winners)} WIN"
+    return "VICTORY" if callsign in winners else "DEFEAT"
 
 
 class CompletionTracker:

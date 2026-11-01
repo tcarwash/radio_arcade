@@ -190,7 +190,7 @@ function setTurnBanner(session) {
   else if (session.status === "invited") { text = `INVITATION FROM ${session.coordinator} · ACCEPT TO JOIN`; tone = "warning"; }
   else if (session.status === "lobby") { text = session.hosted ? (session.coordinator === state.snapshot.callsign ? "DEALER · OPEN TO JOIN REQUESTS" : "PUBLIC TABLE · JOIN TO PLAY") : "LOBBY · INVITE STATIONS, THEN START"; tone = "waiting"; }
   else if (session.status === "joining") { text = session.hosted ? "JOIN REQUEST SENT · WAITING FOR DEALER" : "WAITING FOR THE HOST TO START"; tone = "waiting"; }
-  else if (session.status === "finished") { text = session.view?.winner ? `GAME WON BY ${session.view.winner}` : "GAME OVER · DRAW"; tone = "warning"; }
+  else if (session.status === "finished") { text = session.forfeited_by ? `${session.forfeited_by} FORFEITED` : session.view?.winner ? `GAME WON BY ${session.view.winner}` : "GAME OVER · DRAW"; tone = "warning"; }
   else if (session.has_pending_action) { text = "MOVE SENT · WAITING FOR COMMIT"; tone = "waiting"; }
   else if (session.status === "active") {
     text = isPractice() ? `LOCAL PRACTICE · ${session.current_player || "GAME OVER"} TO MOVE` :
@@ -263,6 +263,12 @@ function renderSessionActions(session) {
   actions.replaceChildren();
   const command = (name, extra = {}) => sendCommand(name, { session_id: session.id, ...extra });
   const owner = session.coordinator === state.snapshot.callsign;
+  if (session.status === "active" && !isObserver() && (isPractice() || session.players.includes(state.snapshot.callsign))) {
+    const forfeit = addButton(actions, "Forfeit game…", () => {
+      if (window.confirm("Forfeit this game? This ends the table and awards the result to the other player(s).")) command("forfeit_game");
+    }, false, !canTransmit() || session.has_pending_action);
+    forfeit.classList.add("forfeit-game-action");
+  }
   if (session.status === "finished") addButton(actions, "View match result", () => showMatchResult(session));
   if (!isObserver() && session.status === "invited") addButton(actions, "Accept invitation", () => command("accept_invite"), true, !canTransmit());
   if (!isObserver() && session.hosted && ["lobby", "joining"].includes(session.status) && !session.players.includes(state.snapshot.callsign))
@@ -323,8 +329,8 @@ const completionDelays = new Map();
 function showMatchResult(session) {
   clearTimeout(completionDelays.get(session.id)); completionDelays.delete(session.id);
   document.querySelector("#match-result")?.remove();
-  const winner = session.view?.winner;
-  const title = !winner ? "DRAW" : isPractice() || isObserver() ? `${winner} WINS` : winner === state.snapshot.callsign ? "VICTORY" : "DEFEAT";
+  const winners = session.view?.winners || (session.view?.winner ? [session.view.winner] : []);
+  const title = !winners.length ? "DRAW" : isPractice() || isObserver() ? `${winners.join(" / ")} ${winners.length === 1 ? "WINS" : "WIN"}` : winners.includes(state.snapshot.callsign) ? "VICTORY" : "DEFEAT";
   const dialog = node("dialog", `match-result${title === "DEFEAT" ? " result-loss" : title === "DRAW" ? " result-draw" : ""}`); dialog.id = "match-result";
   const heading = node("h2", "result-title", title); heading.id = "match-result-title";
   dialog.setAttribute("aria-labelledby", heading.id);
@@ -339,7 +345,7 @@ function observeCompletion(session) {
   completionStatuses.set(session.id, session.status);
   if (previous === "active" && session.status === "finished" && !completionAnnounced.has(session.id)) {
     completionAnnounced.add(session.id);
-    if (session.view?.kind === "scorched-earth" && session.view.impact) {
+    if (session.view?.kind === "scorched-earth" && session.view.impact && !session.forfeited_by) {
       completionDelays.set(session.id, setTimeout(() => {
         completionDelays.delete(session.id);
         if (state.session?.id === session.id && state.session.status === "finished") showMatchResult(session);
@@ -639,6 +645,7 @@ function renderScorchedEarth(session, view, host) {
     preserveAspectRatio: "none",
     role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
   svg.style.width = `${Math.round(view.width * 20 * state.tankZoom)}px`;
+  svg.style.height = `${Math.round(view.sky_height * 14 * state.tankZoom)}px`;
   const width = view.width * 24, height = view.sky_height * 24;
   const defs = svgElement("defs");
   const skyGradient = svgElement("linearGradient", { id: "scorched-sky", x1: "0%", y1: "0%", x2: "0%", y2: "100%" });
@@ -817,6 +824,7 @@ function renderScorchedEarth(session, view, host) {
     const centerFraction = (arena.scrollLeft + arena.clientWidth / 2) / mapWidth;
     state.tankZoom = Math.max(.75, Math.min(1.6, Math.round((state.tankZoom + delta) * 100) / 100));
     svg.style.width = `${Math.round(view.width * 20 * state.tankZoom)}px`;
+    svg.style.height = `${Math.round(view.sky_height * 14 * state.tankZoom)}px`;
     zoomText.textContent = `${Math.round(state.tankZoom * 100)}%`;
     centerOn(centerFraction);
   }
@@ -913,6 +921,7 @@ function renderScorchedEarth(session, view, host) {
   if (activeViewTank && !animateShot) requestAnimationFrame(() => {
     const x = activeViewTank.x / view.width * svg.getBoundingClientRect().width;
     arena.scrollLeft = Math.max(0, x - arena.clientWidth * .35);
+    arena.scrollTop = Math.max(0, (view.sky_height - activeViewTank.world_y) / view.sky_height * svg.getBoundingClientRect().height - arena.clientHeight * .65);
     updateMinimap();
   });
   const actor = view.last_actor;
@@ -920,10 +929,11 @@ function renderScorchedEarth(session, view, host) {
     state.lastTankAnimation = shotKey;
     const firingArt = tankArtwork.get(actor);
     if (firingArt) { firingArt.classList.add("recoiling"); setTimeout(() => firingArt.classList.remove("recoiling"), 550); }
-    animateTankShot(svg, view, actor, callout, settleTerrain, x => {
+    animateTankShot(svg, view, actor, callout, settleTerrain, (x, y) => {
       if (!followShot) return;
       const pixel = x / view.width * svg.getBoundingClientRect().width;
-      arena.scrollLeft = Math.max(0, pixel - arena.clientWidth / 2); updateMinimap();
+      arena.scrollLeft = Math.max(0, pixel - arena.clientWidth / 2);
+      arena.scrollTop = Math.max(0, (view.sky_height - y) / view.sky_height * svg.getBoundingClientRect().height - arena.clientHeight / 2); updateMinimap();
     });
   }
 }
@@ -944,7 +954,7 @@ function traceTankPreview(view, shooter, weapon, angle, power = 100) {
     vy -= roundEven(view.gravity * 1000);
     points.push([x / 1000, y / 1000]);
     if (target && (x - target.x * 1000) ** 2 + (y - roundEven(target.world_y * 1000)) ** 2 <= 820 ** 2) break;
-    if (x < 0 || x >= view.width * 1000 || y < 0 || y > view.sky_height * 1000) break;
+    if (x < 0 || x >= view.width * 1000 || y < 0) break;
     const column = Math.max(0, Math.min(view.width - 1, roundEven(x / 1000)));
     if (y <= view.terrain[column] * 1000) { points[points.length - 1] = [x / 1000, view.terrain[column]]; break; }
   }
@@ -979,7 +989,7 @@ function animateTankShot(svg, view, actor, callout, onImpact = () => {}, onPosit
     const fraction = position - index;
     const x = points[index][0] + (points[index + 1][0] - points[index][0]) * fraction;
     const y = points[index][1] + (points[index + 1][1] - points[index][1]) * fraction;
-    if (!reducedMotion) onPosition(x);
+    if (!reducedMotion) onPosition(x, y);
     projectile.setAttribute("cx", String(x * 24));
     projectile.setAttribute("cy", String((view.sky_height - y) * 24));
     const trailPoints = points.slice(0, index + 1).map(([px, py]) => `${px * 24},${(view.sky_height - py) * 24}`);
@@ -990,7 +1000,7 @@ function animateTankShot(svg, view, actor, callout, onImpact = () => {}, onPosit
     setTimeout(() => flightTrail.remove(), reducedMotion ? 350 : 800);
     const impact = view.impact;
     onImpact();
-    onPosition(impact.x);
+    onPosition(impact.x, impact.y);
     view.tanks.forEach((tank, index) => {
       if (!(view.last_damage?.[index] > 0)) return;
       const art = svg.querySelector(`[data-seat="${index}"] .tank-art`);

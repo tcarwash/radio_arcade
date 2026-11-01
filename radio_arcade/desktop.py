@@ -31,7 +31,7 @@ from .games.scorched_earth import _trace_shot, _wind, pack_shot
 
 
 class ScorchedBattlefield(QWidget):
-    shot_position = Signal(float)
+    shot_position = Signal(float, float)
     """Resolution-independent native rendering of the shared artillery state."""
 
     def __init__(self, view: dict, animate: bool = False, parent=None):
@@ -60,7 +60,7 @@ class ScorchedBattlefield(QWidget):
         path = self.view.get("trajectory", [])
         if path:
             index = min(len(path) - 1, int(self.flight_progress * (len(path) - 1)))
-            self.shot_position.emit(path[index][0])
+            self.shot_position.emit(path[index][0], path[index][1])
         self.update()
         if self.flight_progress >= 1:
             if time.monotonic() - self._flight_started >= 4.4:
@@ -437,6 +437,9 @@ class ArcadeWindow(QMainWindow):
         tools_layout.addStretch(1)
         left_layout.addWidget(self.new_button)
         left_layout.addWidget(self.start_button)
+        self.forfeit_button = QPushButton("Forfeit game…"); self.forfeit_button.setObjectName("forfeitGame")
+        self.forfeit_button.clicked.connect(self._forfeit_game); self.forfeit_button.hide()
+        left_layout.addWidget(self.forfeit_button)
         self.delete_button = QPushButton("Delete selected game…")
         self.delete_button.clicked.connect(self._delete_game)
         self.delete_button.setEnabled(False)
@@ -474,7 +477,10 @@ class ArcadeWindow(QMainWindow):
         self.players_label = QLabel("Stations appear here when a lobby opens."); self.players_label.setObjectName("players")
         self.players_label.setWordWrap(True); right_layout.addWidget(self.players_label)
         right_layout.addWidget(QLabel("SIDE CHAT"))
-        self.chat_list = QListWidget(); self.chat_list.setObjectName("chatList"); right_layout.addWidget(self.chat_list, 1)
+        self.chat_list = QListWidget(); self.chat_list.setObjectName("chatList");
+        self.chat_list.setWordWrap(True); self.chat_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.chat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.chat_list.setResizeMode(QListWidget.ResizeMode.Adjust); right_layout.addWidget(self.chat_list, 1)
         chat_row = QHBoxLayout(); self.chat_input = QLineEdit(); self.chat_input.setPlaceholderText("Message · up to 150 UTF-8 bytes")
         self.chat_input.returnPressed.connect(self._send_chat)
         self.chat_send = QPushButton("Send"); self.chat_send.clicked.connect(self._send_chat)
@@ -532,6 +538,7 @@ class ArcadeWindow(QMainWindow):
             QLabel { color:#d7dfeb; }
             QPushButton { background:#202c3c; color:#e7edf7; border:1px solid #34445a; border-radius:9px; padding:9px 12px; }
             QPushButton:hover { background:#2b3b50; border-color:#4b6b81; }
+            QPushButton#forfeitGame { color:#f3bf7a; border-color:#755b3c; }
             QPushButton:disabled { color:#637086; background:#161f2c; border-color:#252f3e; }
             QPushButton#primaryButton { color:#071411; font-weight:800; background:#67dfc3; border:0; }
             QPushButton#primaryButton:hover { background:#89f0d8; }
@@ -546,6 +553,7 @@ class ArcadeWindow(QMainWindow):
             QListWidget::item { padding:12px 10px; margin:2px 0; border-radius:9px; color:#abb8ca; }
             QListWidget::item:selected { background:#1c3438; color:#a2f1df; }
             QListWidget::item:hover { background:#1a2533; }
+            QListWidget#chatList::item { padding:8px 10px; margin:3px 0; background:#182331; color:#e3edf7; border-radius:8px; }
             QScrollBar:vertical { background:transparent; width:8px; margin:2px; }
             QScrollBar::handle:vertical { background:#34445a; border-radius:4px; min-height:25px; }
             QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical { height:0; }
@@ -643,6 +651,14 @@ class ArcadeWindow(QMainWindow):
         if self.engine:
             self.engine.set_tx_enabled(enabled)
             self._show_session(self.selected_id)
+
+    def _forfeit_game(self):
+        if not self.engine or not self.selected_id:
+            return
+        sid = self.selected_id
+        answer = QMessageBox.question(self, "Forfeit game", "Forfeit this game? This ends the table and awards the result to the other player(s).")
+        if answer == QMessageBox.StandardButton.Yes:
+            self._run(partial(self.engine.forfeit_game, sid))
 
     def _delete_game(self):
         if not self.engine or not self.selected_id:
@@ -763,6 +779,9 @@ class ArcadeWindow(QMainWindow):
             self.scoreboard_layout.addWidget(Scoreboard(session))
         announce = self._completion_tracker.observe(session) if session else False
         self._clear_board()
+        self.forfeit_button.setVisible(bool(session and session["status"] == "active" and not self.settings.observer_mode))
+        self.forfeit_button.setEnabled(bool(session and session["pending_action"] is None and
+            (self.settings.transport == "practice" or self.settings.tx_enabled)))
         self.delete_button.setEnabled(bool(session))
         self.accept_button.setVisible(False); self.start_button.setVisible(False); self.invite_button.setVisible(False); self.cancel_invite_button.setVisible(False)
         self.join_button.setVisible(False); self.announce_button.setVisible(False); self.retry_button.setVisible(False)
@@ -824,7 +843,7 @@ class ArcadeWindow(QMainWindow):
             self.turn_badge.setText("INVITATION CANCELLED")
         elif session["status"] == "finished":
             winner = state.get("winner") if state else None
-            self.turn_badge.setText(f"{winner} WINS" if winner else "GAME OVER · DRAW")
+            self.turn_badge.setText(f"{session['forfeited_by']} FORFEITED" if session.get("forfeited_by") else f"{winner} WINS" if winner else "GAME OVER · DRAW")
         elif session["pending_action"]:
             self.turn_badge.setText("MOVE SENT · WAITING FOR COMMIT")
         else:
@@ -837,7 +856,7 @@ class ArcadeWindow(QMainWindow):
             self._render_state(session)
         self._refresh_chat(sid)
         if announce:
-            if state and state.get("kind") == "scorched-earth" and state.get("impact"):
+            if state and state.get("kind") == "scorched-earth" and state.get("impact") and not session.get("forfeited_by"):
                 self._pending_result_id = sid
                 self._completion_timer.start(4500)
             else:
@@ -1004,8 +1023,8 @@ class ArcadeWindow(QMainWindow):
         map_scroll.setWidgetResizable(False); map_scroll.setWidget(battlefield)
         map_scroll.setFrameShape(QFrame.Shape.NoFrame)
         map_scroll.setToolTip("WASD / arrows to pan · click to center · drag to explore")
-        battlefield.shot_position.connect(lambda x: map_scroll.ensureVisible(int(x * scene_scale + 12),
-            map_scroll.verticalScrollBar().value(), max(1, map_scroll.viewport().width() // 3), 0) if map_scroll.follow_shot else None)
+        battlefield.shot_position.connect(lambda x, y: map_scroll.ensureVisible(int(x * scene_scale + 12),
+            int((view["sky_height"] - y) * scene_scale + 12), max(1, map_scroll.viewport().width() // 3), max(1, map_scroll.viewport().height() // 3)) if map_scroll.follow_shot else None)
         map_column = QWidget(); map_column.setObjectName("scorchedMapColumn"); map_layout = QVBoxLayout(map_column); map_layout.setContentsMargins(0, 0, 0, 0)
         map_layout.addWidget(ScorchedMinimap(view, map_scroll))
         hint = QLabel("WASD / arrows · click to center · drag to pan"); hint.setObjectName("muted")
@@ -1107,9 +1126,9 @@ class ArcadeWindow(QMainWindow):
         try: history = self.engine.chat_history(sid)
         except Exception: return
         for message in history:
-            label = QLabel(f"<b>{html.escape(message['sender'])}</b>  {html.escape(message['body'])}<br><span style='color:#8393a8'>{html.escape(message['delivery'])}</span>")
-            label.setObjectName("chatLine"); label.setWordWrap(True)
-            item = QListWidgetItem(); item.setSizeHint(label.sizeHint()); self.chat_list.addItem(item); self.chat_list.setItemWidget(item, label)
+            item = QListWidgetItem(f"{message['sender']}  ·  {message['delivery']}\n{message['body']}")
+            item.setToolTip(message['body'])
+            self.chat_list.addItem(item)
         self.chat_list.scrollToBottom()
 
     def _run(self, fn: Callable, on_done: Callable | None = None):

@@ -10,6 +10,25 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("textual"), "install the tui extra")
 class TuiScenarios(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_display_and_forfeit_confirmation(self):
+        from radio_arcade.settings import Settings
+        from radio_arcade.tui import ArcadeTUI, ResultScreen
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            app = ArcadeTUI(Settings(callsign="N0CALL", transport="practice"))
+            async with app.run_test(size=(170, 50)) as pilot:
+                await pilot.pause(.2)
+                sid = app.engine.create_game("tic-tac-toe")
+                app.selected_id = sid; await app._show_session(sid)
+                app.query_one("#chat-input").value = "Hello from the terminal"
+                app._send_chat(); await pilot.pause(.3)
+                self.assertEqual(app.engine.chat_history(sid)[0]["body"], "Hello from the terminal")
+                self.assertTrue(app.query_one("#chat-log").lines)
+                app._forfeit_game()
+                self.assertEqual(app.engine.session(sid)["status"], "active")
+                app._forfeit_game(); await pilot.pause(.4)
+                self.assertEqual(app.engine.session(sid)["status"], "finished")
+                self.assertIsInstance(app.screen, ResultScreen)
+
     async def test_overlapping_board_refreshes_are_serialized(self):
         from radio_arcade.settings import Settings
         from radio_arcade.tui import ArcadeTUI

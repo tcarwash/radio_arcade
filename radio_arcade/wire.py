@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from enum import IntEnum
 import struct
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
+# Reserved core action; never passed to a game plugin.
+FORFEIT_ACTION = b"\xffRA"
 TICTACTOE = 1
 MAX_PACKET = 240
 _MAX_CALL = 10
@@ -154,7 +156,8 @@ def decode_roster_state(payload: bytes) -> tuple[tuple[str, ...], bytes]:
 
 def encode_snapshot(players: tuple[str, ...], state: bytes,
                     last_actor: str | None = None, last_action: bytes | None = None) -> bytes:
-    trailer = encode_action(last_actor, last_action) if last_actor and last_action is not None else b""
+    trailer = (bytes((players.index(last_actor),)) if last_actor and last_action == FORFEIT_ACTION
+               else encode_action(last_actor, last_action) if last_actor and last_action is not None else b"")
     if len(trailer) > 255:
         raise ValueError("snapshot trailer too large")
     return encode_roster_state(players, state) + bytes((len(trailer),)) + trailer
@@ -176,6 +179,10 @@ def decode_snapshot(payload: bytes) -> tuple[tuple[str, ...], bytes, tuple[str, 
     players = decode_roster(payload[1:roster_end])
     state = payload[roster_end + 1:trailer_len_offset]
     trailer = payload[trailer_len_offset + 1:]
+    if len(trailer) == 1:
+        if trailer[0] >= len(players):
+            raise ValueError("invalid forfeiting player")
+        return players, state, (players[trailer[0]], FORFEIT_ACTION)
     return players, state, decode_action(trailer) if trailer else None
 
 

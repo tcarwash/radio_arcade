@@ -13,7 +13,7 @@ from .debuglog import opaque_logger
 from .store import SessionStore
 from .wire import (Kind, Packet, decode, decode_action, decode_roster, decode_roster_state, encode,
                    encode_action, encode_roster, encode_roster_state, encode_snapshot, decode_snapshot,
-                   FLAG_OPAQUE)
+                   FLAG_OPAQUE, FORFEIT_ACTION)
 
 
 def station_name(value: str) -> str:
@@ -126,11 +126,12 @@ class ArcadeService:
                     view["view"] = game.view_model(state, tuple(row["players"]))
                     view["current_player"] = game.current_player(state, tuple(row["players"]))
                     view["last_move"] = ({"actor": row["last_actor"],
-                                          "description": game.describe_action(row["last_action"])}
+                                          "description": "forfeits the game" if row["last_action"] == FORFEIT_ACTION else game.describe_action(row["last_action"])}
                                          if row.get("last_actor") and row.get("last_action") is not None else None)
                 else:
                     view["view"] = None
                     view["current_player"] = None
+                self._present_forfeit(view)
                 result.append(view)
             return sorted(result, key=lambda item: item.get("updated", 0), reverse=True)
 
@@ -145,9 +146,70 @@ class ArcadeService:
             result["view"] = game.view_model(state, tuple(row["players"])) if state is not None else None
             result["current_player"] = game.current_player(state, tuple(row["players"])) if state is not None else None
             result["last_move"] = ({"actor": row["last_actor"],
-                                    "description": game.describe_action(row["last_action"])}
+                                    "description": "forfeits the game" if row["last_action"] == FORFEIT_ACTION else game.describe_action(row["last_action"])}
                                    if row.get("last_actor") and row.get("last_action") is not None else None)
+            self._present_forfeit(result)
             return result
+
+    @staticmethod
+    def _present_forfeit(session):
+        if session.get("last_action") != FORFEIT_ACTION:
+            return
+        actor = session["last_actor"]
+        winners = [player for player in session["players"] if player != actor]
+        session["status"], session["current_player"] = "finished", None
+        session["forfeited_by"] = actor
+        if session.get("view") is not None:
+            session["view"].update(winner=winners[0] if len(winners) == 1 else None,
+                                   winners=winners, forfeited_by=actor, draw=False, turn=None,
+                                   trajectory=[], impact=None, last_actor=actor, last_action="forfeits the game")
+
+    def _forfeit_actor(self, row):
+        return self.callsign
+
+    def forfeit_game(self, session_id: str | int) -> None:
+        """End the table, awarding the result to the other participants."""
+        self._require_player()
+        if not self.tx_enabled:
+            raise ValueError("TX is disabled. Enable TX to forfeit over the radio.")
+        sid = self._sid(session_id)
+        with self._lock:
+            row = self._sessions[sid]
+            actor = self._forfeit_actor(row)
+            if row["status"] != "active" or actor not in row["players"]:
+                raise ValueError("only a participant in an active game can forfeit")
+            if row["coordinator"] == self.callsign:
+                self._commit_forfeit(row, actor)
+            else:
+                row["pending_action"] = FORFEIT_ACTION
+                self._save(row)
+                self._reliable(row, row["coordinator"], Kind.RESIGN, row["sequence"] + 1, row["revision"])
+                self._emit("session_updated", sid, session=self.session(sid))
+
+    def _record_forfeit(self, row, actor, sequence, revision):
+        if actor not in row["players"]:
+            raise ValueError("forfeit names a non-player")
+        row.update(status="finished", sequence=sequence, revision=revision,
+                   last_actor=actor, last_action=FORFEIT_ACTION, pending_action=None, error="")
+        for peer in row["players"]:
+            self.store.cancel_outgoing(row["id"], peer, int(Kind.ACTION))
+            self.store.cancel_outgoing(row["id"], peer, int(Kind.RESIGN))
+        self._save(row)
+        self._emit("session_updated", row["id"], session=self.session(row["id"]), committed=True)
+
+    def _commit_forfeit(self, row, actor):
+        payload = encode_action(actor, FORFEIT_ACTION)
+        sequence, revision = row["sequence"] + 1, row["revision"] + 1
+        snapshot = encode_snapshot(tuple(row["players"]), row["state"], actor, FORFEIT_ACTION)
+        self._make(row, row["coordinator"], Kind.SNAPSHOT, sequence, revision, snapshot)
+        self._make(row, "*", Kind.COMMIT, sequence, revision, payload)
+        self._record_forfeit(row, actor, sequence, revision)
+        if row.get("hosted"):
+            self._transmit(self._make(row, "*", Kind.COMMIT, sequence, revision, payload))
+        else:
+            for peer in row["players"]:
+                if peer != self.callsign:
+                    self._reliable(row, peer, Kind.COMMIT, sequence, revision, payload)
 
     def delete_game(self, session_id: str | int) -> None:
         """Delete a game from this station without sending radio traffic."""
@@ -386,6 +448,8 @@ class ArcadeService:
             self._emit("session_updated", sid, session=self.session(sid))
 
     def legal_action(self, session_id: str | int, action: bytes) -> None:
+        if action == FORFEIT_ACTION:
+            raise ValueError("use forfeit_game for a forfeit")
         self._require_player()
         sid = self._sid(session_id)
         with self._lock:
@@ -425,6 +489,9 @@ class ArcadeService:
             if not row.get("hosted") or row["coordinator"] == self.callsign or row["pending_action"] is None:
                 raise ValueError("no hosted move waiting to be retried")
             action = row["pending_action"]
+            if action == FORFEIT_ACTION:
+                self._reliable(row, row["coordinator"], Kind.RESIGN, row["sequence"] + 1, row["revision"])
+                return
             self._transmit(self._make(row, row["coordinator"], Kind.ACTION,
                                       row["sequence"] + 1, row["revision"],
                                       encode_action(self.callsign, action)))
@@ -613,7 +680,7 @@ class ArcadeService:
                         return
                 row = {"id": sid, "game_id": packet.game, "coordinator": packet.source,
                        "players": list(players), "invited": [], "status": "observing" if state is None else
-                       ("finished" if decoded.get("finished") else "active"),
+                       ("finished" if decoded.get("finished") or (last and last[1] == FORFEIT_ACTION) else "active"),
                        "revision": packet.revision if state is not None else 0,
                        "sequence": packet.sequence if state is not None else 0,
                        "state": state, "pending_action": None, "chat_sequence": 0,
@@ -734,6 +801,9 @@ class ArcadeService:
             elif packet.kind == Kind.START:
                 if not self._receive_start(row, packet):
                     return
+            elif packet.kind == Kind.RESIGN:
+                if not self._receive_resign(row, packet):
+                    return
             elif packet.kind == Kind.ACTION:
                 self._receive_action(row, packet)
             elif packet.kind == Kind.COMMIT:
@@ -764,7 +834,7 @@ class ArcadeService:
                 self._emit("session_updated", sid, session=self.session(sid))
             if packet.kind in (Kind.ACCEPT, Kind.START, Kind.ACTION, Kind.COMMIT,
                                Kind.SYNC_REQUEST, Kind.SNAPSHOT, Kind.REJECT, Kind.CHAT,
-                               Kind.OPAQUE_STATE):
+                               Kind.OPAQUE_STATE, Kind.RESIGN):
                 self._ack(packet)
 
     def _receive_host_roster(self, packet: Packet, sid: str) -> None:
@@ -836,6 +906,9 @@ class ArcadeService:
                                           row["sequence"], row["revision"],
                                           encode_snapshot(tuple(row["players"]), row["state"],
                                                           row["last_actor"], row["last_action"])))
+        elif packet.kind == Kind.RESIGN:
+            if self._receive_resign(row, packet):
+                self._ack(packet)
         elif packet.kind == Kind.CHAT:
             if (row["coordinator"] == self.callsign and packet.destination == self.callsign
                     and self._receive_chat(row, packet)):
@@ -851,6 +924,18 @@ class ArcadeService:
                 row["error"] = packet.payload.decode("utf-8", "replace")
                 self._save(row)
                 self._emit("session_updated", row["id"], session=self.session(row["id"]))
+
+    def _receive_resign(self, row, packet):
+        if (packet.payload or packet.source not in row["players"] or row["coordinator"] != self.callsign
+                or packet.revision > row["revision"] or packet.sequence > row["sequence"] + 1):
+            return False
+        if row["status"] == "active":
+            self._commit_forfeit(row, packet.source)
+        elif row["status"] == "finished":
+            self._send_snapshot(row, packet.source)
+        else:
+            return False
+        return True
 
     def _receive_host_chat(self, row: dict[str, Any], packet: Packet) -> None:
         sender, body = decode_action(packet.payload)
@@ -941,6 +1026,9 @@ class ArcadeService:
         if packet.sequence != row["sequence"] + 1 or packet.revision != row["revision"]:
             self._send_snapshot(row, actor)
             return
+        if action == FORFEIT_ACTION:
+            self._send_reject(row, actor, packet, "use a resignation request")
+            return
         game = self.registry.by_id(row["game_id"])
         state = game.decode_state(row["state"])
         if game.current_player(state, tuple(row["players"])) != actor:
@@ -970,6 +1058,13 @@ class ArcadeService:
                 self.request_sync(row["id"])
             return
         actor, action = decode_action(packet.payload)
+        if action == FORFEIT_ACTION:
+            if row["status"] != "active":
+                return
+            self._record_forfeit(row, actor, packet.sequence, packet.revision)
+            return
+        if row["status"] == "finished":
+            return
         game = self.registry.by_id(row["game_id"])
         state = game.decode_state(row["state"])
         try:
@@ -1011,6 +1106,8 @@ class ArcadeService:
         try:
             self._make(row, target, Kind.SNAPSHOT, row["sequence"], row["revision"], payload)
         except ValueError:
+            if row.get("last_action") == FORFEIT_ACTION:
+                raise
             # A long committed game action can make the optional last-move
             # trailer exceed the radio envelope even though the state fits.
             payload = encode_snapshot(tuple(row["players"]), row["state"])
@@ -1046,17 +1143,19 @@ class ArcadeService:
             actor, action = last_move
             if actor not in players:
                 raise ValueError("snapshot last move names a non-player")
-            game.describe_action(action)
+            if action != FORFEIT_ACTION:
+                game.describe_action(action)
         if packet.revision < row["revision"] or (packet.revision == row["revision"] and packet.sequence < row["sequence"]):
             return True
         pending = row["pending_action"]
         advanced = packet.revision > row["revision"] or packet.sequence > row["sequence"]
         if pending is not None and advanced:
-            self.store.acknowledge(row["id"], row["coordinator"], int(Kind.ACTION), row["sequence"] + 1)
+            kind = Kind.RESIGN if pending == FORFEIT_ACTION else Kind.ACTION
+            self.store.cancel_outgoing(row["id"], row["coordinator"], int(kind))
             pending = None
         row["players"] = list(players)
         row["state"], row["sequence"], row["revision"] = state, packet.sequence, packet.revision
-        row["status"] = "finished" if decoded.get("finished") else "active"
+        row["status"] = "finished" if decoded.get("finished") or (last_move and last_move[1] == FORFEIT_ACTION) else "active"
         row["last_actor"], row["last_action"] = last_move if last_move else (None, None)
         row["pending_action"], row["error"] = pending, ""
         self._save(row)

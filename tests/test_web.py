@@ -50,6 +50,20 @@ class WebControllerScenarios(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(recovered["session"]["view"], result["session"]["view"])
 
+    def test_forfeit_and_chat_survive_api_refresh(self):
+        status, created = self.request("POST", "/api/command", {"command": "create_game", "game": "tic-tac-toe"})
+        self.assertEqual(status, 200)
+        sid = created["session_id"]
+        for command in ({"command": "send_chat", "text": "Hello <friend>"}, {"command": "forfeit_game"}):
+            status, result = self.request("POST", "/api/command", {"session_id": sid, **command})
+            self.assertEqual(status, 200)
+        status, result = self.request("GET", f"/api/session/{sid}")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["chat"][0]["body"], "Hello <friend>")
+        self.assertEqual(result["session"]["status"], "finished")
+        self.assertEqual(result["session"]["view"]["winner"], "LOCAL1")
+        self.assertEqual(result["session"]["scoreboard"]["winner"], "LOCAL1")
+
     def test_bootstrap_exposes_catalog_and_saved_practice_identity(self):
         status, value = self.request("GET", "/api/state")
 

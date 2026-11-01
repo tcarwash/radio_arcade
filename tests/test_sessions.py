@@ -55,6 +55,63 @@ class SessionScenarios(unittest.TestCase):
         self.pump()
         return sid
 
+    def test_forfeit_not_on_turn_is_committed_and_recovers(self):
+        host, guest = self.engines
+        sid = self.start()
+        self.links[0].drop_kind = Kind.COMMIT
+        guest.forfeit_game(sid)  # The host has the turn, but opting out is always allowed.
+        self.pump()
+        self.assertEqual(host.session(sid)["view"]["winner"], "N0AAA")
+        guest.request_sync(sid); self.pump()
+        for engine in self.engines:
+            result = engine.session(sid)
+            self.assertEqual(result["status"], "finished")
+            self.assertEqual(result["forfeited_by"], "N0BBB")
+            self.assertIsNone(result["current_player"])
+            self.assertEqual(result["view"]["winner"], "N0AAA")
+            with self.assertRaises(ValueError):
+                engine.legal_action(sid, b"\x00")
+        guest.send_chat(sid, "Good game"); self.pump()
+        self.assertEqual(host.chat_history(sid)[0]["body"], "Good game")
+        from radio_arcade.wire import FORFEIT_ACTION
+        saved = guest.store.load_sessions()[0]
+        self.assertEqual(saved["last_action"], FORFEIT_ACTION)
+        self.assertEqual(saved["status"], "finished")
+
+    def test_forfeit_survives_service_restart(self):
+        host, guest = self.engines
+        sid = self.start(); host.forfeit_game(sid); self.pump()
+        path = host.store.path
+        host.close()
+        replacement = ArcadeService("N0AAA", self.links[0], SessionStore(path))
+        self.engines[0] = replacement
+        self.assertEqual(replacement.session(sid)["status"], "finished")
+        self.assertEqual(replacement.sessions()[0]["view"]["winner"], "N0BBB")
+        guest.request_sync(sid); self.pump()
+        self.assertEqual(guest.session(sid)["forfeited_by"], "N0AAA")
+
+    def test_coordinator_forfeit_and_duplicate_request(self):
+        host, guest = self.engines
+        sid = self.start()
+        host.forfeit_game(sid); self.pump()
+        self.assertEqual(guest.session(sid)["view"]["winner"], "N0BBB")
+        revision = host.session(sid)["revision"]
+        request = Packet(1, Kind.RESIGN, int(sid, 16), 1, 0, "N0BBB", "N0AAA")
+        host._handle(request); self.pump()
+        self.assertEqual(host.session(sid)["revision"], revision)
+        self.assertEqual(guest.session(sid)["view"]["winner"], "N0BBB")
+
+    def test_forfeit_rejects_nonplayers_and_disabled_tx(self):
+        host, guest = self.engines
+        sid = self.start()
+        host.set_tx_enabled(False)
+        with self.assertRaisesRegex(ValueError, "TX"):
+            host.forfeit_game(sid)
+        self.assertEqual(host.session(sid)["status"], "active")
+        host.set_tx_enabled(True)
+        host._handle(Packet(1, Kind.RESIGN, int(sid, 16), 1, 0, "N0EVIL", "N0AAA"))
+        self.assertEqual(host.session(sid)["status"], "active")
+
     def test_dropped_final_commit_recovers_finished_game(self):
         host, guest = self.engines
         sid = self.start()

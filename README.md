@@ -34,3 +34,5 @@ Desktop, browser, and terminal clients share a match scoreboard with turn indica
 Scorched Earth now has independent shot power (25–100%) and 0–90° aiming in desktop and web play. All stations must upgrade together. The DOS 1.5 comparison and next parity priorities are tracked in [SCORCHED-PARITY.md](SCORCHED-PARITY.md).
 
 Scorched Earth camera controls (desktop/web): focus the map or minimap and use **WASD / arrow keys**, drag the main map, click to center, or click/drag the minimap. Camera panning does not consume a turn or fuel; **Drive** moves the tank.
+
+Use **Forfeit game** in desktop/web/terminal, or `forfeit ID` in the CLI, to end the table and award the other player(s) the win. Chat and saved state remain available. This update uses protocol **5**; upgrade every radio station together. High Scorched Earth shots now travel above the visible sky and fall back under gravity, with the camera following the full arc.

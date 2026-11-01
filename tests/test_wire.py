@@ -9,9 +9,19 @@ class WireScenarios(unittest.TestCase):
         packet = Packet(1, Kind.ACTION, 0x0102030405060708, 0x1234, 0x5678,
                         "N0AAA", "N0BBB", b"\x04")
         frame = encode(packet)
-        self.assertEqual(frame[:18], bytes.fromhex("010404000102030405060708123456780505"))
+        self.assertEqual(frame[:18], bytes.fromhex("010504000102030405060708123456780505"))
         self.assertEqual(decode(frame), packet)
         self.assertEqual(len(frame), 29)
+
+    def test_forfeit_snapshot_uses_compact_outcome_trailer(self):
+        from radio_arcade.wire import encode_snapshot, decode_snapshot, FORFEIT_ACTION
+        players = ("N0AAA", "N0BBB")
+        normal = encode_snapshot(players, b"opaque state")
+        forfeited = encode_snapshot(players, b"opaque state", "N0BBB", FORFEIT_ACTION)
+        self.assertEqual(len(forfeited), len(normal) + 1)
+        self.assertEqual(decode_snapshot(forfeited), (players, b"opaque state", ("N0BBB", FORFEIT_ACTION)))
+        with self.assertRaises(ValueError):
+            decode_snapshot(forfeited[:-1] + b"\x02")
 
     def test_opaque_flag_is_required_and_exclusive(self):
         opaque = Packet(1, Kind.OPAQUE_STATE, 1, 1, 0, "A", "B", b"phase=1", FLAG_OPAQUE)

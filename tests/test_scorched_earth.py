@@ -170,6 +170,19 @@ class ScorchedEarthTests(unittest.TestCase):
             self.assertEqual(after["terrain"], result["terrain"])
             self.assertEqual(self.game.decode_state(self.game.encode_state(after))["terrain"], result["terrain"])
 
+    def test_high_shots_leave_visible_sky_and_land(self):
+        from radio_arcade.games.scorched_earth import SKY_HEIGHT, SCALE, pack_shot
+        shot = _trace_shot(self.state["terrain"], self.state["x"], 0, 0, 90, 3)
+        self.assertGreater(max(y for _, y in shot["path"]), SKY_HEIGHT * SCALE)
+        self.assertEqual(shot["kind"], "terrain")
+        self.assertGreater(len(shot["path"]), 50)
+        result = self.game.apply_action(self.state, self.players, self.players[0], pack_shot(0, 90))
+        recovered = self.game.decode_state(self.game.encode_state(result))
+        view = self.game.view_model(recovered, self.players)
+        self.assertEqual(view["impact"]["kind"], "terrain")
+        self.assertGreater(view["sky_height"], SKY_HEIGHT)
+        self.assertGreater(view["sky_height"], max(y for _, y in view["trajectory"]))
+
     def test_invalid_firing_angle_rejected(self):
         for angle in (91, 180, 255):
             with self.subTest(angle=angle), self.assertRaises(ValueError):

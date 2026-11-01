@@ -2,6 +2,7 @@
 
 from .service import ArcadeService
 from .store import SessionStore, default_data_dir
+from .wire import FORFEIT_ACTION
 
 
 class _LocalTransport:
@@ -32,10 +33,15 @@ class PracticeService(ArcadeService):
             self.start_game(row["id"])
             return row["id"]
 
+    def _forfeit_actor(self, row):
+        return self.session(row["id"])["current_player"]
+
     def _reliable(self, *args, **kwargs):
         pass
 
     def legal_action(self, session_id, action):
+        if action == FORFEIT_ACTION:
+            raise ValueError("use forfeit_game for a forfeit")
         with self._lock:
             row = self._sessions[self._sid(session_id)]
             if row["status"] != "active" or row["state"] is None:

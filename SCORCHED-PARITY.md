@@ -47,7 +47,7 @@ Historical snapshots remain readable by this version. See `GAME-CATALOG.md`.
 | High | Distinct weapon mechanics | MIRVs, rollers, diggers, dirt weapons, napalm, and tracers need separate simulations | 999–1033, 1056–1087, 1099–1103, 1140–1179 |
 | High | Batteries and varied shields | Our repair heals 24 HP; shield is a free one-hit damage reduction | 416–425, 618–624, 650–675, 1347–1352, 1373–1406 |
 | Later | 2–10 tanks, AI personalities, teams | Engine and radio state assume exactly two players; practice is hot-seat | 273–320, 1658–1659, 2036–2040, 2048 onward |
-| Later | Offscreen continuation and configurable walls | Boundary exits are misses; wind cannot reverse horizontal travel | 1904–1914, 1921–1938 |
+| Later | Offscreen continuation and configurable walls | Horizontal exits are misses; vertical flight now continues above the visible sky; wind cannot reverse horizontal travel | 1904–1914, 1921–1938 |
 | Later | Sequential, synchronous, simultaneous play | Strict alternating turns only | 2023–2034 |
 
 Before adding rounds, separate the action counter from the campaign round.
@@ -78,3 +78,8 @@ Our driving behavior still needs the slope/fall parity work listed above.
 
 Aiming previews are turn-scoped; past shot trajectories are shown only during
 flight and then disappear. They do not remain as another player’s aiming guide.
+
+High shots now continue above the original visible sky and return under gravity.
+Desktop and web expand the displayed sky and follow both axes during flight;
+side boundaries remain misses. This physics change ships with protocol 5 so
+mixed-version stations reject one another instead of resolving different impacts.
