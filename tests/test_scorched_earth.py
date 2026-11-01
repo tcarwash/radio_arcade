@@ -119,8 +119,59 @@ class ScorchedEarthTests(unittest.TestCase):
         self.assertEqual(result["ammo"][0][0], 255)
         self.assertGreater(result["credits"][0], self.state["credits"][0])
 
+    def test_power_codes_ammunition_and_replay(self):
+        from radio_arcade.games.scorched_earth import pack_shot, unpack_shot
+        for weapon in range(8):
+            for power in range(25, 101, 5):
+                action = pack_shot(weapon, 45, power)
+                self.assertEqual(len(action), 2)
+                self.assertEqual(unpack_shot(action[0]), (weapon, power))
+                result = self.game.apply_action(self.state, self.players, self.players[0], action)
+                restored = self.game.decode_state(self.game.encode_state(result))
+                self.assertEqual(restored, result)
+                self.assertEqual(self.game.view_model(restored, self.players), self.game.view_model(result, self.players))
+                self.assertIn(f"{power}%", self.game.describe_action(action))
+                if weapon:
+                    self.assertEqual(result["ammo"][0][weapon], self.state["ammo"][0][weapon] - 1)
+        self.assertEqual(pack_shot(0, 45, 100), bytes((0, 45)))
+
+    def test_power_changes_velocity_and_full_elevation_range(self):
+        from radio_arcade.games.scorched_earth import pack_shot
+        low = _trace_shot(self.state["terrain"], self.state["x"], 0, 0, 45, 3, 25)
+        high = _trace_shot(self.state["terrain"], self.state["x"], 0, 0, 45, 3, 100)
+        self.assertLess(low["path"][1][0], high["path"][1][0])
+        for angle in (0, 90):
+            self.game.apply_action(self.state, self.players, self.players[0], pack_shot(0, angle, 50))
+        for power in (0, 24, 26, 101):
+            with self.assertRaises(ValueError): pack_shot(0, 45, power)
+
+    def test_snapshot_capability_and_legacy_power_migration(self):
+        from radio_arcade.games.scorched_earth import pack_shot
+        legacy = bytearray(self.game.encode_state(self.state))
+        self.assertTrue(legacy[0] & 0x20)
+        legacy[0] &= ~0x20
+        self.assertEqual(self.game.decode_state(bytes(legacy)), self.state)
+        powered = self.game.apply_action(self.state, self.players, self.players[0], pack_shot(0, 45, 50))
+        payload = bytearray(self.game.encode_state(powered))
+        payload[0] &= ~0x20
+        with self.assertRaisesRegex(ValueError, "powered shot"):
+            self.game.decode_state(bytes(payload))
+
+    def test_powered_crater_survives_snapshot_and_next_turn(self):
+        from radio_arcade.games.scorched_earth import pack_shot, SHIELD
+        for power in (25, 50, 100):
+            result = next(result for angle in range(91)
+                          if (result := self.game.apply_action(self.state, self.players, self.players[0], pack_shot(1, angle, power)))["terrain"] != self.state["terrain"])
+            recovered = self.game.decode_state(self.game.encode_state(result))
+            view = self.game.view_model(recovered, self.players)
+            self.assertEqual(view["previous_terrain"], self.state["terrain"])
+            self.assertEqual(view["terrain"], result["terrain"])
+            after = self.game.apply_action(recovered, self.players, self.players[1], bytes((SHIELD, 0)))
+            self.assertEqual(after["terrain"], result["terrain"])
+            self.assertEqual(self.game.decode_state(self.game.encode_state(after))["terrain"], result["terrain"])
+
     def test_invalid_firing_angle_rejected(self):
-        for angle in (0, 9, 81, 255):
+        for angle in (91, 180, 255):
             with self.subTest(angle=angle), self.assertRaises(ValueError):
                 self.game.apply_action(self.state, self.players, self.players[0], bytes((0, angle)))
 

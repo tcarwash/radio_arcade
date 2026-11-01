@@ -263,6 +263,7 @@ function renderSessionActions(session) {
   actions.replaceChildren();
   const command = (name, extra = {}) => sendCommand(name, { session_id: session.id, ...extra });
   const owner = session.coordinator === state.snapshot.callsign;
+  if (session.status === "finished") addButton(actions, "View match result", () => showMatchResult(session));
   if (!isObserver() && session.status === "invited") addButton(actions, "Accept invitation", () => command("accept_invite"), true, !canTransmit());
   if (!isObserver() && session.hosted && ["lobby", "joining"].includes(session.status) && !session.players.includes(state.snapshot.callsign))
     addButton(actions, session.status === "joining" ? "Retry join request" : "Join hosted table", () => command("join_game"), true, !canTransmit());
@@ -302,16 +303,49 @@ function renderSessionActions(session) {
 }
 
 function renderScoreStrip(session, view) {
+  const data = session.scoreboard;
   const strip = node("div", "score-strip");
-  const scores = view.scores || {};
-  for (const [index, player] of session.players.entries()) {
-    const card = node("div", `score-card${player === session.current_player ? " active" : ""}${view.winner === player ? " winner" : ""}`);
-    card.append(node("div", "score-name", player));
-    const score = scores[player];
-    card.append(node("div", "score-value", typeof score === "number" ? `${score}${view.kind === "settlement" ? " VP" : ""}` : "—"));
+  strip.append(node("div", "score-heading", `SCOREBOARD / ${data?.label || session.status.toUpperCase()}`));
+  strip.setAttribute("aria-label", `Scoreboard · ${data?.label || session.status}`);
+  for (const entry of data?.entries || []) {
+    const card = node("div", `score-card${entry.active ? " active" : ""}${entry.winner ? " winner" : ""}`);
+    card.append(node("div", "score-name", entry.player));
+    card.append(node("div", "score-value", entry.value));
+    card.append(node("div", "score-unit", entry.winner ? "WINNER" : entry.active ? "● TURN" : entry.unit));
     strip.append(card);
   }
   return strip;
+}
+
+const completionStatuses = new Map();
+const completionAnnounced = new Set();
+const completionDelays = new Map();
+function showMatchResult(session) {
+  clearTimeout(completionDelays.get(session.id)); completionDelays.delete(session.id);
+  document.querySelector("#match-result")?.remove();
+  const winner = session.view?.winner;
+  const title = !winner ? "DRAW" : isPractice() || isObserver() ? `${winner} WINS` : winner === state.snapshot.callsign ? "VICTORY" : "DEFEAT";
+  const dialog = node("dialog", `match-result${title === "DEFEAT" ? " result-loss" : title === "DRAW" ? " result-draw" : ""}`); dialog.id = "match-result";
+  const heading = node("h2", "result-title", title); heading.id = "match-result-title";
+  dialog.setAttribute("aria-labelledby", heading.id);
+  dialog.append(node("p", "eyebrow", "MATCH COMPLETE"), heading, node("p", "", session.game), renderScoreStrip(session, session.view));
+  const close = node("button", "button primary full", "Back to board"); close.type = "button";
+  close.addEventListener("click", () => dialog.close()); dialog.append(close);
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog); dialog.showModal();
+}
+function observeCompletion(session) {
+  const previous = completionStatuses.get(session.id);
+  completionStatuses.set(session.id, session.status);
+  if (previous === "active" && session.status === "finished" && !completionAnnounced.has(session.id)) {
+    completionAnnounced.add(session.id);
+    if (session.view?.kind === "scorched-earth" && session.view.impact) {
+      completionDelays.set(session.id, setTimeout(() => {
+        completionDelays.delete(session.id);
+        if (state.session?.id === session.id && state.session.status === "finished") showMatchResult(session);
+      }, 4800));
+    } else showMatchResult(session);
+  }
 }
 
 function renderGrid(session, view, host) {
@@ -383,7 +417,6 @@ function parseWord(start, direction, word, cells) {
 }
 
 function renderWordTiles(session, view, host) {
-  host.append(renderScoreStrip(session, view));
   const meta = node("div", "word-meta");
   meta.append(node("strong", "", `${view.lexicon} · OPEN RACKS`));
   meta.append(node("span", "", "Every rack is public; plan with the whole table."));
@@ -462,7 +495,6 @@ function svgElement(name, attrs = {}) {
 }
 
 function renderIsland(session, view, host) {
-  host.append(renderScoreStrip(session, view));
   const layout = node("div", "island-layout");
   const mapWrap = node("div", "island-map-wrap");
   const svg = svgElement("svg", { class: "island-svg", viewBox: "0 0 1000 690", role: "img", "aria-label": "Interactive Island Settlers map" });
@@ -595,6 +627,9 @@ function renderPlugin(session, view, host) {
 }
 
 function renderScorchedEarth(session, view, host) {
+  const shotKey = `${session.id}:${session.revision}`;
+  const animateShot = Boolean(view.last_actor && view.impact && view.trajectory.length > 1 && state.lastTankAnimation !== shotKey);
+  const beforeTerrain = animateShot ? view.previous_terrain || view.terrain : view.terrain;
   const wrap = node("div", "tank-layout");
   const arena = node("div", "tank-arena");
   arena.setAttribute("tabindex", "0");
@@ -628,14 +663,34 @@ function renderScorchedEarth(session, view, host) {
   for (let x = 0; x < view.width; x++) for (let y = 0; y < view.height; y++)
     svg.append(svgElement("rect", { x: x * 24, y: y * 24, width: 24, height: 24, class: "tank-grid-cell" }));
   const terrainPoints = [`0,${height}`];
-  view.terrain.forEach((elevation, x) => terrainPoints.push(`${x * 24 + 12},${height - elevation * 24}`));
+  beforeTerrain.forEach((elevation, x) => terrainPoints.push(`${x * 24 + 12},${height - elevation * 24}`));
   terrainPoints.push(`${width},${height}`);
-  svg.append(svgElement("polygon", { points: terrainPoints.join(" "), class: "tank-ground" }));
+  const ground = svgElement("polygon", { points: terrainPoints.join(" "), class: "tank-ground" });
+  svg.append(ground);
+  function settleTerrain() {
+    const started = performance.now();
+    const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    function settle(now) {
+      if (!svg.isConnected) return;
+      const progress = reduced ? 1 : Math.min(1, (now - started) / 650);
+      const points = [`0,${height}`];
+      view.terrain.forEach((value, x) => points.push(`${x * 24 + 12},${height - (beforeTerrain[x] + (value - beforeTerrain[x]) * progress) * 24}`));
+      points.push(`${width},${height}`); ground.setAttribute("points", points.join(" "));
+      for (const tank of view.tanks) {
+        const group = svg.querySelector(`[data-seat="${view.tanks.indexOf(tank)}"]`);
+        group?.setAttribute("transform", `translate(0,${-(beforeTerrain[tank.x] - view.terrain[tank.x]) * (1 - progress) * 24})`);
+      }
+      if (progress < 1) requestAnimationFrame(settle);
+    }
+    requestAnimationFrame(settle);
+  }
   const barrels = new Map(), tankArtwork = new Map();
   for (const [index, tank] of view.tanks.entries()) {
     const isLocalTank = tank.player === state.snapshot.callsign;
     const seatLabel = isPractice() ? tank.player : isLocalTank ? "YOU" : "OPPONENT";
     const group = svgElement("g", { class: `tank-unit ${isLocalTank ? "friendly" : "enemy"}` });
+    group.dataset.seat = String(index);
+    group.setAttribute("transform", `translate(0,${-(beforeTerrain[tank.x] - view.terrain[tank.x]) * 24})`);
     const cy = (view.sky_height - tank.world_y) * 24;
     const art = svgElement("g", { class: "tank-art" });
     const barrel = svgElement("line", { class: "tank-barrel" });
@@ -761,17 +816,23 @@ function renderScorchedEarth(session, view, host) {
   const angle = node("input", "field tank-angle"); angle.type = "range"; angle.min = String(view.min_angle); angle.max = String(view.max_angle); angle.value = "45";
   angleLabel.append(angle);
   const submit = node("button", "button primary", "Fire weapon"); submit.type = "submit"; submit.disabled = !canAct(session);
-  form.append(weapon, angleLabel, submit);
+  const powerLabel = node("label", "tank-angle-label", "Power · 100%");
+  const power = node("input", "field tank-angle"); power.type = "range";
+  power.min = String(view.min_power); power.max = String(view.max_power); power.step = String(view.power_step); power.value = String(view.max_power);
+  powerLabel.append(power);
+  form.append(weapon, angleLabel, powerLabel, submit);
   function updatePreview() {
+    powerLabel.firstChild.textContent = `Power · ${power.value}%`;
     angleLabel.firstChild.textContent = `Firing angle · ${angle.value}°`;
     const shooterName = isPractice() ? view.turn : state.snapshot.callsign;
     const shooter = view.tanks.find(tank => tank.player === shooterName);
     barrels.get(shooterName)?.setAngle(Number(angle.value));
     if (!shooter || !canAct(session)) { preview.remove(); return; }
-    const points = traceTankPreview(view, shooter, view.weapons[Number(weapon.value)], Number(angle.value));
+    const points = traceTankPreview(view, shooter, view.weapons[Number(weapon.value)], Number(angle.value), Number(power.value));
     preview.setAttribute("points", points.map(([x, y]) => `${x * 24},${(view.sky_height - y) * 24}`).join(" "));
     if (!preview.isConnected) svg.append(preview);
   }
+  power.addEventListener("input", updatePreview);
   angle.addEventListener("input", updatePreview);
   weapon.addEventListener("change", updatePreview);
   updatePreview();
@@ -779,7 +840,10 @@ function renderScorchedEarth(session, view, host) {
     event.preventDefault();
     const degrees = Number(angle.value);
     if (!Number.isInteger(degrees) || degrees < view.min_angle || degrees > view.max_angle) { notify(`Firing angle must be between ${view.min_angle}° and ${view.max_angle}°.`); return; }
-    submitAction([Number(weapon.value), degrees]);
+    const strength = Number(power.value);
+    if (!Number.isInteger(strength) || strength < view.min_power || strength > view.max_power || strength % view.power_step) { notify("Choose a valid firing power."); return; }
+    const slot = strength === 100 ? 0 : (strength - 25) / 5 + 1;
+    submitAction([Number(weapon.value) | slot << 3, degrees]);
   });
   const shop = node("div", "tank-shop");
   shop.append(node("div", "tank-shop-title", "ARMORY · BUY AMMUNITION (USES TURN)"));
@@ -812,48 +876,51 @@ function renderScorchedEarth(session, view, host) {
   // On a panoramic map, start near the tank whose turn it is; players can pan
   // across the entire battlefield with touch, trackpad or the scrollbar.
   const activeViewTank = view.tanks.find(tank => tank.player === view.turn);
-  if (activeViewTank) requestAnimationFrame(() => {
+  if (activeViewTank && !animateShot) requestAnimationFrame(() => {
     const x = activeViewTank.x / view.width * svg.getBoundingClientRect().width;
     arena.scrollLeft = Math.max(0, x - arena.clientWidth * .35);
     updateMinimap();
   });
   const actor = view.last_actor;
-  const shotKey = `${session.id}:${session.revision}`;
-  if (actor && view.impact && view.trajectory.length > 1 && state.lastTankAnimation !== shotKey) {
+  if (animateShot) {
     state.lastTankAnimation = shotKey;
     const firingArt = tankArtwork.get(actor);
     if (firingArt) { firingArt.classList.add("recoiling"); setTimeout(() => firingArt.classList.remove("recoiling"), 550); }
-    view.tanks.forEach((tank, i) => {
-      if (view.last_damage?.[i] > 0) {
-        const art = tankArtwork.get(tank.player);
-        if (art) { art.classList.add("damaged"); setTimeout(() => art.classList.remove("damaged"), 900); }
-      }
+    let followShot = true;
+    arena.addEventListener("pointerdown", () => { followShot = false; });
+    arena.addEventListener("wheel", () => { followShot = false; }, { passive: true });
+    animateTankShot(svg, view, actor, callout, settleTerrain, x => {
+      if (!followShot) return;
+      const pixel = x / view.width * svg.getBoundingClientRect().width;
+      arena.scrollLeft = Math.max(0, pixel - arena.clientWidth / 2); updateMinimap();
     });
-    animateTankShot(svg, view, actor, callout);
   }
 }
 
-function traceTankPreview(view, shooter, weapon, angle) {
+function traceTankPreview(view, shooter, weapon, angle, power = 100) {
+  // Match the engine's integer coordinates and Python's ties-to-even rounding.
+  const roundEven = value => { const floor = Math.floor(value), fraction = value - floor; return fraction === .5 ? floor + (floor % 2 !== 0 ? 1 : 0) : Math.round(value); };
   const direction = shooter.facing === 0 ? 1 : -1;
-  let x = shooter.x + direction * 0.85, y = shooter.world_y;
+  let x = shooter.x * 1000 + direction * 850, y = roundEven(shooter.world_y * 1000);
   const theta = angle * Math.PI / 180;
-  let vx = direction * weapon.speed * Math.cos(theta);
-  let vy = weapon.speed * Math.sin(theta);
+  const speed = Math.floor(roundEven(weapon.speed * 1000) * power / 100);
+  let vx = direction * roundEven(speed * Math.cos(theta)), vy = roundEven(speed * Math.sin(theta));
   const target = view.tanks.find(tank => tank.player !== shooter.player);
-  const points = [[x, y]];
+  const points = [[x / 1000, y / 1000]];
   for (let step = 0; step < 240; step++) {
-    x += vx; y += vy; vy -= view.gravity; vx += view.wind.acceleration;
+    x += vx; y += vy; vx += roundEven(view.wind.acceleration * 1000);
     if (direction * vx < 0) vx = 0;
-    points.push([x, y]);
-    if (target && (x - target.x) ** 2 + (y - target.world_y) ** 2 <= 0.82 ** 2) break;
-    if (x < 0 || x >= view.width || y < 0 || y > view.sky_height) break;
-    const column = Math.max(0, Math.min(view.width - 1, Math.round(x)));
-    if (y <= view.terrain[column]) { points[points.length - 1] = [x, view.terrain[column]]; break; }
+    vy -= roundEven(view.gravity * 1000);
+    points.push([x / 1000, y / 1000]);
+    if (target && (x - target.x * 1000) ** 2 + (y - roundEven(target.world_y * 1000)) ** 2 <= 820 ** 2) break;
+    if (x < 0 || x >= view.width * 1000 || y < 0 || y > view.sky_height * 1000) break;
+    const column = Math.max(0, Math.min(view.width - 1, roundEven(x / 1000)));
+    if (y <= view.terrain[column] * 1000) { points[points.length - 1] = [x / 1000, view.terrain[column]]; break; }
   }
   return points;
 }
 
-function animateTankShot(svg, view, actor, callout) {
+function animateTankShot(svg, view, actor, callout, onImpact = () => {}, onPosition = () => {}) {
   const shooter = view.tanks.find(tank => tank.player === actor);
   if (!shooter || view.trajectory.length < 2) return;
   const damaged = view.tanks.map((tank, player) => ({ tank, damage: view.last_damage?.[player] ?? 0 }))
@@ -872,14 +939,16 @@ function animateTankShot(svg, view, actor, callout) {
   svg.append(flightTrail, projectile);
   const started = performance.now();
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const duration = reducedMotion ? 1500 : Math.min(3200, Math.max(2200, points.length * 42));
+  const duration = reducedMotion ? 0 : Math.min(3200, Math.max(2200, points.length * 42));
   function fly(now) {
+    if (!svg.isConnected) return;
     const t = duration ? Math.min(1, (now - started) / duration) : 1;
     const position = t * (points.length - 1);
     const index = Math.min(points.length - 2, Math.floor(position));
     const fraction = position - index;
     const x = points[index][0] + (points[index + 1][0] - points[index][0]) * fraction;
     const y = points[index][1] + (points[index + 1][1] - points[index][1]) * fraction;
+    if (!reducedMotion) onPosition(x);
     projectile.setAttribute("cx", String(x * 24));
     projectile.setAttribute("cy", String((view.sky_height - y) * 24));
     const trailPoints = points.slice(0, index + 1).map(([px, py]) => `${px * 24},${(view.sky_height - py) * 24}`);
@@ -889,23 +958,39 @@ function animateTankShot(svg, view, actor, callout) {
     projectile.remove();
     setTimeout(() => flightTrail.remove(), reducedMotion ? 350 : 800);
     const impact = view.impact;
+    onImpact();
+    onPosition(impact.x);
+    view.tanks.forEach((tank, index) => {
+      if (!(view.last_damage?.[index] > 0)) return;
+      const art = svg.querySelector(`[data-seat="${index}"] .tank-art`);
+      if (art) { art.classList.add("damaged"); setTimeout(() => art.classList.remove("damaged"), 900); }
+    });
+    if (impact.kind === "edge") return;
     const x1 = impact.x * 24, y1 = (view.sky_height - impact.y) * 24;
     const offsets = impact.weapon === 3 ? [-1.2, 0, 1.2] : [0];
     const blasts = offsets.map(offset => svgElement("circle", { cx: x1 + offset * 24, cy: y1 - (offset === 0 || offsets.length === 1 ? 0 : 5),
-      r: Math.max(9, view.weapons[impact.weapon].radius * 17), class: `tank-blast${hit ? " hit" : " miss"}` }));
-    svg.append(...blasts);
+      r: Math.max(24, view.weapons[impact.weapon].radius * 30), class: `tank-blast${hit ? " hit" : " miss"}` }));
+    const radius = Math.max(30, view.weapons[impact.weapon].radius * 30);
+    const ring = svgElement("ellipse", { cx: x1, cy: y1, rx: radius, ry: radius * .55, class: "tank-shockwave" });
+    const core = svgElement("circle", { cx: x1, cy: y1, r: radius * .55, class: "tank-fire-core" });
+    const smoke = Array.from({ length: 9 }, (_, i) => svgElement("circle", {
+      cx: x1 + ((i * 17) % 41 - 20), cy: y1 - i * 4, r: radius * (.2 + (i % 3) * .08),
+      class: "tank-smoke", style: `--rise:${-60 - i * 12}px;--drift:${(i % 2 ? 1 : -1) * (15 + i * 6)}px;--delay:${i * 35}ms`
+    }));
+    svg.append(...smoke, ring, ...blasts, core);
+    setTimeout(() => { ring.remove(); core.remove(); smoke.forEach(item => item.remove()); }, 2800);
     if (!reducedMotion && impact.kind !== "edge") {
-      for (let i = 0; i < 28; i++) {
-        const direction = i * Math.PI * 2 / 28;
-        const distance = (16 + (i * 19) % 66) * (impact.weapon === 5 ? 1.45 : 1);
+      for (let i = 0; i < 48; i++) {
+        const direction = i * Math.PI * 2 / 48;
+        const distance = (35 + (i * 19) % 130) * (impact.weapon === 5 ? 1.45 : 1);
         const spark = svgElement("circle", { cx: x1, cy: y1, r: i % 4 === 0 ? 3.1 : 1.8,
-          class: "tank-spark", style: `--dx:${Math.cos(direction) * distance}px;--dy:${Math.sin(direction) * distance}px;--delay:${(i % 5) * 22}ms` });
+          class: i % 3 ? "tank-spark" : "tank-spark tank-debris", style: `--dx:${Math.cos(direction) * distance}px;--dy:${Math.sin(direction) * distance}px;--delay:${(i % 5) * 22}ms` });
         svg.append(spark);
         setTimeout(() => spark.remove(), 1250);
       }
     }
     const label = svgElement("text", { x: x1, y: y1 - 19, class: `tank-hit-label${hit ? " hit" : " miss"}` });
-    label.textContent = hit ? `−${totalDamage} HP` : "MISS";
+    label.textContent = hit ? `−${totalDamage} HP` : "TERRAIN IMPACT";
     svg.append(label);
     setTimeout(() => { label.remove(); }, 1700);
     setTimeout(() => { blasts.forEach(blast => blast.remove()); }, 1100);
@@ -927,6 +1012,7 @@ function renderGame(session) {
     host.append(empty); return;
   }
   const block = node("div", "game-block");
+  block.append(renderScoreStrip(session, view));
   switch (view.kind) {
     case "grid": renderGrid(session, view, block); break;
     case "scorched-earth": renderScorchedEarth(session, view, block); break;
@@ -957,6 +1043,7 @@ function renderChat(messages) {
 }
 
 function renderSession(session, messages) {
+  observeCompletion(session);
   state.session = session;
   const signature = JSON.stringify([session.id, session.status, session.revision, session.sequence,
     session.current_player, session.view, session.has_pending_action, session.invited, session.error, session.last_move]);

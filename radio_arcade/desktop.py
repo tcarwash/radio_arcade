@@ -12,22 +12,25 @@ import time
 from typing import Callable
 
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QRadialGradient, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QSlider, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
+from .presentation import CompletionTracker
+from .desktop_results import Scoreboard, ResultDialog
 from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
 from .store import SessionStore
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
 from .dx_cluster import build_spot, post_spot
-from .games.scorched_earth import _trace_shot, _wind
+from .games.scorched_earth import _trace_shot, _wind, pack_shot
 
 
 class ScorchedBattlefield(QWidget):
+    shot_position = Signal(float)
     """Resolution-independent native rendering of the shared artillery state."""
 
     def __init__(self, view: dict, animate: bool = False, parent=None):
@@ -53,11 +56,22 @@ class ScorchedBattlefield(QWidget):
 
     def _advance_flight(self):
         self.flight_progress = min(1.0, (time.monotonic() - self._flight_started) / 2.0)
+        path = self.view.get("trajectory", [])
+        if path:
+            index = min(len(path) - 1, int(self.flight_progress * (len(path) - 1)))
+            self.shot_position.emit(path[index][0])
         self.update()
         if self.flight_progress >= 1:
-            # Keep a short impact flash after the projectile lands.
-            if time.monotonic() - self._flight_started >= 2.55:
+            if time.monotonic() - self._flight_started >= 4.4:
                 self._flight_timer.stop()
+
+    def displayed_terrain(self):
+        after = self.view["terrain"]
+        if not self._flight_timer.isActive():
+            return after
+        before = self.view.get("previous_terrain", after)
+        progress = max(0.0, min(1.0, (time.monotonic() - self._flight_started - 2.0) / .65))
+        return [old + (new - old) * progress for old, new in zip(before, after)]
 
     def set_preview(self, path: list[tuple[int, int]], angle: int = 45, player: str | None = None):
         self.preview = path
@@ -92,7 +106,7 @@ class ScorchedBattlefield(QWidget):
                                         ((i * 79 + 17) % (world_height * 12)) / 24), .035 if i % 5 else .07,
                                 .035 if i % 5 else .07)
         terrain = QPolygonF([QPointF(0, world_height)] +
-                            [QPointF(x + .5, world_height - height) for x, height in enumerate(view["terrain"])] +
+                            [QPointF(x + .5, world_height - height) for x, height in enumerate(self.displayed_terrain())] +
                             [QPointF(world_width, world_height)])
         earth = QLinearGradient(0, world_height - 15, 0, world_height)
         earth.setColorAt(0, QColor("#62825c")); earth.setColorAt(1, QColor("#293b35"))
@@ -126,22 +140,53 @@ class ScorchedBattlefield(QWidget):
         draw_path([(x / 1000, y / 1000) for x, y in self.preview], "#dceeff", True)
         impact = view.get("impact")
         if impact and impact["kind"] != "edge" and self.flight_progress >= 1:
-            painter.setPen(QPen(QColor("#ef9767"), .09, Qt.PenStyle.DashLine))
+            cx, cy = impact["x"], world_height - impact["y"]
+            radius = view["weapons"][impact["weapon"]]["radius"]
+            age = max(0.0, time.monotonic() - self._flight_started - 2.0)
             flashing = self._flight_timer.isActive()
-            painter.setBrush(QColor(255, 147, 68, 110 if flashing else 28))
-            painter.drawEllipse(QPointF(impact["x"], world_height - impact["y"]),
-                                view["weapons"][impact["weapon"]]["radius"],
-                                view["weapons"][impact["weapon"]]["radius"])
             if flashing:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(255, 200, 95, 220))
-                for i in range(18):
-                    direction = i * 6.283185307 / 18
-                    distance = .6 + (i * 7 % 13) / 8
-                    painter.drawEllipse(QPointF(impact["x"] + cos(direction) * distance,
-                                                world_height - impact["y"] + sin(direction) * distance), .07, .07)
+                fade = max(0.0, 1.0 - age / 2.4)
+                spread = min(1.0, age / .35)
+                painter.setPen(QPen(QColor(255, 215, 155, int(200 * fade)), .15))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QPointF(cx, cy), radius * (1 + age * 2), radius * (.6 + age))
+                for i in range(10):
+                    dx = ((i * 17) % 13 - 6) * .2
+                    smoke = QColor(65, 61, 58, int(125 * fade))
+                    painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(smoke)
+                    painter.drawEllipse(QPointF(cx + dx * (1 + age), cy - age * (1.5 + i % 3)),
+                                        radius * (.2 + age * .3), radius * (.3 + age * .4))
+                if age < 1.2:
+                    size = radius * (.4 + spread * 1.4) * (1 - age / 1.8)
+                    glow = QRadialGradient(QPointF(cx, cy), max(.1, size))
+                    glow.setColorAt(0, QColor(255, 255, 220, int(255 * fade)))
+                    glow.setColorAt(.25, QColor(255, 220, 80, int(255 * fade)))
+                    glow.setColorAt(.65, QColor(255, 85, 20, int(220 * fade)))
+                    glow.setColorAt(1, QColor(170, 30, 10, 0))
+                    painter.setBrush(QBrush(glow)); painter.drawEllipse(QPointF(cx, cy), size, size)
+                for i in range(38):
+                    direction = i * 6.283185307 / 38
+                    speed = 2 + (i * 7 % 13) * .4
+                    dx, dy = cos(direction) * speed * age, -abs(sin(direction)) * speed * age + age * age * 2
+                    painter.setBrush(QColor(255, 175, 70, int(255 * fade)) if i % 3 else QColor(105, 76, 48, int(255 * fade)))
+                    painter.drawEllipse(QPointF(cx + dx, cy + dy), .09 + i % 3 * .035, .09 + i % 3 * .035)
+            else:
+                painter.setPen(QPen(QColor(80, 52, 37, 160), .16))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                scar = QPainterPath()
+                connected = False
+                for column, (before, after) in enumerate(zip(view.get("previous_terrain", view["terrain"]), view["terrain"])):
+                    if before > after:
+                        point = QPointF(column + .5, world_height - after)
+                        if connected: scar.lineTo(point)
+                        else: scar.moveTo(point)
+                        connected = True
+                    else:
+                        connected = False
+                painter.drawPath(scar)
         for index, tank in enumerate(view["tanks"]):
             x, y = tank["x"], world_height - tank["world_y"]
+            y -= self.displayed_terrain()[tank["x"]] - view["terrain"][tank["x"]]
             if self._flight_timer.isActive() and self.flight_progress < .18 and tank["player"] == view.get("last_actor"):
                 x += (-.14 if index == 0 else .14) * sin(self.flight_progress / .18 * 3.14159)
             if self._flight_timer.isActive() and self.flight_progress >= 1 and view.get("last_damage", [0, 0])[index]:
@@ -287,6 +332,11 @@ class ArcadeWindow(QMainWindow):
         self.unsubscribe = None
         self.selected_id: str | None = None
         self._preserve_empty_selection = False
+        self._completion_tracker = CompletionTracker()
+        self._result_dialog = None
+        self._pending_result_id = None
+        self._completion_timer = QTimer(self); self._completion_timer.setSingleShot(True)
+        self._completion_timer.timeout.connect(self._finish_scorched_result)
         self._board_signature = None
         self._last_scorched_animation_key = None
         self._event_bridge = EventBridge(self)
@@ -397,12 +447,22 @@ class ArcadeWindow(QMainWindow):
         center_layout = center.layout()
         self.game_heading = QLabel("Welcome to the airwaves"); self.game_heading.setObjectName("gameTitle")
         self.game_subtitle = QLabel("Start a game or accept an invitation to take a seat."); self.game_subtitle.setObjectName("muted")
-        center_layout.addWidget(self.game_heading); center_layout.addWidget(self.game_subtitle)
+        heading_row = QHBoxLayout(); heading_row.addWidget(self.game_heading, 1)
+        self.result_button = QPushButton("View match result"); self.result_button.clicked.connect(self._view_result)
+        self.result_button.hide(); heading_row.addWidget(self.result_button)
+        center_layout.addLayout(heading_row); center_layout.addWidget(self.game_subtitle)
         self.sync_button = QPushButton("↻  Sync / recover state"); self.sync_button.clicked.connect(self._sync_selected)
         self.sync_button.setVisible(False); center_layout.addWidget(self.sync_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.scoreboard_host = QWidget(); self.scoreboard_layout = QVBoxLayout(self.scoreboard_host)
+        self.scoreboard_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.addWidget(self.scoreboard_host)
         self.board_host = QWidget(); self.board_layout = QVBoxLayout(self.board_host); self.board_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.board_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        center_layout.addWidget(self.board_host, 1)
+        self.board_scroll = QScrollArea(); self.board_scroll.setObjectName("boardScroll")
+        self.board_scroll.viewport().setObjectName("boardViewport")
+        self.board_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.board_scroll.setWidgetResizable(True); self.board_scroll.setWidget(self.board_host)
+        center_layout.addWidget(self.board_scroll, 1)
         self.accept_button = QPushButton("Accept invitation"); self.accept_button.setObjectName("primaryButton")
         self.accept_button.clicked.connect(self._accept_invite); center_layout.addWidget(self.accept_button, 0, Qt.AlignmentFlag.AlignCenter)
         splitter.addWidget(center)
@@ -478,7 +538,7 @@ class ArcadeWindow(QMainWindow):
             QLineEdit, QComboBox, QSpinBox { background:#0c131e; color:#eaf0f8; border:1px solid #2e3d50; border-radius:8px; padding:9px; selection-background-color:#318b80; }
             QComboBox QAbstractItemView { background:#111a27; color:#eaf0f8; selection-background-color:#256c65; }
             QListWidget { background:transparent; border:0; outline:0; }
-            QScrollArea#toolsScroll, QWidget#toolsViewport,
+            QScrollArea#toolsScroll, QWidget#toolsViewport, QScrollArea#boardScroll, QWidget#boardViewport,
             QWidget#toolsContent { background:transparent; border:0; }
             QListWidget::item { padding:12px 10px; margin:2px 0; border-radius:9px; color:#abb8ca; }
             QListWidget::item:selected { background:#1c3438; color:#a2f1df; }
@@ -692,6 +752,13 @@ class ArcadeWindow(QMainWindow):
             self._board_signature = signature
         else:
             self._board_signature = None
+        while self.scoreboard_layout.count():
+            self.scoreboard_layout.takeAt(0).widget().deleteLater()
+        self.scoreboard_host.setVisible(bool(session and session.get("view")))
+        self.result_button.setVisible(bool(session and session["status"] == "finished"))
+        if session and session.get("view"):
+            self.scoreboard_layout.addWidget(Scoreboard(session))
+        announce = self._completion_tracker.observe(session) if session else False
         self._clear_board()
         self.delete_button.setEnabled(bool(session))
         self.accept_button.setVisible(False); self.start_button.setVisible(False); self.invite_button.setVisible(False); self.cancel_invite_button.setVisible(False)
@@ -766,6 +833,31 @@ class ArcadeWindow(QMainWindow):
         if state:
             self._render_state(session)
         self._refresh_chat(sid)
+        if announce:
+            if state and state.get("kind") == "scorched-earth" and state.get("impact"):
+                self._pending_result_id = sid
+                self._completion_timer.start(4500)
+            else:
+                self._view_result()
+
+    def _finish_scorched_result(self):
+        if self.isVisible() and self.selected_id == self._pending_result_id:
+            self._view_result()
+        self._pending_result_id = None
+
+    def _view_result(self):
+        self._completion_timer.stop()
+        self._pending_result_id = None
+        if not self.engine or not self.selected_id:
+            return
+        session = self.engine.session(self.selected_id)
+        if session["status"] != "finished":
+            return
+        if self._result_dialog:
+            self._result_dialog.close()
+        self._result_dialog = ResultDialog(session, self.settings, self)
+        self._result_dialog.finished.connect(lambda: setattr(self, "_result_dialog", None))
+        self._result_dialog.open()
 
     def _clear_board(self):
         while self.board_layout.count():
@@ -841,8 +933,7 @@ class ArcadeWindow(QMainWindow):
         elif view["kind"] == "word-tiles":
             host = QWidget(); box = QVBoxLayout(host); box.setContentsMargins(0, 0, 0, 0)
             current = session["current_player"]
-            scoreline = "     ".join(f"{player}  {score}" for player, score in view["scores"].items())
-            box.addWidget(QLabel(f"{scoreline}     BAG {view['bag']}     {view['lexicon']} · OPEN RACKS"))
+            box.addWidget(QLabel(f"BAG {view['bag']}     {view['lexicon']} · OPEN RACKS"))
             grid_host = QWidget(); grid = QGridLayout(grid_host); grid.setSpacing(2); grid.setContentsMargins(0, 4, 0, 4)
             grid.addWidget(QLabel("   "), 0, 0)
             for x in range(15): grid.addWidget(QLabel(chr(65 + x)), 0, x + 1, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -908,6 +999,8 @@ class ArcadeWindow(QMainWindow):
         map_scroll.setWidgetResizable(False); map_scroll.setWidget(battlefield)
         map_scroll.setFrameShape(QFrame.Shape.NoFrame)
         map_scroll.setToolTip("Scroll horizontally to pan across the larger battlefield")
+        battlefield.shot_position.connect(lambda x: map_scroll.ensureVisible(int(x * scene_scale + 12),
+            map_scroll.verticalScrollBar().value(), max(1, map_scroll.viewport().width() // 3), 0))
         layout.addWidget(map_scroll, 4)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(180)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -923,7 +1016,7 @@ class ArcadeWindow(QMainWindow):
         actor = session["current_player"] if self.settings.transport == "practice" else self.settings.callsign
         tank = next((item for item in view["tanks"] if item["player"] == actor), None)
         for item in view["tanks"]:
-            box.addWidget(QLabel(f"{item['player']}: {item['hp']} HP · ¤{item['credits']} · "
+            box.addWidget(QLabel(f"{item['player']}: ¤{item['credits']} · "
                                  f"{item['fuel']} fuel · {item['repair_kits']} repairs"))
         weapon = QComboBox(); weapon.setObjectName("scorchedWeapon")
         for item in view["weapons"]:
@@ -937,20 +1030,27 @@ class ArcadeWindow(QMainWindow):
         angle = QSlider(Qt.Orientation.Horizontal); angle.setObjectName("scorchedAngle")
         angle.setRange(view["min_angle"], view["max_angle"]); angle.setValue(45)
         box.addWidget(angle_label); box.addWidget(angle)
+        power_label = QLabel("Power: 100%")
+        power = QSlider(Qt.Orientation.Horizontal); power.setObjectName("scorchedPower")
+        power.setRange(view["min_power"] // view["power_step"], view["max_power"] // view["power_step"])
+        power.setValue(view["max_power"] // view["power_step"])
+        box.addWidget(power_label); box.addWidget(power)
         def preview():
+            power_label.setText(f"Power: {power.value() * view['power_step']}%")
             angle_label.setText(f"Angle: {angle.value()}°")
             if not can_play or not tank:
                 battlefield.set_preview([]); return
             game = self.engine.registry.by_id(session["game_id"])
             saved = game.decode_state(session["state"])
             shot = _trace_shot(saved["terrain"], saved["x"], saved["turn"],
-                               int(weapon.currentData()), angle.value(), _wind(saved["map"], saved["round"]))
+                               int(weapon.currentData()), angle.value(), _wind(saved["map"], saved["round"]), power.value() * view["power_step"])
             battlefield.set_preview(shot["path"], angle.value(), actor)
+        power.valueChanged.connect(preview)
         angle.valueChanged.connect(preview)
         weapon.currentIndexChanged.connect(preview)
         fire = QPushButton("Fire weapon"); fire.setObjectName("scorchedFire")
         fire.setEnabled(can_play and bool(tank))
-        fire.clicked.connect(lambda: self._submit_action(bytes((int(weapon.currentData()), angle.value()))))
+        fire.clicked.connect(lambda: self._submit_action(pack_shot(int(weapon.currentData()), angle.value(), power.value() * view["power_step"])))
         box.addWidget(fire)
         movement = QHBoxLayout()
         for direction, label in ((0, "◀ Drive"), (1, "Drive ▶")):

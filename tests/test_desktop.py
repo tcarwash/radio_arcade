@@ -58,6 +58,33 @@ class DesktopScenarios(unittest.TestCase):
             finally:
                 window.close(); app.processEvents()
 
+    def test_crater_settles_after_projectile_arrives(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from radio_arcade.desktop import ScorchedBattlefield
+        from radio_arcade.games.scorched_earth import ScorchedEarthGame
+        app = QApplication.instance() or QApplication([])
+        game = ScorchedEarthGame(); players = ("A", "B"); state = game.new_state(players)
+        result = next(result for angle in range(91)
+                      if (result := game.apply_action(state, players, "A", bytes((1, angle))))["terrain"] != state["terrain"])
+        restored = game.decode_state(game.encode_state(result))
+        view = game.view_model(restored, players)
+        battlefield = ScorchedBattlefield(view, animate=True)
+        try:
+            started = battlefield._flight_started
+            with patch("radio_arcade.desktop.time.monotonic", return_value=started + 1):
+                self.assertEqual(battlefield.displayed_terrain(), state["terrain"])
+            with patch("radio_arcade.desktop.time.monotonic", return_value=started + 2.325):
+                midway = battlefield.displayed_terrain()
+                self.assertNotEqual(midway, state["terrain"])
+                self.assertNotEqual(midway, result["terrain"])
+            with patch("radio_arcade.desktop.time.monotonic", return_value=started + 3):
+                self.assertEqual(battlefield.displayed_terrain(), result["terrain"])
+            battlefield._flight_timer.stop()
+            self.assertEqual(battlefield.displayed_terrain(), result["terrain"])
+        finally:
+            battlefield.close(); app.processEvents()
+
     def test_scorched_earth_native_controls_and_hotseat_fire(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QSlider
@@ -79,12 +106,17 @@ class DesktopScenarios(unittest.TestCase):
                 angle = window.findChild(QSlider, "scorchedAngle")
                 self.assertEqual(weapon.currentData(), 0)
                 self.assertEqual(angle.value(), 45)
+                power = window.findChild(QSlider, "scorchedPower")
+                self.assertIsNotNone(power)
+                power.setValue(10)  # 50% power
+
                 self.assertTrue(window.findChild(QPushButton, "scorchedFire").isEnabled())
                 window.findChild(QPushButton, "scorchedFire").click()
                 deadline = time.monotonic() + 3
                 while engine.session(sid)["revision"] < 1 and time.monotonic() < deadline:
                     app.processEvents(); time.sleep(.01)
                 self.assertEqual(engine.session(sid)["revision"], 1)
+                self.assertEqual(engine.session(sid)["view"]["impact"]["power"], 50)
                 window._show_session(sid)
                 animated = window.findChild(ScorchedBattlefield, "scorchedBattlefield")
                 self.assertIsNotNone(animated)
@@ -120,6 +152,10 @@ class DesktopScenarios(unittest.TestCase):
                     self.assertEqual(engine.session(sid)["revision"], revision)
                     window._show_session(sid)
                 self.assertEqual(engine.session(sid)["status"], "finished")
+                self.assertIsNotNone(window._result_dialog)
+                window._result_dialog.accept()
+                window._refresh_sessions()
+                self.assertIsNone(window._result_dialog)
             finally:
                 window.close()
                 app.processEvents()

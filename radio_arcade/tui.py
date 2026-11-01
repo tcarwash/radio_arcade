@@ -16,6 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, RichLog, Select, Static, Switch
 from rich.text import Text
 
+from .presentation import scoreboard, result_title, CompletionTracker
 from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
 from .transport_factory import create_service, group_name
@@ -91,6 +92,38 @@ class ChatSent(Message):
     def __init__(self, session: str, text: str):
         self.session, self.text = session, text
         super().__init__()
+
+
+class ResultScreen(ModalScreen):
+    BINDINGS = [("escape", "dismiss", "Back to board")]
+    CSS = """
+    ResultScreen { align:center middle; background:rgba(4,8,14,0.8); }
+    #result-card { width:60; height:auto; max-height:90%; padding:2 3; border:heavy #70d8ba; background:#0b1420; }
+    #result-title { text-align:center; text-style:bold; color:#9cf5d4; margin-bottom:1; }
+    #result-scores { margin:1 0; height:auto; color:#c9f8e8; }
+    #result-close { width:100%; }
+    """
+    def __init__(self, session, settings):
+        super().__init__(); self.session = session; self.settings = settings
+
+    def compose(self):
+        title = result_title(self.session, self.settings.callsign,
+                             practice=self.settings.transport == "practice", observer=self.settings.observer_mode)
+        with Vertical(id="result-card"):
+            yield Static(Text(title), id="result-title")
+            yield Static(Text(self.session["game"] + " · MATCH COMPLETE"))
+            rows = [f"{entry['player']:12}  {entry['value']:>5}  {entry['unit']}" for entry in scoreboard(self.session)["entries"]]
+            yield Static(Text("\n".join(rows)), id="result-scores")
+            yield Button("Back to board", id="result-close", variant="primary")
+
+    def on_mount(self):
+        card = self.query_one("#result-card")
+        card.styles.opacity = 0.1
+        card.styles.animate("opacity", 1.0, duration=0.5)
+
+    @on(Button.Pressed, "#result-close")
+    def close_result(self):
+        self.dismiss()
 
 
 class SettingsScreen(ModalScreen[Settings | None]):
@@ -305,13 +338,13 @@ class ArcadeTUI(App):
     #arena-meta { width:auto; color:#7d8ba4; text-align:right; padding-top:1; }
     #turn-line { height:1; min-height:1; padding:0 1; margin:0 0 1 0;
                  background:#14251f; border-left:solid #5cb596; color:#b8f4d7; text-style:bold; }
-    #scoreboard { display:none; height:4; margin:0 0 1 0; background:#141d2d;
-                  border:round #35415a; padding:0 1; }
+    #scoreboard { display:none; height:4; margin:0 0 1 0; background:#080e17;
+                  border:heavy #426d72; padding:0 1; }
     .score-card { width:1fr; height:100%; padding:0 1; }
     #score-left-card { border-right:solid #3c4963; }
     #score-right-card { border-left:solid #3c4963; }
-    .score-name { height:1; color:#a99bd2; text-style:bold; }
-    .score-value { height:2; color:#f5efff; text-style:bold; content-align:left middle; }
+    .score-name { height:1; color:#a8c6cc; text-style:bold; text-align:center; }
+    .score-value { height:2; color:#afffe0; text-style:bold; content-align:center middle; }
     #score-divider { width:7; height:100%; color:#9482c6; text-style:bold;
                      content-align:center middle; }
     #game-controls { display:none; height:auto; background:#131f2c;
@@ -363,11 +396,12 @@ class ArcadeTUI(App):
     Screen.short #board { min-height:5; }
     """
     BINDINGS = [("q", "quit", "Quit"), ("r", "refresh", "Refresh"), ("s", "settings", "Settings"),
-                ("1", "show_lobby", "Lobby"), ("2", "show_board", "Board"), ("3", "show_chat", "Chat")]
+                ("1", "show_lobby", "Lobby"), ("2", "show_board", "Board"), ("3", "show_chat", "Chat"), ("v", "view_result", "Result")]
 
     def __init__(self, settings: Settings):
         super().__init__(); self.settings = settings
         self.engine: ArcadeService | None = None
+        self._completion_tracker = CompletionTracker()
         self._list_signature = None
         self._board_signature = None
         self.unsubscribe = None
@@ -428,14 +462,7 @@ class ArcadeTUI(App):
                         yield Label("Choose a table", id="game-title")
                         yield Static("", id="arena-meta")
                     yield Static("Open-information games for the airwaves.", id="turn-line")
-                    with Horizontal(id="scoreboard"):
-                        with Vertical(id="score-left-card", classes="score-card"):
-                            yield Static("STATION 1", id="score-left-name", classes="score-name")
-                            yield Static("0", id="score-left-value", classes="score-value")
-                        yield Static("VS", id="score-divider")
-                        with Vertical(id="score-right-card", classes="score-card"):
-                            yield Static("STATION 2", id="score-right-name", classes="score-name")
-                            yield Static("0", id="score-right-value", classes="score-value")
+                    yield Horizontal(id="scoreboard")
                     yield Vertical(id="game-controls")
                     with VerticalScroll(id="board"):
                         yield Static("Start a table to take a seat.", id="empty-state")
@@ -476,6 +503,8 @@ class ArcadeTUI(App):
         self._update_layout(event.size.width)
 
     def _show_pane(self, name):
+        if isinstance(self.screen, ResultScreen):
+            return
         for pane in ("lobby", "board", "chat"):
             self.screen.set_class(pane == name, f"show-{pane}")
 
@@ -531,6 +560,8 @@ class ArcadeTUI(App):
         self.notify(message.error, severity="error", timeout=8)
 
     def on_engine_notice(self, message: EngineNotice):
+        if isinstance(self.screen, ResultScreen):
+            return
         event = message.event
         if self.settings.sound_enabled and (event.name == "invitation" or
                 (event.name == "session_updated" and event.data.get("committed") and
@@ -562,6 +593,8 @@ class ArcadeTUI(App):
             self.call_later(self._refresh_sessions)
 
     async def _refresh_sessions(self):
+        if isinstance(self.screen, ResultScreen):
+            return
         async with self._session_refresh_lock:
             await self._refresh_sessions_locked()
 
@@ -611,6 +644,7 @@ class ArcadeTUI(App):
 
     async def _show_session_locked(self, sid: str | None):
         if not self.engine or not sid:
+            self.query_one("#scoreboard", Horizontal).display = False
             self.query_one("#delete-game", Button).display = False
             await self.query_one("#game-controls", Vertical).remove_children()
             await self.query_one("#board", VerticalScroll).remove_children()
@@ -646,7 +680,7 @@ class ArcadeTUI(App):
         invited = "\nInvited: " + ", ".join(session["invited"]) if session["invited"] else ""
         self.query_one("#players", Static).update("  ·  ".join(session["players"]) + invited + f"\n\n{session['status'].upper()}  ·  rev {session['revision']}")
         turn = session["current_player"]
-        self._update_scoreboard(state, turn)
+        await self._update_scoreboard(session)
         if self.settings.observer_mode: line = "OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT"
         elif session["status"] == "invited": line = f"INVITATION FROM {session['coordinator']} · accept to join"
         elif session["status"] == "lobby":
@@ -749,18 +783,28 @@ class ArcadeTUI(App):
         else:
             await board.mount(Static("Waiting for the host to start this lobby.", id="empty-state"))
         self._refresh_chat(sid)
+        if self._completion_tracker.observe(session):
+            self.action_view_result()
 
-    def _update_scoreboard(self, state: dict | None, turn: str | None):
+    def action_view_result(self):
+        if self.engine and self.selected_id and not isinstance(self.screen, ResultScreen):
+            session = self.engine.session(self.selected_id)
+            if session["status"] == "finished":
+                self.push_screen(ResultScreen(session, self.settings), lambda _: self.call_later(self._refresh_sessions))
+
+    async def _update_scoreboard(self, session):
         panel = self.query_one("#scoreboard", Horizontal)
-        panel.display = bool(state and state.get("kind") == "word-tiles")
-        if not panel.display:
-            return
-        scores = list(state["scores"].items())
-        for side, pair in zip(("left", "right"), scores):
-            name, score = pair
-            suffix = "  ● TURN" if name == turn else ""
-            self.query_one(f"#score-{side}-name", Static).update(name + suffix)
-            self.query_one(f"#score-{side}-value", Static).update(str(score))
+        await panel.remove_children()
+        panel.display = bool(session.get("view"))
+        for index, entry in enumerate(scoreboard(session)["entries"]):
+            side = "left" if index == 0 else "right" if index == 1 else str(index)
+            suffix = " ★ WINNER" if entry["winner"] else " ● TURN" if entry["active"] else ""
+            if index == 1:
+                await panel.mount(Static("VS", id="score-divider"))
+            await panel.mount(Vertical(
+                Static(Text(entry["player"] + suffix + " / " + entry["unit"]), id=f"score-{side}-name", classes="score-name"),
+                Static(Text(entry["value"]), id=f"score-{side}-value", classes="score-value"),
+                id=f"score-{side}-card", classes="score-card"))
 
     def _refresh_chat(self, sid: str | None):
         if not self.engine or not sid or sid != self.selected_id or not self.query("#chat-log"): return

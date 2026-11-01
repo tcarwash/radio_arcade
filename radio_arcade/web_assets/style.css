@@ -461,3 +461,29 @@ select.field, .settings-card select { appearance: none; background-image: linear
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* Shared match score display and completion presentation. */
+.score-strip { border:2px solid #3b5267; border-radius:12px; padding:10px; background:#080e17; }
+.score-card { text-align:center; background:transparent; border-radius:6px; }
+.score-value { font:800 clamp(24px, 3vw, 36px)/1.15 ui-monospace, monospace; letter-spacing:.06em; color:#afffe0; text-shadow:0 0 16px #8fe2c233; font-variant-numeric:tabular-nums; }
+.score-name { color:#e8edf6; letter-spacing:.08em; }
+.score-unit { font-size:9px; color:#94a8bc; letter-spacing:.13em; margin-top:8px; }
+.score-card.active .score-name::after { content:none; }
+.match-result { width:min(540px, 94vw); max-height:90dvh; overflow:auto; padding:30px; border:1px solid #537a80; border-radius:20px; color:#e8edf6; background:#111a27; text-align:center; animation:result-arrival .6s ease-out; }
+.match-result::backdrop { background:#030912c9; backdrop-filter:blur(5px); }
+.result-title { font:800 clamp(28px, 6vw, 44px) ui-monospace, monospace; color:#8fe2c2; text-shadow:0 0 28px #8fe2c255; margin:16px 0; }
+@keyframes result-arrival { from { opacity:0; transform:translateY(24px) scale(.95); } to { opacity:1; transform:translateY(0) scale(1); } }
+@media (prefers-reduced-motion:reduce) { .match-result { animation:none; } }
+.match-result.result-loss .result-title { color:#f18383; text-shadow:0 0 28px #f1838333; }
+.match-result.result-draw .result-title { color:#f3bf7a; text-shadow:0 0 28px #f3bf7a33; }
+.score-heading { grid-column:1 / -1; text-align:center; font:700 9px ui-monospace,monospace; letter-spacing:.16em; color:#94a8bc; }
+
+.tank-blast.hit, .tank-blast.miss { fill:#ff6725; stroke:#ffca70; stroke-width:3; filter:drop-shadow(0 0 15px #ff7a27); animation-duration:1200ms; }
+.tank-fire-core { fill:#fff4bf; filter:drop-shadow(0 0 18px #ffcf67); transform-box:fill-box; transform-origin:center; animation:tank-core 850ms ease-out both; pointer-events:none; }
+.tank-shockwave { fill:none; stroke:#ffe1aa; stroke-width:3; transform-box:fill-box; transform-origin:center; animation:tank-wave 1400ms ease-out both; pointer-events:none; }
+.tank-smoke { fill:#514b45; opacity:.65; animation:tank-smoke 2500ms ease-out var(--delay) both; pointer-events:none; }
+.tank-debris { fill:#8f6845; filter:none; }
+@keyframes tank-core { 0% { transform:scale(.1); opacity:1; } 25% { transform:scale(1.6); opacity:1; } 100% { transform:scale(.65); opacity:0; } }
+@keyframes tank-wave { from { transform:scale(.3); opacity:1; } to { transform:scale(2.9); opacity:0; } }
+@keyframes tank-smoke { from { transform:translate(0,0) scale(.7); opacity:.7; } to { transform:translate(var(--drift),var(--rise)) scale(2.8); opacity:0; } }
+@media (prefers-reduced-motion:reduce) { .tank-fire-core, .tank-shockwave, .tank-smoke { animation-duration:1ms; } }

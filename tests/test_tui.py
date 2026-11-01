@@ -102,6 +102,12 @@ class TuiScenarios(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("enter")
                     await pilot.pause(0.3)
                 self.assertEqual(app.engine.session(app.selected_id)["status"], "finished")
+                from radio_arcade.tui import ResultScreen
+                self.assertIsInstance(app.screen, ResultScreen)
+                await pilot.press("escape")
+                await pilot.pause(.2)
+                await app._refresh_sessions()
+                self.assertNotIsInstance(app.screen, ResultScreen)
                 await pilot.press("3")
                 self.assertTrue(app.screen.has_class("show-chat"))
 

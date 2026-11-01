@@ -28,3 +28,7 @@ The UI-independent engine API is documented in [ENGINE-API.md](ENGINE-API.md). G
 To open a two-window Scorched Earth match over a local simulated radio link, run `uv run python scripts/scorched_earth_two_window.py`. It uses no Data2G or RF hardware; press Ctrl+C to stop it.
 
 Scorched Earth uses five distinct, deterministic **128-column panoramic maps**. The desktop battlefield pans horizontally; the web game adds a draggable minimap and zoom controls. Base terrain is regenerated from the shared map ID on both stations. Each two-byte weapon move deterministically traces its own shot and terrain deformation. Recovery snapshots replay compact **crater events** (column and weapon) for typical matches, without sending map geometry. Very long matches and migrated saves can fall back to sparse terrain differences when the event log grows too large. All stations in a match must upgrade to the same version before playing together.
+
+Desktop, browser, and terminal clients share a match scoreboard with turn indicators, real points or HP, and final results. Completing a live match opens an animated result panel once; loading a finished save does not reopen it. Use **View match result** on desktop/web or **V** in the terminal to view the result again. Local practice names the winner; radio participants see Victory or Defeat.
+
+Scorched Earth now has independent shot power (25–100%) and 0–90° aiming in desktop and web play. All stations must upgrade together. The DOS 1.5 comparison and next parity priorities are tracked in [SCORCHED-PARITY.md](SCORCHED-PARITY.md).

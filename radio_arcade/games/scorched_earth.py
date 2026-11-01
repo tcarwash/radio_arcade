@@ -9,7 +9,8 @@ from typing import Any
 WIDTH, HEIGHT, SKY_HEIGHT = 128, 16, 40
 SCALE = 1000
 GRAVITY = 90
-MIN_ANGLE, MAX_ANGLE = 10, 80
+MIN_ANGLE, MAX_ANGLE = 0, 90
+MIN_POWER, MAX_POWER, POWER_STEP = 25, 100, 5
 NO_ACTION = 255
 DRIVE, REPAIR, SHIELD = 0x80, 0x81, 0x82
 BUY = 0x90
@@ -63,6 +64,26 @@ WEAPONS = (
     {"name": "Earth mover", "speed": 2950, "radius": 1400, "damage": 8, "crater": 9, "cost": 28, "tag": "extreme excavation"},
 )
 WIND_ACCEL = (-3, -2, -1, 0, 1, 2, 3)
+
+
+def pack_shot(weapon: int, angle: int, power: int = MAX_POWER) -> bytes:
+    """Two-byte shot: low 3 bits weapon, high 4 bits power, then angle.
+
+    Slot zero retains historical full-power actions; 1..15 mean 25..95%.
+    """
+    if not 0 <= weapon < len(WEAPONS) or not MIN_ANGLE <= angle <= MAX_ANGLE:
+        raise ValueError("invalid weapon or firing angle")
+    if not MIN_POWER <= power <= MAX_POWER or power % POWER_STEP:
+        raise ValueError("power must be 25–100% in steps of 5")
+    slot = 0 if power == MAX_POWER else (power - MIN_POWER) // POWER_STEP + 1
+    return bytes((weapon | slot << 3, angle))
+
+
+def unpack_shot(code: int) -> tuple[int, int]:
+    if not 0 <= code < 128:
+        raise ValueError("invalid shot code")
+    slot = code >> 3
+    return code & 7, MAX_POWER if slot == 0 else MIN_POWER + (slot - 1) * POWER_STEP
 
 
 def _pack_heights(heights: list[int] | tuple[int, ...]) -> bytes:
@@ -122,13 +143,14 @@ def _wind(map_id: int, round_number: int) -> int:
 
 
 def _trace_shot(terrain: list[int], positions: list[int], shooter: int,
-                weapon_id: int, angle: int, wind_id: int) -> dict[str, Any]:
+                weapon_id: int, angle: int, wind_id: int, power: int = MAX_POWER) -> dict[str, Any]:
     weapon = WEAPONS[weapon_id]
     direction = 1 if shooter == 0 else -1
     sx = positions[shooter]
     x, y = sx * SCALE + direction * 850, _tank_world_y(terrain, sx)
     theta = radians(angle)
-    vx, vy = direction * round(weapon["speed"] * cos(theta)), round(weapon["speed"] * sin(theta))
+    speed = weapon["speed"] * power // MAX_POWER
+    vx, vy = direction * round(speed * cos(theta)), round(speed * sin(theta))
     path = [(x, y)]
     target = 1 - shooter
     tx = positions[target] * SCALE
@@ -237,27 +259,28 @@ class ScorchedEarthGame:
         damage = [0, 0]
         last_wind = NO_ACTION
 
-        if code < len(WEAPONS):
+        if code < 128:
+            weapon_id, power = unpack_shot(code)
             if not MIN_ANGLE <= parameter <= MAX_ANGLE:
                 raise ValueError(f"firing angle must be from {MIN_ANGLE}° through {MAX_ANGLE}°")
-            if ammo[player][code] == 0:
+            if ammo[player][weapon_id] == 0:
                 raise ValueError("out of ammunition; buy another round")
-            if code:
-                ammo[player][code] -= 1
+            if weapon_id:
+                ammo[player][weapon_id] -= 1
             last_terrain = list(terrain)
             last_wind = _wind(state["map"], state["round"])
-            shot = _trace_shot(terrain, positions, player, code, parameter, last_wind)
+            shot = _trace_shot(terrain, positions, player, weapon_id, parameter, last_wind, power)
             # A projectile that leaves the battlefield cannot explode against
             # a tank near the boundary. Only actual impacts produce a blast.
             if shot["kind"] != "edge":
-                hp, shields = _resolve_blast(terrain, positions, code, shot["x"], shot["y"], hp, shields)
+                hp, shields = _resolve_blast(terrain, positions, weapon_id, shot["x"], shot["y"], hp, shields)
             damage = [state["hp"][i] - hp[i] for i in (0, 1)]
             credits[player] = min(255, credits[player] + 8 + damage[1 - player] // 3)
             if shot["kind"] != "edge":
-                terrain = _make_crater(terrain, shot["x"], WEAPONS[code]["crater"])
+                terrain = _make_crater(terrain, shot["x"], WEAPONS[weapon_id]["crater"])
                 last_was_crater = True
                 if craters is not None:
-                    craters.append((max(0, min(WIDTH - 1, round(shot["x"] / SCALE))), code))
+                    craters.append((max(0, min(WIDTH - 1, round(shot["x"] / SCALE))), weapon_id))
         elif code == DRIVE:
             if parameter not in (0, 1):
                 raise ValueError("choose left or right to drive")
@@ -290,7 +313,7 @@ class ScorchedEarthGame:
         else:
             raise ValueError("unknown Scorched Earth turn")
 
-        if code >= len(WEAPONS):
+        if code >= 128:
             last_terrain = list(terrain)
 
         dead = [hp[0] == 0, hp[1] == 0]
@@ -317,7 +340,7 @@ class ScorchedEarthGame:
         # records. If a marathon match exceeds the compact event budget, use
         # sparse changed heights for resync only. Ordinary turns stay two bytes.
         event_snapshot = craters is not None and len(craters) <= 80
-        prefix = (0xC0 if event_snapshot else 0x80) | state["map"]
+        prefix = (0xE0 if event_snapshot else 0xA0) | state["map"]
         header = bytes((prefix, state["turn"], state["round"], *state["hp"], *state["x"],
                       *state["kits"], *state["fuel"], shields, *state["last"], state["last_wind"],
                       *state["last_damage"], result))
@@ -371,7 +394,8 @@ class ScorchedEarthGame:
             raise ValueError("invalid Scorched Earth snapshot length")
         (map_id, turn, round_number, hp0, hp1, x0, x1, kits0, kits1, fuel0, fuel1,
          shields, last_code, last_parameter, last_wind, damage0, damage1, result) = payload[:18]
-        map_id = map_id & 0x3F if modern else map_id
+        power_rules = bool(modern and map_id & 0x20)
+        map_id = map_id & 0x1F if power_rules else map_id & 0x3F if modern else map_id
         if map_id >= len(MAPS):
             raise ValueError("invalid Scorched Earth map ID")
         craters = None
@@ -394,7 +418,7 @@ class ScorchedEarthGame:
                     terrain = _make_crater(terrain, column * SCALE, WEAPONS[weapon]["crater"])
                 if not last_was_crater:
                     last_terrain = list(terrain)
-                if last_was_crater and (not craters or last_code >= len(WEAPONS)):
+                if last_was_crater and (not craters or last_code >= 128):
                     raise ValueError("invalid last Scorched Earth crater event")
                 offset = 19 + count * 2
             else:
@@ -423,7 +447,9 @@ class ScorchedEarthGame:
         if last_code == NO_ACTION:
             if last_parameter != NO_ACTION or last_wind != NO_ACTION or damage0 or damage1:
                 raise ValueError("invalid initial Scorched Earth snapshot")
-        elif last_code < len(WEAPONS):
+        elif last_code < 128:
+            if last_code >= len(WEAPONS) and not power_rules:
+                raise ValueError("powered shot requires new snapshot format")
             if not MIN_ANGLE <= last_parameter <= MAX_ANGLE or last_wind >= len(WIND_ACCEL):
                 raise ValueError("invalid last shot")
         elif last_code in (DRIVE, REPAIR, SHIELD, BUY):
@@ -465,8 +491,9 @@ class ScorchedEarthGame:
         if len(action) != 2:
             raise ValueError("invalid Scorched Earth turn")
         code, parameter = action
-        if code < len(WEAPONS) and MIN_ANGLE <= parameter <= MAX_ANGLE:
-            return f"fires {WEAPONS[code]['name']} at {parameter}°"
+        if code < 128 and MIN_ANGLE <= parameter <= MAX_ANGLE:
+            weapon, power = unpack_shot(code)
+            return f"fires {WEAPONS[weapon]['name']} at {parameter}° · {power}% power"
         if code == DRIVE and parameter in (0, 1):
             return f"drives {'left' if parameter == 0 else 'right'}"
         if code == REPAIR and parameter == 0:
@@ -492,9 +519,10 @@ class ScorchedEarthGame:
         trajectory: list[list[float]] = []
         impact = None
         last_actor = players[1 - state["turn"]] if last_code != NO_ACTION else None
-        if last_code < len(WEAPONS):
+        if last_code < 128:
+            weapon_id, power = unpack_shot(last_code)
             shot = _trace_shot(state["last_terrain"], state["x"], 1 - state["turn"],
-                               last_code, last_parameter, state["last_wind"])
+                               weapon_id, last_parameter, state["last_wind"], power)
             points = shot["path"]
             stride = max(1, len(points) // 96)
             sampled = points[::stride]
@@ -502,7 +530,7 @@ class ScorchedEarthGame:
                 sampled.append(points[-1])
             trajectory = [[x / SCALE, y / SCALE] for x, y in sampled]
             impact = {"x": shot["x"] / SCALE, "y": shot["y"] / SCALE, "kind": shot["kind"],
-                      "weapon": last_code, "angle": last_parameter}
+                      "weapon": weapon_id, "angle": last_parameter, "power": power}
         wind_id = _wind(map_id, state["round"])
         wind_word = ("strong crosswind", "breezy", "light wind", "calm", "light wind", "breezy", "strong crosswind")[wind_id]
         action_text = None
@@ -510,7 +538,8 @@ class ScorchedEarthGame:
             action_text = (self.describe_action(bytes(state["last"])) if last_code < len(WEAPONS)
                            else self.describe_action(bytes(state["last"])))
         return {"kind": "scorched-earth", "width": WIDTH, "height": HEIGHT, "sky_height": SKY_HEIGHT,
-                "map_name": MAPS[map_id][0], "terrain": list(terrain), "gravity": GRAVITY / SCALE,
+                "map_name": MAPS[map_id][0], "terrain": list(terrain),
+                "previous_terrain": list(state["last_terrain"]), "gravity": GRAVITY / SCALE,
                 "wind": {"index": wind_id, "acceleration": WIND_ACCEL[wind_id] / SCALE, "label": wind_word,
                          "direction": "←" if WIND_ACCEL[wind_id] < 0 else "→" if WIND_ACCEL[wind_id] > 0 else "—"},
                 "round": state["round"], "tanks": tanks,
@@ -520,6 +549,7 @@ class ScorchedEarthGame:
                             for i, item in enumerate(WEAPONS)],
                 "actions": {"drive": DRIVE, "repair": REPAIR, "shield": SHIELD, "buy": BUY},
                 "min_angle": MIN_ANGLE, "max_angle": MAX_ANGLE,
+                "min_power": MIN_POWER, "max_power": MAX_POWER, "power_step": POWER_STEP,
                 "turn": self.current_player(state, players),
                 "winner": players[state["winner"]] if state["winner"] >= 0 else None,
                 "draw": state["finished"] and state["winner"] < 0,

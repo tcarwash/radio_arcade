@@ -66,7 +66,9 @@ class WebController:
 
     @staticmethod
     def _public_session(session: dict[str, Any]) -> dict[str, Any]:
+        from .presentation import scoreboard
         result = dict(session)
+        result["scoreboard"] = scoreboard(session)
         result.pop("state", None)
         result.pop("last_action", None)
         result["has_pending_action"] = result.pop("pending_action", None) is not None

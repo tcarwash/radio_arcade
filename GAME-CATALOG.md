@@ -23,8 +23,9 @@ graphical 4X client that uses the Radio Arcade engine. Installing Radio Civ
 does not add it to the built-in Radio Arcade desktop/TUI game pickers.
 
 Scorched Earth uses five shared map profiles, so map data is never sent over the
-radio. Every turn stays two bytes: weapon and firing angle, or a tactical action
-and its small parameter. Wind follows a deterministic cycle, and both clients
+radio. Every turn stays two bytes: packed weapon/power and firing angle, or a
+tactical action and its small parameter. Elevation is 0–90°; shot power is
+25–100% in steps of 5%. Wind follows a deterministic cycle, and both clients
 resolve the same ballistic path, hit, damage, and terrain crater. Drive fuel,
 repair kits, and one-hit shields make each turn a choice between attacking and
 preparing. The compact shared snapshot carries the changed terrain and player
@@ -35,10 +36,10 @@ Each player starts with 70 credits and one round of every limited weapon.
 The basic cannon is always free and unlimited. A shot earns 8 credits plus a
 bonus for damage dealt to the opponent (one credit per three HP). Buying one
 round of ammunition costs credits and consumes a turn; ammunition and balances
-are included in the snapshot. The expanded snapshot is 68 bytes; old 50-byte
-snapshots can still be loaded with default armory balances, but **both connected
-stations must upgrade together** because the new rules and snapshot are not
-compatible with older clients using game ID 7. Avoid mixed-version radio matches.
+are included in the snapshot. Snapshot size varies with crater history; older
+50-byte snapshots can still be loaded with default armory balances. **Both
+connected stations must upgrade together** because the new rules and snapshot
+are not compatible with older clients using game ID 7. Avoid mixed-version radio matches.
 
 Each browser presents one local pilot against an opponent seat. In a connected
 match, the other station controls that seat; both browsers render the synced
@@ -48,3 +49,12 @@ Desktop and browser battlefields use two transparent, bundled tank sprites
 (`tank-teal.png` and `tank-amber.png`), with independently aimed barrels and
 local-only recoil, flight, and damage animations. The artwork does not change
 the game rules or add anything to radio packets.
+
+Powered shots encode `(weapon_id | power_slot << 3, angle)`. Weapon IDs occupy
+the low three bits; slot 0 means 100%, while slots 1–15 mean 25–95% in steps
+of 5%. Codes 128 and above remain tactical actions. Crater history stores the
+unpacked weapon ID. New snapshots set capability bit `0x20` in the first byte:
+`0xE0 | map_id` for crater-event snapshots, `0xA0 | map_id` for sparse terrain.
+Older clients reject these as unknown maps. This version still reads earlier
+snapshots. Upgrade all players together; the shared envelope version is unchanged.
+See [SCORCHED-PARITY.md](SCORCHED-PARITY.md) for the DOS reference comparison.

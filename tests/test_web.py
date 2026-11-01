@@ -35,6 +35,21 @@ class WebControllerScenarios(unittest.TestCase):
         status, value = self.controller.dispatch(method, path, body)
         return status, value
 
+    def test_scorched_power_command_and_recovered_view(self):
+        from radio_arcade.games.scorched_earth import pack_shot
+        status, created = self.request("POST", "/api/command", {"command": "create_game", "game": "scorched-earth"})
+        self.assertEqual(status, 200)
+        sid = created["session_id"]
+        status, result = self.request("POST", "/api/command", {
+            "command": "legal_action", "session_id": sid, "action": pack_shot(0, 45, 50).hex()})
+        self.assertEqual(status, 200)
+        self.assertEqual(result["session"]["view"]["impact"]["power"], 50)
+        self.assertEqual(result["session"]["view"]["min_angle"], 0)
+        self.assertEqual(result["session"]["view"]["max_angle"], 90)
+        status, recovered = self.request("GET", f"/api/session/{sid}")
+        self.assertEqual(status, 200)
+        self.assertEqual(recovered["session"]["view"], result["session"]["view"])
+
     def test_bootstrap_exposes_catalog_and_saved_practice_identity(self):
         status, value = self.request("GET", "/api/state")
 
