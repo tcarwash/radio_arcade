@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFor
 
 from .presentation import CompletionTracker
 from .desktop_results import Scoreboard, ResultDialog
+from .scorched_navigation import BattleMapScroll, ScorchedMinimap
 from .service import ArcadeService, EngineEvent, station_name
 from .settings import Settings
 from .store import SessionStore
@@ -83,6 +84,7 @@ class ScorchedBattlefield(QWidget):
         view = self.view
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor("#121a26"))
         margin = 12
         world_width, world_height = view["width"], view["sky_height"]
         scale = min((self.width() - 2 * margin) / world_width, (self.height() - 2 * margin) / world_height)
@@ -124,9 +126,7 @@ class ScorchedBattlefield(QWidget):
                 pen.setStyle(Qt.PenStyle.DashLine)
             painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush); painter.drawPath(path)
         trajectory = view.get("trajectory", [])
-        if self.flight_progress >= 1:
-            draw_path(trajectory, "#ec996f", True)
-        elif trajectory:
+        if self.flight_progress < 1 and trajectory:
             position = self.flight_progress * (len(trajectory) - 1)
             index = min(len(trajectory) - 2, int(position))
             fraction = position - index
@@ -456,7 +456,7 @@ class ArcadeWindow(QMainWindow):
         self.scoreboard_host = QWidget(); self.scoreboard_layout = QVBoxLayout(self.scoreboard_host)
         self.scoreboard_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.addWidget(self.scoreboard_host)
-        self.board_host = QWidget(); self.board_layout = QVBoxLayout(self.board_host); self.board_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.board_host = QWidget(); self.board_host.setObjectName("boardHost"); self.board_layout = QVBoxLayout(self.board_host); self.board_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.board_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.board_scroll = QScrollArea(); self.board_scroll.setObjectName("boardScroll")
         self.board_scroll.viewport().setObjectName("boardViewport")
@@ -539,7 +539,10 @@ class ArcadeWindow(QMainWindow):
             QComboBox QAbstractItemView { background:#111a27; color:#eaf0f8; selection-background-color:#256c65; }
             QListWidget { background:transparent; border:0; outline:0; }
             QScrollArea#toolsScroll, QWidget#toolsViewport, QScrollArea#boardScroll, QWidget#boardViewport,
-            QWidget#toolsContent { background:transparent; border:0; }
+            QWidget#toolsContent, QWidget#boardHost { background:transparent; border:0; }
+            QWidget#scorchedHost, QWidget#scorchedMapColumn, QWidget#scorchedControls,
+            QWidget#scorchedViewport, QWidget#scorchedControlsViewport,
+            QScrollArea#battlefieldScroll, QScrollArea#scorchedControlsScroll { background:#121a26; border:0; }
             QListWidget::item { padding:12px 10px; margin:2px 0; border-radius:9px; color:#abb8ca; }
             QListWidget::item:selected { background:#1c3438; color:#a2f1df; }
             QListWidget::item:hover { background:#1a2533; }
@@ -869,6 +872,7 @@ class ArcadeWindow(QMainWindow):
 
     def _render_state(self, session: dict):
         view = session["view"]
+        self.board_layout.setAlignment(Qt.AlignmentFlag(0) if view["kind"] == "scorched-earth" else Qt.AlignmentFlag.AlignCenter)
         if view["kind"] == "scorched-earth":
             self._render_scorched(session, view)
         elif view["kind"] == "grid":
@@ -985,7 +989,7 @@ class ArcadeWindow(QMainWindow):
 
     def _render_scorched(self, session: dict, view: dict):
         """Native artillery controls; only two-byte moves enter the shared engine."""
-        host = QWidget(); layout = QHBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0)
+        host = QWidget(); host.setObjectName("scorchedHost"); layout = QHBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0)
         shot_key = (session["id"], session["revision"])
         animate = bool(view.get("impact") and self._last_scorched_animation_key != shot_key)
         if animate:
@@ -995,16 +999,24 @@ class ArcadeWindow(QMainWindow):
         # extra horizontal world extend beyond the desktop viewport.
         scene_scale = 14
         battlefield.setFixedSize(view["width"] * scene_scale, view["sky_height"] * scene_scale)
-        map_scroll = QScrollArea(); map_scroll.setObjectName("battlefieldScroll")
+        map_scroll = BattleMapScroll(); map_scroll.setObjectName("battlefieldScroll")
+        map_scroll.viewport().setObjectName("scorchedViewport")
         map_scroll.setWidgetResizable(False); map_scroll.setWidget(battlefield)
         map_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        map_scroll.setToolTip("Scroll horizontally to pan across the larger battlefield")
+        map_scroll.setToolTip("WASD / arrows to pan · click to center · drag to explore")
         battlefield.shot_position.connect(lambda x: map_scroll.ensureVisible(int(x * scene_scale + 12),
-            map_scroll.verticalScrollBar().value(), max(1, map_scroll.viewport().width() // 3), 0))
-        layout.addWidget(map_scroll, 4)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setMinimumWidth(180)
+            map_scroll.verticalScrollBar().value(), max(1, map_scroll.viewport().width() // 3), 0) if map_scroll.follow_shot else None)
+        map_column = QWidget(); map_column.setObjectName("scorchedMapColumn"); map_layout = QVBoxLayout(map_column); map_layout.setContentsMargins(0, 0, 0, 0)
+        map_layout.addWidget(ScorchedMinimap(view, map_scroll))
+        hint = QLabel("WASD / arrows · click to center · drag to pan"); hint.setObjectName("muted")
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); map_layout.addWidget(hint)
+        map_layout.addWidget(map_scroll, 1)
+        layout.addWidget(map_column, 4)
+        scroll = QScrollArea(); scroll.setObjectName("scorchedControlsScroll")
+        scroll.viewport().setObjectName("scorchedControlsViewport")
+        scroll.setWidgetResizable(True); scroll.setMinimumWidth(180)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        controls = QWidget(); box = QVBoxLayout(controls)
+        controls = QWidget(); controls.setObjectName("scorchedControls"); box = QVBoxLayout(controls)
         box.setContentsMargins(6, 2, 6, 2); box.setSpacing(9)
         box.addWidget(QLabel(f"{view['map_name']} · turn {view['round'] + 1}"))
         wind = view["wind"]
@@ -1081,6 +1093,11 @@ class ArcadeWindow(QMainWindow):
         if tank:
             map_scroll.horizontalScrollBar().setValue(max(0, int(tank["x"] * scene_scale - map_scroll.viewport().width() / 2)))
         self.board_layout.addWidget(host)
+        if tank:
+            def initial_camera():
+                map_scroll.horizontalScrollBar().setValue(max(0, int(tank["x"] * scene_scale - map_scroll.viewport().width() / 2)))
+                map_scroll.verticalScrollBar().setValue(max(0, int((view["sky_height"] - tank["world_y"]) * scene_scale - map_scroll.viewport().height() * .65)))
+            QTimer.singleShot(0, map_scroll, initial_camera)
         preview()
 
     def _refresh_chat(self, sid: str | None):

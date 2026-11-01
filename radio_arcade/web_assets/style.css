@@ -266,8 +266,7 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .tank-aim-ring { fill: rgba(249,211,124,.16); stroke: #f5d081; stroke-width: 2; }
 .tank-aim-label { fill: #fff0c9; text-anchor: middle; font: 700 8px 'Space Grotesk', sans-serif; }
 .tank-impact { fill: rgba(255,116,80,.18); stroke: #ff825d; stroke-width: 2; stroke-dasharray: 4 3; pointer-events: none; }
-.tank-last-trajectory, .tank-preview-trajectory { fill: none; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
-.tank-last-trajectory { stroke: rgba(255,155,108,.62); stroke-width: 1.6; stroke-dasharray: 3 4; }
+.tank-preview-trajectory { fill: none; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .tank-preview-trajectory { stroke: rgba(200,225,255,.78); stroke-width: 2; stroke-dasharray: 4 5; filter: drop-shadow(0 0 3px rgba(180,214,255,.4)); }
 .tank-flight-trail { fill: none; stroke: #ffe39a; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 5px rgba(255,200,94,.9)); pointer-events: none; }
 .tank-projectile { fill: #ffe39a; stroke: #fff7d6; stroke-width: 2; filter: drop-shadow(0 0 8px #ffc85e); pointer-events: none; }
@@ -487,3 +486,6 @@ select.field, .settings-card select { appearance: none; background-image: linear
 @keyframes tank-wave { from { transform:scale(.3); opacity:1; } to { transform:scale(2.9); opacity:0; } }
 @keyframes tank-smoke { from { transform:translate(0,0) scale(.7); opacity:.7; } to { transform:translate(var(--drift),var(--rise)) scale(2.8); opacity:0; } }
 @media (prefers-reduced-motion:reduce) { .tank-fire-core, .tank-shockwave, .tank-smoke { animation-duration:1ms; } }
+.tank-arena { cursor:grab; touch-action:none; user-select:none; max-height:65dvh; overflow-y:auto; }
+.tank-arena.panning { cursor:grabbing; }
+.tank-minimap:focus-visible, .tank-arena:focus-visible { outline:2px solid var(--mint); outline-offset:3px; }

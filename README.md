@@ -32,3 +32,5 @@ Scorched Earth uses five distinct, deterministic **128-column panoramic maps**. 
 Desktop, browser, and terminal clients share a match scoreboard with turn indicators, real points or HP, and final results. Completing a live match opens an animated result panel once; loading a finished save does not reopen it. Use **View match result** on desktop/web or **V** in the terminal to view the result again. Local practice names the winner; radio participants see Victory or Defeat.
 
 Scorched Earth now has independent shot power (25–100%) and 0–90° aiming in desktop and web play. All stations must upgrade together. The DOS 1.5 comparison and next parity priorities are tracked in [SCORCHED-PARITY.md](SCORCHED-PARITY.md).
+
+Scorched Earth camera controls (desktop/web): focus the map or minimap and use **WASD / arrow keys**, drag the main map, click to center, or click/drag the minimap. Camera panning does not consume a turn or fuel; **Drive** moves the tank.

@@ -58,6 +58,26 @@ class DesktopScenarios(unittest.TestCase):
             finally:
                 window.close(); app.processEvents()
 
+    def test_aim_preview_is_hidden_during_opponents_turn(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from radio_arcade.desktop import ArcadeWindow, ScorchedBattlefield
+        from radio_arcade.practice import PracticeService
+        from radio_arcade.settings import Settings
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            engine = PracticeService("AG7SU")
+            window = ArcadeWindow(Settings(callsign="AG7SU", transport="broadcast"))
+            window._service_ready(engine)
+            sid = engine.create_game("scorched-earth"); window.selected_id = sid
+            try:
+                window._show_session(sid)
+                self.assertTrue(window.findChild(ScorchedBattlefield).preview)
+                engine.legal_action(sid, bytes((0, 45))); window._show_session(sid)
+                self.assertEqual(window.findChild(ScorchedBattlefield).preview, [])
+            finally:
+                window.close(); app.processEvents()
+
     def test_crater_settles_after_projectile_arrives(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication

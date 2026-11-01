@@ -632,8 +632,9 @@ function renderScorchedEarth(session, view, host) {
   const beforeTerrain = animateShot ? view.previous_terrain || view.terrain : view.terrain;
   const wrap = node("div", "tank-layout");
   const arena = node("div", "tank-arena");
+  let followShot = true;
   arena.setAttribute("tabindex", "0");
-  arena.setAttribute("aria-label", "Scrollable battlefield. Swipe, drag the scrollbar, or use horizontal arrow keys to pan.");
+  arena.setAttribute("aria-label", "Scrollable battlefield. Use WASD or arrows, drag the map, or click to center the view.");
   const svg = svgElement("svg", { class: "tank-map", viewBox: `0 0 ${view.width * 24} ${view.sky_height * 24}`,
     preserveAspectRatio: "none",
     role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
@@ -731,20 +732,15 @@ function renderScorchedEarth(session, view, host) {
       state.lastTankMotion = motionKey;
     }
   }
-  const trail = svgElement("polyline", { class: "tank-last-trajectory", points: "" });
-  if (view.trajectory.length > 1) {
-    trail.setAttribute("points", view.trajectory.map(([x, y]) => `${x * 24},${(view.sky_height - y) * 24}`).join(" "));
-    svg.append(trail);
-  }
   if (view.impact) svg.append(svgElement("circle", { cx: view.impact.x * 24, cy: (view.sky_height - view.impact.y) * 24,
     r: Math.max(8, view.weapons[view.impact.weapon].radius * 24), class: "tank-impact" }));
   const preview = svgElement("polyline", { class: "tank-preview-trajectory", points: "" });
   arena.append(svg);
-  const panHint = node("p", "tank-pan-hint", `↔ ${view.width}-column battlefield · Drag the minimap or scroll to scout`);
+  const panHint = node("p", "tank-pan-hint", `↔ ${view.width}-column battlefield · WASD / arrows · Click to center · Drag map or minimap`);
   const navigation = node("div", "tank-navigation");
   const navLabel = node("span", "tank-nav-label", `${view.map_name.toUpperCase()}  ·  SECTOR MAP`);
   const overview = svgElement("svg", { class: "tank-minimap", viewBox: `0 0 ${view.width * 8} 100`,
-    preserveAspectRatio: "none", role: "img", "aria-label": "Interactive overview of the entire battlefield" });
+    preserveAspectRatio: "none", role: "group", tabindex: "0", "aria-label": "Interactive overview. Click or drag to pan; WASD and arrows move the camera." });
   const overviewPoints = [`0,100`, ...view.terrain.map((h, x) => `${x * 8 + 4},${100 - h * 5}`), `${view.width * 8},100`];
   overview.append(svgElement("polygon", { points: overviewPoints.join(" "), class: "tank-minimap-ground" }));
   for (const [index, tank] of view.tanks.entries()) {
@@ -763,6 +759,7 @@ function renderScorchedEarth(session, view, host) {
     visibleRegion.setAttribute("x", view.width * 8 * arena.scrollLeft / mapWidth);
   }
   function centerOn(fraction) {
+    followShot = false;
     arena.scrollLeft = Math.max(0, fraction * svg.getBoundingClientRect().width - arena.clientWidth / 2);
     updateMinimap();
   }
@@ -771,13 +768,50 @@ function renderScorchedEarth(session, view, host) {
     if (rect.width) centerOn(Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)));
   }
   overview.addEventListener("pointerdown", event => {
+    event.preventDefault(); overview.focus({ preventScroll: true });
     overview.setPointerCapture(event.pointerId);
     panOverview(event);
   });
   overview.addEventListener("pointermove", event => {
     if (overview.hasPointerCapture(event.pointerId)) panOverview(event);
   });
-  overview.addEventListener("pointerup", event => overview.releasePointerCapture(event.pointerId));
+  overview.addEventListener("pointerup", event => { if (overview.hasPointerCapture(event.pointerId)) overview.releasePointerCapture(event.pointerId); });
+  function panKeys(event) {
+    if (event.ctrlKey || event.altKey || event.metaKey || event.target.closest("input,select,textarea,button,[contenteditable]")) return;
+    const delta = { a: [-1, 0], d: [1, 0], w: [0, -1], s: [0, 1], arrowleft: [-1, 0], arrowright: [1, 0], arrowup: [0, -1], arrowdown: [0, 1] }[event.key.toLowerCase()];
+    if (!delta) return;
+    event.preventDefault(); followShot = false;
+    arena.scrollLeft += delta[0] * Math.max(32, arena.clientWidth / 8);
+    arena.scrollTop += delta[1] * Math.max(32, arena.clientHeight / 8);
+    updateMinimap();
+  }
+  arena.addEventListener("keydown", panKeys); overview.addEventListener("keydown", panKeys);
+  let drag = null;
+  arena.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    event.preventDefault(); followShot = false; arena.focus({ preventScroll: true });
+    arena.setPointerCapture(event.pointerId); arena.classList.add("panning");
+    drag = { x: event.clientX, y: event.clientY, left: arena.scrollLeft, top: arena.scrollTop, moved: false };
+  });
+  arena.addEventListener("pointermove", event => {
+    if (!drag) return;
+    const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+    drag.moved ||= Math.abs(dx) + Math.abs(dy) > 4;
+    arena.scrollLeft = drag.left - dx; arena.scrollTop = drag.top - dy; updateMinimap();
+  });
+  function endPan(event) {
+    if (drag && !drag.moved && event.type !== "pointercancel") {
+      const rect = arena.getBoundingClientRect();
+      arena.scrollLeft = drag.left + event.clientX - rect.left - arena.clientWidth / 2;
+      arena.scrollTop = drag.top + event.clientY - rect.top - arena.clientHeight / 2;
+    }
+    drag = null; arena.classList.remove("panning");
+    if (arena.hasPointerCapture(event.pointerId)) arena.releasePointerCapture(event.pointerId);
+    updateMinimap();
+  }
+  arena.addEventListener("pointerup", endPan); arena.addEventListener("pointercancel", endPan);
+  arena.addEventListener("lostpointercapture", () => { drag = null; arena.classList.remove("panning"); });
+  arena.addEventListener("wheel", () => { followShot = false; }, { passive: true });
   function zoomBy(delta) {
     const mapWidth = svg.getBoundingClientRect().width || 1;
     const centerFraction = (arena.scrollLeft + arena.clientWidth / 2) / mapWidth;
@@ -792,7 +826,7 @@ function renderScorchedEarth(session, view, host) {
   navigation.append(navLabel, overview, zoomOut, zoomText, zoomIn);
   const side = node("aside", "tank-side");
   side.append(node("div", "tank-map-name", view.map_name), node("div", "tank-wind", `${view.wind.direction} ${view.wind.label} · shifts each turn`), node("div", "tank-help", isPractice()
-    ? "Aim with the wind and reshape the hills. Weapons are unlimited; fuel and repair kits are scarce."
+    ? "Aim with the wind and reshape the hills. Cannon ammunition is unlimited; other rounds, fuel, and repairs are limited."
     : "Your browser pilots one tank. The other station pilots the opponent; both browsers resolve each turn and shot."));
   for (const tank of view.tanks) {
     const card = node("div", `tank-health${tank.player === view.turn ? " active" : ""}`);
@@ -886,9 +920,6 @@ function renderScorchedEarth(session, view, host) {
     state.lastTankAnimation = shotKey;
     const firingArt = tankArtwork.get(actor);
     if (firingArt) { firingArt.classList.add("recoiling"); setTimeout(() => firingArt.classList.remove("recoiling"), 550); }
-    let followShot = true;
-    arena.addEventListener("pointerdown", () => { followShot = false; });
-    arena.addEventListener("wheel", () => { followShot = false; }, { passive: true });
     animateTankShot(svg, view, actor, callout, settleTerrain, x => {
       if (!followShot) return;
       const pixel = x / view.width * svg.getBoundingClientRect().width;

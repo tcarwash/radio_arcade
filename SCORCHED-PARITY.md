@@ -63,3 +63,18 @@ shockwaves, smoke, and debris are visual effects, including on terrain misses.
 Edge exits still cause neither explosions nor craters. Completion dialogs wait
 for the explosion to finish. This uses the existing saved terrain history and
 does not add bytes to shot packets or snapshots.
+
+## Camera navigation
+
+Desktop and web support WASD and arrow keys while the battlefield or minimap
+has focus: A/D pan left/right, W/S pan up/down when vertical scrolling is
+available. Click the main map to center that location, drag it to scout, or
+click/drag the minimap. Manual navigation stops automatic shot tracking.
+These controls only move the camera and send no game actions.
+
+Drive remains a separate, fuel-consuming game action. The original manual
+includes tank movement, uphill constraints, and downhill falls (lines 705–725).
+Our driving behavior still needs the slope/fall parity work listed above.
+
+Aiming previews are turn-scoped; past shot trajectories are shown only during
+flight and then disappear. They do not remain as another player’s aiming guide.
