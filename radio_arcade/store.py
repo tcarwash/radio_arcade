@@ -186,7 +186,8 @@ class SessionStore:
     def delete_session(self, session: str) -> None:
         """Remove one local game's saved state and related queued data."""
         with self._lock, self.db:
-            for table in ("sessions", "outbox", "chat", "opaque_states", "cancelled_invites"):
+            self.db.execute("DELETE FROM sessions WHERE id=?", (session,))
+            for table in ("outbox", "chat", "opaque_states", "cancelled_invites"):
                 self.db.execute(f"DELETE FROM {table} WHERE session=?", (session,))
 
     def remember_cancelled_invite(self, session: str, target: str) -> None:

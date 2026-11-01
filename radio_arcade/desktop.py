@@ -286,6 +286,7 @@ class ArcadeWindow(QMainWindow):
         self.engine: ArcadeService | None = None
         self.unsubscribe = None
         self.selected_id: str | None = None
+        self._preserve_empty_selection = False
         self._board_signature = None
         self._last_scorched_animation_key = None
         self._event_bridge = EventBridge(self)
@@ -325,18 +326,22 @@ class ArcadeWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal); splitter.setChildrenCollapsible(False)
         left = self._card("GAMES", "Your tables")
+        left.setMinimumWidth(280)
         left_layout = left.layout()
         self.session_list = QListWidget(); self.session_list.setObjectName("sessionList")
         self.session_list.currentItemChanged.connect(self._select_item)
         self.session_list.setMinimumHeight(150)
-        left_layout.addWidget(self.session_list, 1)
+        self.session_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.session_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        left_layout.addWidget(self.session_list, 2)
         tools_scroll = QScrollArea(); tools_scroll.setWidgetResizable(True)
         tools_scroll.setObjectName("toolsScroll"); tools_scroll.setFrameShape(QFrame.Shape.NoFrame)
         tools_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        tools_widget = QWidget(); tools_layout = QVBoxLayout(tools_widget)
+        tools_scroll.viewport().setObjectName("toolsViewport")
+        tools_widget = QWidget(); tools_widget.setObjectName("toolsContent"); tools_layout = QVBoxLayout(tools_widget)
         tools_layout.setContentsMargins(0, 10, 2, 4); tools_layout.setSpacing(10)
         tools_scroll.setWidget(tools_widget)
-        left_layout.addWidget(tools_scroll, 2)
+        left_layout.addWidget(tools_scroll, 1)
         tools_layout.addWidget(QLabel("START A GAME"), 0)
         self.game_choice = QComboBox(); self.game_choice.setObjectName("field")
         self.game_choice.addItem("Tic-tac-toe", "tic-tac-toe")
@@ -357,7 +362,8 @@ class ArcadeWindow(QMainWindow):
         self.disconnect_button.setVisible(self.settings.transport == "connected")
         tools_layout.addWidget(self.connect_button); tools_layout.addWidget(self.disconnect_button)
         self.new_button = QPushButton("＋  New game"); self.new_button.setObjectName("primaryButton")
-        self.new_button.clicked.connect(self._new_game); tools_layout.addWidget(self.new_button)
+        self.new_button.clicked.connect(self._new_game)
+        self.new_button.setMinimumHeight(42)
         self.invite_button = QPushButton("Invite to selected lobby"); self.invite_button.clicked.connect(self._invite_player)
         tools_layout.addWidget(self.invite_button)
         self.join_button = QPushButton("Join broadcast table"); self.join_button.clicked.connect(self._join_game)
@@ -376,11 +382,15 @@ class ArcadeWindow(QMainWindow):
         self.cancel_invite_button.clicked.connect(self._cancel_invitation)
         tools_layout.addWidget(self.cancel_invite_button)
         self.start_button = QPushButton("Start selected game"); self.start_button.clicked.connect(self._start_game)
-        tools_layout.addWidget(self.start_button)
+        self.start_button.setObjectName("primaryButton")
+        self.start_button.setMinimumHeight(42)
+        tools_layout.addStretch(1)
+        left_layout.addWidget(self.new_button)
+        left_layout.addWidget(self.start_button)
         self.delete_button = QPushButton("Delete selected game…")
         self.delete_button.clicked.connect(self._delete_game)
         self.delete_button.setEnabled(False)
-        tools_layout.addWidget(self.delete_button)
+        left_layout.addWidget(self.delete_button)
         splitter.addWidget(left)
 
         center = self._card("ACTIVE TABLE", "Game workspace")
@@ -415,7 +425,7 @@ class ArcadeWindow(QMainWindow):
         splitter.addWidget(right)
         # Prioritize the battlefield at desktop resolutions. The side panels
         # remain resizable, while Scorched Earth itself pans inside the arena.
-        splitter.setSizes([225, 850, 245])
+        splitter.setSizes([280, 795, 245])
         layout.addWidget(splitter, 1)
         foot = QHBoxLayout()
         self.footer_label = QLabel("Public radio · keep moves short, keep the good sport")
@@ -433,6 +443,7 @@ class ArcadeWindow(QMainWindow):
 
     def _update_new_game_mode(self, *_args):
         practice = self.settings.transport == "practice"
+        self.hosted_checkbox.setVisible(self.settings.transport == "broadcast")
         hosted = self.hosted_checkbox.isChecked() and not practice
         self.peer_input.setVisible(not practice and not hosted)
         self.create_hint.setText(
@@ -467,7 +478,8 @@ class ArcadeWindow(QMainWindow):
             QLineEdit, QComboBox, QSpinBox { background:#0c131e; color:#eaf0f8; border:1px solid #2e3d50; border-radius:8px; padding:9px; selection-background-color:#318b80; }
             QComboBox QAbstractItemView { background:#111a27; color:#eaf0f8; selection-background-color:#256c65; }
             QListWidget { background:transparent; border:0; outline:0; }
-            QScrollArea#toolsScroll { background:transparent; border:0; }
+            QScrollArea#toolsScroll, QWidget#toolsViewport,
+            QWidget#toolsContent { background:transparent; border:0; }
             QListWidget::item { padding:12px 10px; margin:2px 0; border-radius:9px; color:#abb8ca; }
             QListWidget::item:selected { background:#1c3438; color:#a2f1df; }
             QListWidget::item:hover { background:#1a2533; }
@@ -576,7 +588,10 @@ class ArcadeWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         sid = self.selected_id
-        self._run(partial(self.engine.delete_game, sid), lambda _result: setattr(self, "selected_id", None))
+        def deleted(_result):
+            self.selected_id = None
+            self._preserve_empty_selection = True
+        self._run(partial(self.engine.delete_game, sid), deleted)
 
     def _populate_games(self):
         if not self.engine: return
@@ -631,6 +646,7 @@ class ArcadeWindow(QMainWindow):
         if not self.engine:
             return
         selected = self.selected_id
+        scroll_position = self.session_list.verticalScrollBar().value()
         self.session_list.blockSignals(True); self.session_list.clear()
         supported = {game.game_id for game in self.engine.catalog() if "desktop" in game.clients}
         for session in self.engine.sessions():
@@ -647,16 +663,19 @@ class ArcadeWindow(QMainWindow):
         self.delete_button.setEnabled(bool(self.engine and self.engine.sessions()))
         if self.session_list.currentItem():
             self.selected_id = self.session_list.currentItem().data(Qt.ItemDataRole.UserRole)
-        elif self.session_list.count():
+        elif self.session_list.count() and not self._preserve_empty_selection:
             self.session_list.blockSignals(True)
             self.session_list.setCurrentRow(0)
             self.session_list.blockSignals(False)
             self.selected_id = self.session_list.currentItem().data(Qt.ItemDataRole.UserRole)
         else:
             self.selected_id = None
+        self.session_list.verticalScrollBar().setValue(scroll_position)
         self._show_session(self.selected_id)
 
     def _select_item(self, current, _previous):
+        if current:
+            self._preserve_empty_selection = False
         self.selected_id = current.data(Qt.ItemDataRole.UserRole) if current else None
         self._show_session(self.selected_id)
 
@@ -1037,6 +1056,7 @@ class ArcadeWindow(QMainWindow):
         if self.engine and self.selected_id: self._run(partial(self.engine.resend_pending_action, self.selected_id))
 
     def _created_game(self, sid: str):
+        self._preserve_empty_selection = False
         self.selected_id = sid
 
     def _invite_player(self):

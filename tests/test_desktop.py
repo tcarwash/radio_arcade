@@ -10,6 +10,54 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("PySide6"), "install the desktop extra")
 class DesktopScenarios(unittest.TestCase):
+    def test_games_panel_create_delete_and_reselect(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from radio_arcade.desktop import ArcadeWindow
+        from radio_arcade.practice import PracticeService
+        from radio_arcade.settings import Settings
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            window = ArcadeWindow(Settings(callsign="N0CALL", transport="practice"))
+            engine = PracticeService("N0CALL")
+            window._service_ready(engine)
+            window.show()
+
+            def wait_for(predicate):
+                deadline = time.monotonic() + 3
+                while not predicate() and time.monotonic() < deadline:
+                    app.processEvents(); time.sleep(.01)
+                self.assertTrue(predicate())
+
+            try:
+                window.new_button.click()
+                wait_for(lambda: window.selected_id is not None and not window._tasks)
+                first = window.selected_id
+                window.new_button.click()
+                wait_for(lambda: window.selected_id != first and not window._tasks)
+                removed = window.selected_id
+                engine.send_chat(removed, "Delete this saved chat too")
+                with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                    window.delete_button.click()
+                    wait_for(lambda: window.selected_id is None and not window._tasks)
+                self.assertEqual([row["id"] for row in engine.sessions()], [first])
+                self.assertEqual([row["id"] for row in engine.store.load_sessions()], [first])
+                self.assertEqual(engine.store.load_chat(removed), [])
+                window._refresh_sessions()
+                self.assertIsNone(window.selected_id)
+                self.assertFalse(window.delete_button.isEnabled())
+                window.session_list.setCurrentRow(0)
+                self.assertEqual(window.selected_id, first)
+                self.assertTrue(window.delete_button.isEnabled())
+                for width, height in ((1024, 680), (2048, 1152)):
+                    window.resize(width, height); app.processEvents()
+                    self.assertTrue(window.new_button.isVisible())
+                    self.assertGreaterEqual(window.new_button.height(), 42)
+                    self.assertLess(window.new_button.geometry().bottom(), window.delete_button.geometry().top())
+            finally:
+                window.close(); app.processEvents()
+
     def test_scorched_earth_native_controls_and_hotseat_fire(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QSlider

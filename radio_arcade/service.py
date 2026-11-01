@@ -155,8 +155,8 @@ class ArcadeService:
         with self._lock:
             if sid not in self._sessions:
                 raise ValueError("game no longer exists")
-            self._sessions.pop(sid)
             self.store.delete_session(sid)
+            self._sessions.pop(sid)
             self._emit("session_deleted", sid)
 
     def set_tx_enabled(self, enabled: bool) -> None:
