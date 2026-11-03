@@ -24,6 +24,8 @@ class Settings:
     observer_mode: bool = False
     tx_enabled: bool = True
     dx_cluster_url: str = ""
+    station_id_mode: str = "auto"  # auto: Data2G CWID, with application packet fallback
+    cw_wpm: int = 20
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Settings":

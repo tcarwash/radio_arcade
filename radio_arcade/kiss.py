@@ -40,6 +40,8 @@ class Decoder:
 
 
 class KissConnection:
+    supports_compact = True
+
     def __init__(self, host: str, port: int, kiss_port: int, on_frame=None):
         self.kiss_port = kiss_port
         self.on_frame = on_frame or (lambda _frame: None)

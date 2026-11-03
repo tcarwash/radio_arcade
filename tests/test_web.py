@@ -116,6 +116,15 @@ class WebControllerScenarios(unittest.TestCase):
         self.assertFalse(state["sound_enabled"])
         self.assertEqual(state["dx_cluster_url"], "https://other.example.org")
 
+    def test_web_cwid_preferences_and_validation(self):
+        status, state = self.request("POST", "/api/settings", {
+            "station_id_mode": "auto", "cw_wpm": 28})
+        self.assertEqual(status, 200)
+        self.assertEqual((state["station_id_mode"], state["cw_wpm"]), ("auto", 28))
+        status, bad = self.request("POST", "/api/settings", {"cw_wpm": 41})
+        self.assertEqual(status, 400)
+        self.assertIn("15–40", bad["error"])
+
     def test_create_play_and_chat_round_trip_through_web_api(self):
         status, created = self.request("POST", "/api/command", {
             "command": "create_game", "game": "tic-tac-toe"})

@@ -7,20 +7,27 @@ import socket
 import threading
 import time
 
-from .wire import decode
+from .wire import CompactFrame, Kind, decode
 
 MAX_PACKET = 240
 
 
 class ConnectedConnection:
+    supports_compact = True
+
     """Connected-mode transport using command TCP and the session byte stream.
 
     The Data2G stream has no message boundaries, so app packets are prefixed
     with a two-byte unsigned big-endian length.
     """
 
-    def __init__(self, host: str, command_port: int, callsign: str, on_frame=None):
+    def __init__(self, host: str, command_port: int, callsign: str, on_frame=None,
+                 *, station_id_mode: str = "auto", cw_wpm: int = 20):
+        if station_id_mode not in ("auto", "application") or type(cw_wpm) is not int or not 15 <= cw_wpm <= 40:
+            raise ValueError("station ID must be auto/application and CW speed 15–40 WPM")
         self.callsign = callsign.upper()
+        self.cwid_active = False
+        self.cwid_warning: str | None = None
         self.on_frame = on_frame or (lambda _frame: None)
         self.on_status = lambda _state, _peer: None
         self.closed = threading.Event()
@@ -47,6 +54,14 @@ class ConnectedConnection:
         try:
             self._command(f"MYCALL {self.callsign}")
             self._command("DATA2G ON")
+            if station_id_mode == "auto":
+                try:
+                    self._command(f"CWID ONLY {cw_wpm}")
+                except RuntimeError as exc:
+                    # Older modems may reject CWID; application IDs remain on.
+                    self.cwid_warning = f"Data2G CWID unavailable ({exc}); using Radio Arcade IDs"
+                else:
+                    self.cwid_active = True
             self._command("LISTEN ON")
         except Exception:
             self.close()
@@ -171,9 +186,13 @@ class ConnectedConnection:
             raise ConnectionError("no connected Data2G session")
         if not 0 < len(frame) <= MAX_PACKET:
             raise ValueError("game packet is too large")
-        destination = decode(frame).destination
-        if destination != self.peer:
-            raise ConnectionError(f"packet is for {destination}; connected peer is {self.peer}")
+        packet = decode(frame)
+        # An established compact turn has no destination: the connected stream
+        # already names exactly one peer. Station IDs use the broadcast '*'
+        # destination so the same compliant full ID packet works in both modes.
+        if not isinstance(packet, CompactFrame) and packet.kind != Kind.STATION_ID:
+            if packet.destination != self.peer:
+                raise ConnectionError(f"packet is for {packet.destination}; connected peer is {self.peer}")
         with self._send_lock:
             self._data.sendall(len(frame).to_bytes(2, "big") + frame)
 

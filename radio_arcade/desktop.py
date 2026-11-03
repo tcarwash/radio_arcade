@@ -257,6 +257,11 @@ class SettingsDialog(QDialog):
         self.group = QLineEdit(settings.group)
         self.broadcast_mode = QLineEdit(settings.broadcast_mode)
         self.broadcast_mode.setPlaceholderText("Blank = Data2G default · e.g. n10-qpsk-r1/5")
+        self.station_id_mode = QComboBox()
+        self.station_id_mode.addItem("Data2G CWID · fallback to data ID", "auto")
+        self.station_id_mode.addItem("Radio Arcade data ID", "application")
+        self.station_id_mode.setCurrentIndex(max(0, self.station_id_mode.findData(settings.station_id_mode)))
+        self.cw_wpm = QSpinBox(); self.cw_wpm.setRange(15, 40); self.cw_wpm.setValue(settings.cw_wpm)
         self.command_port = QSpinBox(); self.command_port.setRange(1, 65535); self.command_port.setValue(settings.command_port)
         self.kiss_port = QSpinBox(); self.kiss_port.setRange(1, 65535); self.kiss_port.setValue(settings.kiss_port)
         self.scheme = QComboBox(); self.scheme.addItem("Midnight", "midnight"); self.scheme.addItem("Daylight", "daylight")
@@ -272,6 +277,8 @@ class SettingsDialog(QDialog):
         form.addRow("Transport", self.transport)
         form.addRow("Broadcast group", self.group)
         form.addRow("Broadcast modem mode", self.broadcast_mode)
+        form.addRow("Station identification", self.station_id_mode)
+        form.addRow("CW ID speed (WPM)", self.cw_wpm)
         form.addRow("Command port", self.command_port)
         form.addRow("KISS port", self.kiss_port)
         form.addRow("Color scheme", self.scheme)
@@ -300,6 +307,8 @@ class SettingsDialog(QDialog):
         self.settings.observer_mode = self.observer.isChecked()
         self.settings.group = group
         self.settings.broadcast_mode = self.broadcast_mode.text().strip().lower()
+        self.settings.station_id_mode = self.station_id_mode.currentData()
+        self.settings.cw_wpm = self.cw_wpm.value()
         self.settings.command_port = self.command_port.value()
         self.settings.kiss_port = self.kiss_port.value()
         self.settings.color_scheme = self.scheme.currentData()
@@ -635,7 +644,13 @@ class ArcadeWindow(QMainWindow):
         self._board_signature = None
         self.unsubscribe = engine.subscribe(lambda event: self._event_bridge.received.emit(event))
         offline = hasattr(engine.transport, "closed") and engine.transport.closed.is_set()
-        self._update_status("Offline · reconnect in settings" if offline else "Local practice" if self.settings.transport == "practice" else "Data2G ready", not offline)
+        status_text = ("Offline · reconnect in settings" if offline else "Local practice"
+                       if self.settings.transport == "practice" else "Data2G ready")
+        if not offline and self.settings.transport != "practice":
+            status_text += " · CWID" if engine.cwid_active else " · app ID"
+            if engine.identification_warning:
+                status_text += " (CWID unavailable)"
+        self._update_status(status_text, not offline)
         self.mode_label.setText(f"{self.settings.callsign}  ·  {'OBSERVER · RX' if self.settings.observer_mode else self.settings.transport.title()}")
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
         for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,

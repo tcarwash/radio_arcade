@@ -67,7 +67,11 @@ an active hot-seat session without actual RF transmissions.
 
 `estimate` accepts `payload_bytes` **before** the one-byte `EVENT` tag, plus
 `baud`, `bits_per_symbol`, `code_rate`, or an effective `rate_bps`. Estimates
-exclude modem scheduling, ACKs, retries and other changing RF conditions.
+exclude modem scheduling, ACKs, retries, station ID packets, and other changing
+RF conditions. The endpoint assumes the 8-byte v6 compact header for active
+on-air sessions (or accepts `"compact":true`/`false` explicitly); the one-byte
+`EVENT` tag is counted in the action payload. The full-envelope fallback is
+used for setup, unknown session references, and session ID collisions.
 
 Only localhost should reach this unauthenticated HTTP API. Each station runs
 its own bridge; pointing the game at the other station's HTTP API would skip

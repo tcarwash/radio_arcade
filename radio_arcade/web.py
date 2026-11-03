@@ -109,6 +109,10 @@ class WebController:
             "dx_cluster_url": self.settings.dx_cluster_url,
             "observer_mode": self.settings.observer_mode,
             "tx_enabled": self.settings.tx_enabled,
+            "station_id_mode": self.settings.station_id_mode,
+            "cw_wpm": self.settings.cw_wpm,
+            "identification_method": getattr(engine, "identification_method", None),
+            "identification_warning": getattr(engine, "identification_warning", None),
             "transmitting": self.transmitting,
             "last_transmission": self.last_transmission,
             "ready": engine is not None,
@@ -140,6 +144,12 @@ class WebController:
         scheme = data.get("color_scheme", self.settings.color_scheme)
         if scheme not in ("midnight", "daylight", "monochrome"):
             raise ValueError("choose a valid color scheme")
+        station_id_mode = data.get("station_id_mode", self.settings.station_id_mode)
+        if station_id_mode not in ("auto", "application"):
+            raise ValueError("choose Data2G CWID or application ID")
+        cw_wpm = data.get("cw_wpm", self.settings.cw_wpm)
+        if type(cw_wpm) is not int or not 15 <= cw_wpm <= 40:
+            raise ValueError("CWID speed must be 15–40 WPM")
         candidate = Settings(
             callsign=station_name(str(data.get("callsign", self.settings.callsign))),
             host=str(data.get("host", self.settings.host)).strip() or "127.0.0.1",
@@ -153,6 +163,8 @@ class WebController:
             dx_cluster_url=str(data.get("dx_cluster_url", self.settings.dx_cluster_url)).strip(),
             observer_mode=observer,
             tx_enabled=self.settings.tx_enabled,
+            station_id_mode=station_id_mode,
+            cw_wpm=cw_wpm,
         )
         previous, self.engine = self.engine, None
         if previous:
@@ -316,16 +328,20 @@ class WebController:
             payload_bytes = data.get("payload_bytes")
             if type(payload_bytes) is not int or not 0 <= payload_bytes <= 189:
                 raise ValueError("payload_bytes must be an integer from 0 to 189")
+            compact = data.get("compact", row["status"] == "active" and engine.compact_turns)
+            if type(compact) is not bool:
+                raise ValueError("compact must be a boolean")
             destination = str(data.get("destination") or row["coordinator"])
             estimate = estimate_action(
                 payload_bytes + 1, source=self.settings.callsign, destination=destination,
-                game_id=10, baud=data.get("baud"), rate_bps=data.get("rate_bps"),
+                game_id=10, compact=compact, baud=data.get("baud"), rate_bps=data.get("rate_bps"),
                 bits_per_symbol=data.get("bits_per_symbol"),
                 code_rate=data.get("code_rate"),
                 modem_overhead_bytes=data.get("modem_overhead_bytes", 0),
                 preamble_ms=data.get("preamble_ms", 0),
                 transmissions=data.get("transmissions", 1))
             return 200, {**asdict(estimate), "game_payload_bytes": payload_bytes,
+                         "compact": compact,
                          "note": "Estimate only; excludes dynamic Data2G scheduling and retries"}
 
         return 404, {"error": "not found"}

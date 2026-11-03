@@ -4,7 +4,7 @@ radio=radio or {}
 
 -- radio.estimate(payload_bytes, options) -> result or nil,reason
 -- options: source, destination, actor, baud, bits_per_symbol, code_rate,
---          rate_bps, modem_overhead_bytes, preamble_ms, transmissions
+--          rate_bps, modem_overhead_bytes, preamble_ms, transmissions, compact
 function radio.estimate(payload_bytes, options)
  options=options or {}
  local src=options.source or radio.callsign
@@ -14,7 +14,7 @@ function radio.estimate(payload_bytes, options)
  if type(payload_bytes)!="number" or payload_bytes<0 or payload_bytes>200 or flr(payload_bytes)!=payload_bytes then
   return nil,"invalid payload byte count"
  end
- if type(src)!="string" or type(dst)!="string" or type(actor)!="string" or #src<1 or #dst<1 or #actor<1 or #src>10 or #dst>10 or #actor>10 then
+ if type(src)!="string" or type(dst)!="string" or type(actor)!="string" or #src<1 or #dst<1 or #actor<1 or #src>15 or #dst>15 or #actor>15 then
   return nil,"source/destination/actor must be callsigns"
  end
 
@@ -25,8 +25,9 @@ function radio.estimate(payload_bytes, options)
   return nil,"invalid overhead or repetition count"
  end
 
- -- Radio Arcade v5: fixed header, callsigns, actor wrapper, action length.
- local frame=18+#src+#dst+2+#actor+payload_bytes
+ -- Radio Arcade v6: active turns use the 8-byte short-session header.
+ -- Setup/fallback full frames have a 17-byte header and an actor wrapper.
+ local frame=options.compact and (8+payload_bytes) or (17+#src+#dst+2+#actor+payload_bytes)
  if frame>240 then return nil,"radio arcade frame too large" end
  local result={payload_bytes=payload_bytes,
   radio_arcade_frame_bytes=frame,

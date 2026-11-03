@@ -34,6 +34,20 @@ Disabled TX blocks radio sends from the client, including automatic acknowledgem
 
 All stations must use the same protocol version. See [PROTOCOL.md](PROTOCOL.md) for wire details.
 
+**Protocol v6 minimizes on-air turns.** Once START establishes the roster,
+a one-byte game move takes **9 application bytes** on the radio (8 bytes of
+control/short-session reference + 1 action byte); a compact ACK takes **8**.
+Four-player dealer tables share the same format, using a two-bit seat index.
+The initial invitation/START, recovery, and other control traffic remain full
+frames. For actual Data2G operation the station now defaults to **CWID ONLY**
+(20 WPM, configurable): Data2G itself keys the callsign in Morse rather than
+carrying extra station-ID packets inside Radio Arcade. If Data2G rejects that
+command, Radio Arcade falls back to its original first/9-minute/final data-ID
+policy and displays a warning. Configure this in desktop/web station settings
+or using `--station-id-mode auto --cw-wpm 20` in the headless client.
+All peers must run v6; operators must verify identification on their modem,
+including at the end of KISS broadcast sessions. See the protocol ID section.
+
 ## Development
 
 **Minimal turn payloads are a primary design goal for fluent radio gameplay.**
@@ -60,7 +74,7 @@ Scorched Earth now has independent shot power (25–100%) and 0–90° aiming in
 
 Scorched Earth camera controls (desktop/web): focus the map or minimap and use **WASD / arrow keys**, drag the main map, click to center, or click/drag the minimap. Camera panning does not consume a turn or fuel; **Drive** moves the tank.
 
-Use **Forfeit game** in desktop/web/terminal, or `forfeit ID` in the CLI, to end the table and award the other player(s) the win. Chat and saved state remain available. This update uses protocol **5**; upgrade every radio station together. High Scorched Earth shots now travel above the visible sky and fall back under gravity, with the camera following the full arc.
+Use **Forfeit game** in desktop/web/terminal, or `forfeit ID` in the CLI, to end the table and award the other player(s) the win. Chat and saved state remain available. All stations must use the current protocol **6**; upgrade every radio station together. High Scorched Earth shots now travel above the visible sky and fall back under gravity, with the camera following the full arc.
 
 Hexxagon is available in desktop, terminal, and web clients, including local
 practice and radio matches. Select a friendly stone, then a highlighted empty hex:

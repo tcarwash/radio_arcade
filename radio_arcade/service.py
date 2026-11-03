@@ -11,15 +11,17 @@ from typing import Any, Callable
 from .games.base import GameRegistry, builtin_registry
 from .debuglog import opaque_logger
 from .store import SessionStore
-from .wire import (Kind, Packet, decode, decode_action, decode_roster, decode_roster_state, encode,
+from .wire import (Kind, Packet, CompactFrame, decode, decode_action, decode_roster, decode_roster_state, encode,
                    encode_action, encode_roster, encode_roster_state, encode_snapshot, decode_snapshot,
-                   FLAG_OPAQUE, FORFEIT_ACTION)
+                   encode_compact, FLAG_OPAQUE, FORFEIT_ACTION)
+
+ID_INTERVAL_SECONDS = 9 * 60  # One-minute margin before the ten-minute limit.
 
 
 def station_name(value: str) -> str:
     call = value.strip().upper()
-    if not call or len(call) > 10 or not call.isascii() or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-" for c in call):
-        raise ValueError("station callsign must be 1–10 ASCII letters, digits, / or -")
+    if not call or len(call) > 15 or not call.isascii() or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-" for c in call):
+        raise ValueError("station callsign must be 1–15 ASCII letters, digits, / or -")
     return call
 
 
@@ -40,17 +42,30 @@ class ArcadeService:
 
     def __init__(self, callsign: str, transport: Any, store: SessionStore | None = None,
                  registry: GameRegistry | None = None, observer_mode: bool = False,
-                 tx_enabled: bool = True):
+                 tx_enabled: bool = True, compact_turns: bool | None = None):
         self.callsign = station_name(callsign)
         self.observer_mode = observer_mode
         self.tx_enabled = bool(tx_enabled)
         if observer_mode and hasattr(transport, "connect_peer"):
             raise ValueError("observer mode requires a broadcast transport")
         self.transport = transport
+        self.cwid_active = bool(getattr(transport, "cwid_active", False))
+        self.identification_method = "Data2G CW" if self.cwid_active else "Radio Arcade data ID"
+        self.identification_warning = getattr(transport, "cwid_warning", None)
+        # Receive-only observers may explicitly transmit SYNC_REQUEST; they
+        # still need to identify whenever they exercise that exception.
+        self.station_id_enabled = (bool(getattr(transport, "supports_compact", False) or compact_turns)
+                                   and not self.cwid_active)
+        self.compact_turns = (bool(getattr(transport, "supports_compact", False))
+                              if compact_turns is None else bool(compact_turns)) and not observer_mode
         self.store = store or SessionStore((SessionStore.default_observer_path() if observer_mode else None))
         self._opaque_log = opaque_logger(self.store.path.parent)
         self.registry = registry or builtin_registry()
         self._lock = threading.RLock()
+        self._id_lock = threading.RLock()
+        self._last_id_at: float | None = None
+        self._sent_since_id = False
+        self._pending_final_ids: dict[str, float] = {}
         self._subscribers: set[Callable[[EngineEvent], None]] = set()
         self._sessions: dict[str, dict[str, Any]] = {}
         for saved in self.store.load_sessions():
@@ -61,6 +76,7 @@ class ArcadeService:
                 # their rules, we cannot safely decode or resume their state.
                 continue
             self._sessions[saved["id"]] = saved
+        self._id_finished = {sid for sid, row in self._sessions.items() if row["status"] == "finished"}
         self._reported_failed: set[tuple[str, str, int, int]] = set()
         if not observer_mode:
             self.store.upgrade_v3_outbox()
@@ -248,6 +264,11 @@ class ArcadeService:
     def _save(self, session: dict[str, Any]) -> None:
         session["updated"] = time.time()
         self.store.save_session(session)
+        if (self.station_id_enabled and session["status"] == "finished"
+                and session["id"] not in self._id_finished and self.callsign in session["players"]):
+            self._id_finished.add(session["id"])
+            seat = session["players"].index(self.callsign)
+            self._pending_final_ids[session["id"]] = time.monotonic() + 0.5 + 2.0 * seat
 
     def _new_session(self, game_id: int, coordinator: str, players: list[str],
                      invited: list[str], status: str, hosted: bool = False) -> dict[str, Any]:
@@ -270,10 +291,96 @@ class ArcadeService:
                              session["revision"] if revision is None else revision,
                              self.callsign, target.upper(), payload, flags))
 
+    def _short_session_unique(self, session: int) -> bool:
+        """A collision must never route a move to the wrong local game."""
+        key = session & 0xFFFFFFFF
+        return sum((int(sid, 16) & 0xFFFFFFFF) == key for sid in self._sessions) == 1
+
+    def _compact_packet(self, packet: Packet) -> bytes | None:
+        """Compress the established turn/ACK, leaving persistent outbox frames full."""
+        if not self.compact_turns or packet.sequence == 0:
+            return None
+        row = self._sessions.get(f"{packet.session:016X}")
+        if (row is None or row["status"] not in ("active", "finished")
+                or not (row.get("hosted") or len(row["players"]) == 2)
+                or not self._short_session_unique(packet.session)):
+            return None
+        players = row["players"]
+        if packet.kind in (Kind.ACTION, Kind.COMMIT):
+            actor, action = decode_action(packet.payload)
+            if actor not in players:
+                return None
+            if packet.kind == Kind.ACTION and (packet.source != actor or packet.destination != row["coordinator"]):
+                return None
+            if packet.kind == Kind.COMMIT and packet.source != row["coordinator"]:
+                return None
+            if packet.kind == Kind.COMMIT and packet.destination != ("*" if row.get("hosted") else next(
+                    (call for call in players if call != self.callsign), "")):
+                return None
+            return encode_compact(packet.kind, packet.session, packet.sequence,
+                                  players.index(actor), action)
+        if packet.kind == Kind.ACK and packet.revision in (int(Kind.ACTION), int(Kind.COMMIT)):
+            if packet.source not in players:
+                return None
+            return encode_compact(Kind.ACK, packet.session, packet.sequence,
+                                  players.index(packet.source),
+                                  acknowledged_kind=Kind(packet.revision))
+        return None
+
+    def _expand_compact(self, frame: CompactFrame) -> Packet:
+        """Use the full START roster to restore a normal validated packet."""
+        with self._lock:
+            matching = [row for sid, row in self._sessions.items()
+                        if (int(sid, 16) & 0xFFFFFFFF) == frame.short_session]
+            if len(matching) != 1:
+                raise ValueError("unknown or ambiguous compact session reference")
+            row = matching[0]
+            players = row["players"]
+            if (frame.seat >= len(players) or not (row.get("hosted") or len(players) == 2)
+                    or row["status"] not in ("active", "finished")):
+                raise ValueError("compact packet requires a known active roster")
+            actor, coordinator, sid = players[frame.seat], row["coordinator"], int(row["id"], 16)
+            if frame.kind == Kind.ACTION:
+                return Packet(row["game_id"], Kind.ACTION, sid, frame.sequence,
+                              frame.sequence - 1, actor, coordinator, encode_action(actor, frame.payload))
+            if frame.kind == Kind.COMMIT:
+                return Packet(row["game_id"], Kind.COMMIT, sid, frame.sequence,
+                              frame.sequence, coordinator, "*" if row.get("hosted") else self.callsign,
+                              encode_action(actor, frame.payload))
+            if frame.kind == Kind.ACK:
+                return Packet(row["game_id"], Kind.ACK, sid, frame.sequence,
+                              int(frame.acknowledged_kind), actor, self.callsign)
+        raise ValueError("unrecognized compact frame type")
+
+    def _send_station_id(self, *, force: bool = False) -> bool:
+        """Full readable ASCII ID; operators can additionally use modem CW ID."""
+        if not self.station_id_enabled or not self.tx_enabled:
+            return False
+        with self._id_lock:
+            now = time.monotonic()
+            if not force and self._last_id_at is not None and now - self._last_id_at < ID_INTERVAL_SECONDS:
+                return False
+            frame = encode(Packet(1, Kind.STATION_ID, 0, 0, 0, self.callsign, "*",
+                                  b"ID " + self.callsign.encode("ascii")))
+            details = {"kind": "STATION_ID", "destination": "*",
+                       "reason": "identifying this station on the air"}
+            self._emit("transmitting", **details)
+            try:
+                self.transport.send(frame)
+            except (OSError, RuntimeError, ValueError) as exc:
+                self._emit("transport_send_error", error=f"station ID failed: {exc}")
+                return False
+            self._last_id_at = now
+            self._sent_since_id = False
+            self._emit("station_identified", callsign=self.callsign, mode="ascii-data")
+            self._emit("transmission_complete", **details)
+            return True
+
     def _transmit(self, frame: bytes) -> None:
         if not self.tx_enabled:
             self._emit("transmission_blocked", reason="TX is disabled")
             return
+        packet = None
         try:
             packet = decode(frame)
             reasons = {
@@ -286,6 +393,7 @@ class ArcadeService:
                 Kind.OPAQUE_STATE: "sharing game state", Kind.CANCEL_INVITE: "cancelling an invitation",
                 Kind.HOST_ANNOUNCE: "announcing an open table", Kind.JOIN_REQUEST: "requesting to join a table",
                 Kind.HOST_ROSTER: "updating the hosted table roster", Kind.HOST_CHAT: "relaying table chat",
+                Kind.STATION_ID: "identifying this station on the air",
             }
             details = {"kind": packet.kind.name, "destination": packet.destination,
                        "reason": reasons.get(packet.kind, "sending a game packet")}
@@ -294,7 +402,20 @@ class ArcadeService:
             details = {"kind": "DATA", "destination": "", "reason": "sending game data"}
             self._emit("transmitting", **details)
         try:
-            self.transport.send(frame)
+            if self.station_id_enabled and isinstance(packet, Packet) and packet.kind != Kind.STATION_ID:
+                with self._id_lock:
+                    # Do not transmit game traffic if its required ID fails.
+                    if (self._last_id_at is None or
+                            time.monotonic() - self._last_id_at >= ID_INTERVAL_SECONDS):
+                        if not self._send_station_id():
+                            self._emit("transport_send_error", error="station identification is required before transmitting")
+                            return
+                    compact_frame = self._compact_packet(packet) if self.compact_turns else None
+                    frame = compact_frame or frame
+                    self.transport.send(frame)
+                    self._sent_since_id = True
+            else:
+                self.transport.send(frame)
         except (OSError, RuntimeError, ValueError) as exc:
             self._emit("transport_send_error", error=str(exc))
         finally:
@@ -651,6 +772,8 @@ class ArcadeService:
     def receive_frame(self, frame: bytes) -> None:
         try:
             packet = decode(frame)
+            if isinstance(packet, CompactFrame):
+                packet = self._expand_compact(packet)
             self._handle(packet)
         except (ValueError, KeyError, IndexError, UnicodeDecodeError) as exc:
             self._emit("protocol_error", error=str(exc))
@@ -732,6 +855,11 @@ class ArcadeService:
                 self._receive_host_chat(row, packet)
 
     def _handle(self, packet: Packet) -> None:
+        if packet.kind == Kind.STATION_ID:
+            if (packet.session == 0 and packet.sequence == packet.revision == 0
+                    and packet.destination == "*" and packet.payload == b"ID " + packet.source.encode("ascii")):
+                self._emit("station_identified", callsign=packet.source, mode="ascii-data")
+            return
         if self.observer_mode:
             self._observe(packet)
             return
@@ -1230,6 +1358,18 @@ class ArcadeService:
         while not self._stop.wait(0.5):
             if not self.tx_enabled:
                 continue
+            if self.station_id_enabled:
+                with self._lock:
+                    now = time.monotonic()
+                    final_due = [sid for sid, due_at in self._pending_final_ids.items() if due_at <= now]
+                    for sid in final_due:
+                        self._pending_final_ids.pop(sid, None)
+                    active = any(row["status"] == "active" and self.callsign in row["players"]
+                                 for row in self._sessions.values())
+                if final_due:
+                    self._send_station_id(force=True)
+                elif active and self._last_id_at is not None and self._sent_since_id:
+                    self._send_station_id()
             retry_target = getattr(self.transport, "retry_target", None)
             target = retry_target() if callable(retry_target) else None
             if callable(retry_target) and target is None:
@@ -1258,6 +1398,8 @@ class ArcadeService:
             return
         self._closed = True
         self._stop.set()
+        if self.station_id_enabled and self._sent_since_id:
+            self._send_station_id(force=True)
         self.transport.close()
         self._worker.join(timeout=2.0)
         self.store.close()
