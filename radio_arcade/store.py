@@ -288,11 +288,12 @@ class SessionStore:
         """The external-game side channel, separated from PICO-8 checkpoint traffic."""
         with self._lock:
             rows = self.db.execute(
-                "SELECT rowid,sender,sequence,body,delivery FROM opaque_states "
+                "SELECT rowid,sender,sequence,body,delivery,created FROM opaque_states "
                 "WHERE session=? AND rowid>? AND CAST(body AS TEXT) LIKE 'RA:%' "
                 "ORDER BY rowid LIMIT ?", (session, after_id, limit)).fetchall()
         return [{"id": row["rowid"], "sender": row["sender"],
                  "sequence": row["sequence"], "delivery": row["delivery"],
+                 "created": row["created"],
                  "body": bytes(row["body"]).decode("utf-8")}
                 for row in rows if bytes(row["body"]).startswith(b"RA:")]
 

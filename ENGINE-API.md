@@ -71,7 +71,7 @@ The service owns the transport and store passed to it. It schedules bounded retr
 Native game-engine adapters for **LÖVE2D and Godot** now share an
 engine-independent session type (game ID 10) and local JSON API. See
 [`adapters/README.md`](adapters/README.md) for setup, engine SDKs, demo games,
-wire actions and exact recovery limitations. Existing PICO-8 sessions remain
+wire actions and application-checkpoint recovery. Existing PICO-8 sessions remain
 on game ID 9; the PICO-8 GPIO endpoints are unchanged.
 
 ## Developer payload/airtime estimates

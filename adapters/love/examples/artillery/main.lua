@@ -7,11 +7,13 @@ local ground = 405
 local guns = {110, 690}
 local health = {3, 3}
 local trails = {}
+local history = {}
 local moves, winner = 0, nil
 local estimate = nil
 local note = 'Press SPACE to fire, arrows to adjust angle/power'
 
 local function shoot(player, a, p)
+  history[#history + 1] = string.char(player, a, p)
   local x = guns[player + 1]
   local theta = math.rad(player == 0 and a or 180 - a)
   local vx = math.cos(theta) * p * 6.2
@@ -39,6 +41,19 @@ function love.load()
   local sid = os.getenv('RADIO_ARCADE_SESSION')
   radio = Arcade.new({game_id='radio-artillery-demo', version=1,
     mode='turn', session_id=sid, poll_interval=0.3})
+  radio:snapshot(
+    function() return table.concat(history) end,
+    function(data, revision)
+      assert(#data % 3 == 0, 'invalid artillery checkpoint')
+      health, trails, history, moves, winner = {3, 3}, {}, {}, 0, nil
+      for i = 1, #data, 3 do
+        local player, a, p = data:byte(i, i + 2)
+        assert(player <= 1 and a <= 90 and p <= 100, 'invalid shot in checkpoint')
+        shoot(player, a, p)
+        moves = moves + 1
+      end
+      note = 'Artillery checkpoint restored at revision ' .. revision
+    end)
   if not sid then note = 'Set RADIO_ARCADE_SESSION to a running external-game session' end
 end
 
@@ -69,6 +84,7 @@ function love.keypressed(key)
   if key == 'e' and radio.session_id then
     radio:estimate(2, {baud=600, bits_per_symbol=3, code_rate=0.5})
   end
+  if key == 'r' then radio:request_checkpoint() end
 end
 
 function love.draw()
@@ -99,8 +115,9 @@ function love.draw()
     love.graphics.print(string.format('2-byte shot: %d B RA frame / %.2f s @ 600 baud 8-FSK 1/2 FEC',
       estimate.radio_arcade_frame_bytes, estimate.estimated_airtime_ms / 1000), 24, 143)
   else
-    love.graphics.print('Press E for a theoretical airtime estimate', 24, 143)
+    love.graphics.print('E = airtime estimate   R = request checkpoint', 24, 143)
   end
+  love.graphics.print('Checkpoint: ' .. radio:checkpoint_status(), 24, 190)
   if radio:error() then
     love.graphics.setColor(1, 0.45, 0.45)
     love.graphics.print(radio:error(), 24, 172)

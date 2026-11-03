@@ -11,6 +11,9 @@ local radio
 function love.load()
   radio = Arcade.new({game_id='my-radio-game', version=1,
     mode='turn', session_id=os.getenv('RADIO_ARCADE_SESSION')})
+  radio:snapshot(
+    function() return encode_full_game_state() end, -- binary string <= 16 KiB
+    function(bytes, revision) restore_game_state(bytes) end)
 end
 
 function love.update(dt)
@@ -40,7 +43,12 @@ read `radio.session_id`), or `radio:control('join_game')`,
 `radio:session()` returns the current server session snapshot.
 
 `radio:send_side(target, 'RA:...')` carries a plaintext 200-byte-max side
-message. `radio:receive_side()` pops received side messages. `radio:estimate(2,
+message. `radio:receive_side()` pops received **non-checkpoint** side messages.
+`radio:checkpoint_status()` reports `idle`, `requested`, `sending`, `sent`,
+`restored`, or `timed out`. `radio:request_checkpoint()` may be called manually
+by a non-coordinator station; a missing action also triggers it automatically.
+Both stations must register `snapshot(save_fn,load_fn)`, and the coordinator
+must remain online to supply checkpoints. `radio:estimate(2,
 {baud=600,bits_per_symbol=3,code_rate=0.5})` queues a **local** debug estimate;
 retrieve it with `radio:receive_estimate()` (nothing goes on air).
 
@@ -51,7 +59,10 @@ retrieve it with `radio:receive_estimate()` (nothing goes on air).
    folder as `main.lua`, alongside the `radio_arcade/` directory.
 3. Set `RADIO_ARCADE_SESSION` to the table ID and run `love your_game_folder`.
 4. Do the same at the other station. Select angle/power with arrow keys, fire
-   with Space, and press E for an estimated airtime readout.
+   with Space, press E for an estimated airtime readout, and R to request a
+   remote application checkpoint.
 
 Every shot sends exactly two game bytes. Flight paths, tank drawing and hit
-calculation are performed locally using deterministic physics.
+calculation are performed locally using deterministic physics. The snapshot
+is a compact sequence of three-byte historical shots (actor, angle, power),
+which regenerates the same battle visuals on recovery.

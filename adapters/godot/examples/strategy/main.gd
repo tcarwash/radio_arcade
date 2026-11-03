@@ -10,17 +10,23 @@ var positions := [Vector2i(0, 0), Vector2i(4, 4)]
 var moves := 0
 var winner := -1
 var status_line := "Set RADIO_ARCADE_SESSION to a running external-game session"
+var airtime_line := "Airtime estimate pending (600 baud, 8-FSK, rate-1/2 FEC)"
 
 func _ready() -> void:
 	radio = RadioArcadeClient.new()
 	add_child(radio)
 	radio.configure("radio-strategy-demo", 1, "turn")
 	radio.event_received.connect(_on_event)
+	radio.set_snapshot_handlers(_save_snapshot, _load_snapshot)
+	radio.checkpoint_restored.connect(_on_checkpoint_restored)
+	radio.checkpoint_progress.connect(_on_checkpoint_progress)
+	radio.estimate_ready.connect(_on_airtime)
 	radio.error_occurred.connect(_on_radio_error)
 	radio.status_changed.connect(_on_radio_status)
 	var sid := OS.get_environment("RADIO_ARCADE_SESSION")
 	if sid != "":
 		radio.attach_session(sid)
+		radio.estimate_airtime(2, 600, 3, 0.5)
 		status_line = "Connecting to " + sid
 
 func _process(_delta: float) -> void:
@@ -43,12 +49,20 @@ func _draw() -> void:
 		draw_string(f, Vector2(215, 525), "Player %d wins" % [winner + 1], HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.WHITE)
 	else:
 		var turn := (moves % 2) + 1
-		draw_string(f, Vector2(36, 505), "Turn: player %d | Local: %s | Revision: %d" %
-			[turn, "READY" if radio.my_turn() else "WAIT", radio.revision()],
+		draw_string(f, Vector2(36, 505), "Turn: player %d | Local: %s | Revision: %d | Sync: %s" %
+			[turn, "READY" if radio.my_turn() else "WAIT", radio.revision(),
+				radio.checkpoint_status()],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 17, Color.WHITE)
+	draw_string(f, Vector2(36, 470), airtime_line, HORIZONTAL_ALIGNMENT_LEFT,
+		725, 15, Color("b4d6ec"))
 	draw_string(f, Vector2(36, 535), status_line, HORIZONTAL_ALIGNMENT_LEFT, 725, 14, Color("b4d6ec"))
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		var key := event as InputEventKey
+		if key.pressed and key.keycode == KEY_R:
+			radio.request_checkpoint()
+			return
 	if not (event is InputEventMouseButton):
 		return
 	var mouse := event as InputEventMouseButton
@@ -93,4 +107,31 @@ func _on_radio_error(message: String) -> void:
 	queue_redraw()
 
 func _on_radio_status(_connected: bool) -> void:
+	queue_redraw()
+
+func _save_snapshot() -> PackedByteArray:
+	return PackedByteArray([positions[0].x, positions[0].y,
+		positions[1].x, positions[1].y, moves & 255, (moves >> 8) & 255,
+		255 if winner < 0 else winner])
+
+func _load_snapshot(data: PackedByteArray, _revision: int) -> void:
+	assert(data.size() == 7, "invalid strategy checkpoint")
+	for i in range(4):
+		assert(data[i] < SIZE, "invalid strategy position")
+	positions = [Vector2i(data[0], data[1]), Vector2i(data[2], data[3])]
+	moves = data[4] + 256 * data[5]
+	winner = -1 if data[6] == 255 else data[6]
+	queue_redraw()
+
+func _on_checkpoint_restored(_revision: int) -> void:
+	status_line = "Strategy state recovered from a remote checkpoint"
+	queue_redraw()
+
+func _on_checkpoint_progress(_progress: String) -> void:
+	queue_redraw()
+
+func _on_airtime(estimate: Dictionary) -> void:
+	airtime_line = "2-byte move: %d B frame, about %.2f seconds of RF airtime" % [
+		int(estimate.get("radio_arcade_frame_bytes", 0)),
+		float(estimate.get("estimated_airtime_ms", 0.0)) / 1000.0]
 	queue_redraw()

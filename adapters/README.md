@@ -79,21 +79,43 @@ it separately and understand that the existing browser/game APIs have no auth.
 Normal reconnection replays persisted committed actions from revision zero;
 Radio Arcade's transport separately repairs its own session state. If a station
 was offline during an unrecoverable RF gap, **session sync alone cannot
-reconstruct arbitrary application state**. These first adapters detect the gap
-and report `application checkpoint required` rather than silently rendering a
-divergent game. The generic `RA:` side-message channel is available for
-application-owned compressed checkpoints, but automatic checkpoint chunking
-and negotiated recovery are **not implemented yet**. Don't treat these sample
-games as drop-in continuous real-time netcode.
+reconstruct arbitrary application state**. Both adapters now support
+application-level checkpoint recovery when the developer registers a binary
+save/load callback on *both* stations:
+
+1. The joining/lagging game detects a missing committed action and sends
+   `RA:REQ:<8-digit nonce>` to the session coordinator.
+2. The coordinator serializes its fully applied game state and splits up to
+   16 KiB into 90-byte chunks. Each `RA:S` chunk carries the nonce, revision,
+   chunk index/count, 32-bit FNV-1a checksum, and Base64 application bytes.
+3. One chunk is sent at a time and the sender waits for Radio Arcade's
+   existing *delivery acknowledgment* before transmitting the next. A silent
+   peer times out; requests/chunks are not transmitted indefinitely.
+4. The receiver only trusts the coordinator for the matching nonce, validates
+   each chunk and the entire checksum, calls the game's load callback, then
+   resumes event replay after the restored revision.
+
+Checkpoints are public plaintext radio traffic. Serialization is game-owned:
+send essential state or compact action history, not visual assets. Recovery
+requires the coordinator's game process to be running and serving requests.
+The requester times out after five minutes, and each side-message ACK after
+two minutes. For a busy HF channel, checkpointing 16 KiB may still take a very
+long time; smaller states are strongly preferred. These clients are not
+continuous real-time netcode.
+
+The reference codec is [`radio_arcade/engine_checkpoint.py`](../radio_arcade/engine_checkpoint.py),
+with corruption, ordering and simulated two-station RF tests. The LÖVE and
+Godot client implementations use the same `RA:` wire grammar.
 
 ## Tests and current limitations
 
-Run `python -m unittest tests.test_external_engine -v`. These tests exercise
-the real Python engine and local API, including a two-station simulated-radio
-exchange. LÖVE and Godot runtime validation require their respective engines
-installed; Python tests cannot execute the bundled Lua/GDScript clients.
+Run `python -m unittest tests.test_external_engine tests.test_engine_checkpoint -v`.
+These tests exercise the real Python engine, the generic local API, checksum
+validation, and acknowledged checkpoint chunks over simulated two-station RF.
+LÖVE and Godot runtime validation still requires their respective engines;
+Python tests alone cannot execute the bundled Lua/GDScript clients.
 
 The current clients poll a loopback HTTP service and do not stream gameplay
 frames. LÖVE uses a dedicated thread; Godot uses nonblocking `HTTPRequest`.
-Both adapters are a **working first pass** at tiny, turn-based or event-driven
-games, with generic RF checkpoint automation and UX polish still to come.
+Both adapters are a **working first pass** at tiny turn-based or event-driven
+games; real-engine play testing and UX polish are still to come.

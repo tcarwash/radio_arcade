@@ -15,6 +15,7 @@ func _ready() -> void:
     add_child(radio)
     radio.configure("my-radio-game", 1, "turn")
     radio.attach_session(OS.get_environment("RADIO_ARCADE_SESSION"))
+    radio.set_snapshot_handlers(save_state, load_state)
     radio.event_received.connect(on_game_event)
 
 func on_game_event(player: int, revision: int, payload: PackedByteArray) -> void:
@@ -23,14 +24,21 @@ func on_game_event(player: int, revision: int, payload: PackedByteArray) -> void
 func issue_move(x: int, y: int) -> void:
     if radio.my_turn():
         radio.send_action(PackedByteArray([x, y]))
+
+func save_state() -> PackedByteArray:
+    return encode_full_game_state()
+
+func load_state(bytes: PackedByteArray, revision: int) -> void:
+    restore_game_state(bytes)
 ```
 
 Signals: `event_received`, `side_message`, `status_changed`, `error_occurred`,
-`session_created`, `estimate_ready`. Methods include `create_session(peer,
+`session_created`, `estimate_ready`, `checkpoint_restored`, and
+`checkpoint_progress`. Methods include `create_session(peer,
 hosted)`, `attach_session(id)`, `control(command,peer)`, `request_sync()`,
 `send_action(bytes)`, `send_side(target,message)`, `finish()`, `connected()`,
-`my_turn()`, `current_session()` and `estimate_airtime(bytes,baud,bits_per_symbol,
-code_rate)`.
+`my_turn()`, `current_session()`, `request_checkpoint()`,
+`checkpoint_status()`, and `estimate_airtime(bytes,baud,bits_per_symbol,code_rate)`.
 
 Godot's `HTTPRequest` node handles network I/O asynchronously. The adapter
 never sends a frame for each rendered frame; it submits only compact actions.
@@ -43,7 +51,8 @@ project. Create an `external-game` table first, set the environment variable
 `RADIO_ARCADE_SESSION`, then open this directory with Godot and run the project.
 The demo uses **two bytes per move** and updates its board only after the
 radio action is committed. Each player moves one orthogonal cell per turn;
-stepping onto the opponent's cell wins.
+stepping onto the opponent's cell wins. Game state serializes to seven bytes,
+and R requests recovery from the coordinator.
 
 For actual RF play, each station runs a local Radio Arcade bridge and its own
 copy of Godot. For HTTP practice mode, run the example on one local machine.

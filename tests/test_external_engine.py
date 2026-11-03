@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from radio_arcade.games.external import ExternalGame
+from radio_arcade.engine_checkpoint import CheckpointAssembler, checkpoint_chunks, checkpoint_request
 from radio_arcade.games.base import builtin_registry
 from radio_arcade.practice import PracticeService
 from radio_arcade.settings import Settings
@@ -59,6 +60,39 @@ class ExternalGameTests(unittest.TestCase):
                                  "RA:CHECKPOINT:7:AA==")
                 self.assertEqual(guest.store.load_engine_opaque(sid)[-1]["delivery"],
                                  "delivered")
+            finally:
+                host.close()
+                guest.close()
+
+    def test_checkpoint_chunks_have_acknowledged_radio_delivery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            air = Air()
+            host = ArcadeService("AG7SU", air.station(), SessionStore(Path(directory) / "h.sqlite"))
+            guest = ArcadeService("K7ABC", air.station(), SessionStore(Path(directory) / "g.sqlite"))
+            try:
+                sid = host.create_game("external-game", hosted=True)
+                air.pump()
+                guest.join_game(sid)
+                air.pump()
+                host.start_game(sid)
+                air.pump()
+                guest.send_opaque_state(sid, "AG7SU", checkpoint_request("deadbeef"))
+                air.pump()
+                self.assertEqual(host.store.load_engine_opaque(sid)[-1]["body"],
+                                 "RA:REQ:deadbeef")
+                payload = bytes(range(256))
+                chunks = checkpoint_chunks("deadbeef", 2, payload)
+                for chunk in chunks:
+                    sequence = host.send_opaque_state(sid, "K7ABC", chunk)
+                    air.pump()
+                    self.assertEqual(host.store.engine_opaque_delivery(sid, "AG7SU", sequence),
+                                     "delivered")
+                assembler = CheckpointAssembler("deadbeef")
+                complete = None
+                for message in guest.store.load_engine_opaque(sid):
+                    if message["sender"] == "AG7SU":
+                        complete = assembler.accept(message["body"]) or complete
+                self.assertEqual(complete, (2, payload))
             finally:
                 host.close()
                 guest.close()
@@ -131,6 +165,7 @@ class ExternalBridgeTests(unittest.TestCase):
             "session_id": sid, "target": "LOCAL1", "message": "RA:save:AAAA"})
         messages = self.api("GET", f"/api/engine/opaque?session_id={sid}")["messages"]
         self.assertEqual(messages[0]["body"], "RA:save:AAAA")
+        self.assertGreater(messages[0]["created"], 0)
         self.assertEqual(self.api("GET", f"/api/engine/delivery?session_id={sid}&sequence={sent['sequence']}")["state"], "pending")
 
 
