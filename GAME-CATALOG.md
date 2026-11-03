@@ -13,12 +13,19 @@ Game IDs identify rules and payload codecs. IDs are permanent and must never be 
 | 7 | `scorched-earth` | Scorched Earth | 2 | Built in (desktop and web) |
 | 8 | `hexxagon` | Hexxagon | 2 | Built in (desktop, terminal, web) |
 | 9 | `pico8-cartridge` | PICO-8 Cartridge | 2–8 | Built in (web bridge; cartridge rules remain in Lua) |
+| 10 | `external-game` | External Engine Game | 2–8 | Built in (LÖVE2D / Godot; rules remain in game runtime) |
 
 Open Word Tiles is a Scrabble-style, open-rack variant using the bundled ENABLE1 lexicon. ENABLE1 is a public-domain alternative, not a current official tournament lexicon. Its racks and tile distribution are public; it is not the standard hidden-rack game. The tile seed and deterministic draw state travel in the ordinary game snapshot, not the opaque side channel.
 
 Game ID 4 is retired and intentionally reserved. Existing on-disk sessions are preserved but are hidden because the game rules have been removed; the engine never retries their pending transmissions. Do not assign ID 4 to a different game.
 
 Do not infer protocol compatibility from a display name alone. A game that changes incompatible rules or payload shapes needs a new registered ID or an explicit game-specific schema negotiation before deployment.
+
+ID 10 is a generic transport-neutral game table. It keeps each game's
+ASCII ID/hash, version and turn/event mode in the shared state. Normal
+committed actions are `01 + up to 189 application bytes`; the coordinator's
+first config action is `00 + hash:u32BE + version:u16BE + mode:u8`, and it
+may finish with `02`. See [adapters/README.md](adapters/README.md).
 
 **Game ID 5** is allocated to [Radio Civ](apps/civ/README.md), a standalone
 graphical 4X client that uses the Radio Arcade engine. Installing Radio Civ

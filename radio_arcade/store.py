@@ -200,6 +200,11 @@ class SessionStore:
             self.db.execute("INSERT OR IGNORE INTO pico8_actions VALUES(?,?,?,?)",
                             (session, revision, actor, body))
 
+    # Retain the old SQL table and method names for persistent PICO-8 installs;
+    # the data is generic committed actions keyed by session and revision.
+    def record_engine_action(self, session: str, revision: int, actor: str, body: bytes) -> None:
+        self.record_pico8_action(session, revision, actor, body)
+
     def load_pico8_actions(self, session: str, after: int = 0, limit: int = 256) -> list[dict[str, Any]]:
         with self._lock:
             rows = self.db.execute("SELECT revision,actor,body FROM pico8_actions "
@@ -207,6 +212,9 @@ class SessionStore:
                                    (session, after, limit)).fetchall()
         return [{"revision": int(row["revision"]), "actor": row["actor"],
                  "action": bytes(row["body"])} for row in rows]
+
+    def load_engine_actions(self, session: str, after: int = 0, limit: int = 256) -> list[dict[str, Any]]:
+        return self.load_pico8_actions(session, after, limit)
 
     def remember_cancelled_invite(self, session: str, target: str) -> None:
         with self._lock, self.db:
@@ -271,6 +279,22 @@ class SessionStore:
                                   "WHERE session=? AND sender=? AND sequence=?",
                                   (session, sender, sequence)).fetchone()
         return row["delivery"] if row else None
+
+    def engine_opaque_delivery(self, session: str, sender: str, sequence: int) -> str | None:
+        return self.pico8_opaque_delivery(session, sender, sequence)
+
+    def load_engine_opaque(self, session: str, after_id: int = 0,
+                           limit: int = 256) -> list[dict[str, Any]]:
+        """The external-game side channel, separated from PICO-8 checkpoint traffic."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT rowid,sender,sequence,body,delivery FROM opaque_states "
+                "WHERE session=? AND rowid>? AND CAST(body AS TEXT) LIKE 'RA:%' "
+                "ORDER BY rowid LIMIT ?", (session, after_id, limit)).fetchall()
+        return [{"id": row["rowid"], "sender": row["sender"],
+                 "sequence": row["sequence"], "delivery": row["delivery"],
+                 "body": bytes(row["body"]).decode("utf-8")}
+                for row in rows if bytes(row["body"]).startswith(b"RA:")]
 
     def close(self) -> None:
         with self._lock:

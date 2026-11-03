@@ -48,6 +48,10 @@ class PracticeService(ArcadeService):
                 raise ValueError("game is not active")
             game = self.registry.by_id(row["game_id"])
             actor = game.current_player(game.decode_state(row["state"]), tuple(row["players"]))
+            # A dealer's explicit finish command is legal even if it is the
+            # other hot-seat player's turn; mirror radio coordinator behavior.
+            if row["game_id"] in (9, 10) and action == b"\x02":
+                actor = row["coordinator"]
             self._commit(row, actor, action)
 
     def send_chat(self, session_id, text):

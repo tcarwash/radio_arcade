@@ -242,6 +242,94 @@ class WebController:
                 pass
         return response
 
+    def _engine_bridge(self, method: str, route: str, query: dict[str, list[str]],
+                       data: dict[str, Any]) -> tuple[int, Any]:
+        """Engine-neutral API; game ID 10 cannot read or control PICO-8 tables."""
+        if self.engine is None:
+            raise ValueError(self.last_error or "game service is not ready")
+        engine = self.engine
+        if method == "GET" and route == "/api/engine/sessions":
+            return 200, {"callsign": self.settings.callsign,
+                         "transport": self.settings.transport,
+                         "sessions": [self._public_session(s) for s in engine.sessions()
+                                      if s["game_id"] == 10]}
+        if method == "POST" and route == "/api/engine/create":
+            return 200, self._command({"command": "create_game", "game": "external-game",
+                                       "hosted": bool(data.get("hosted", False)),
+                                       "peer": data.get("peer")})
+
+        sid = data.get("session_id") if method == "POST" else query.get("session_id", [None])[0]
+        if sid is None:
+            raise ValueError("session_id is required")
+        row = engine.session(sid)
+        if row["game_id"] != 10:
+            raise ValueError("not an external engine session")
+
+        if method == "GET" and route == "/api/engine/events":
+            after = int(query.get("after", ["0"])[0])
+            if after < 0:
+                raise ValueError("after must be nonnegative")
+            events = engine.store.load_engine_actions(engine._sid(sid), after)
+            return 200, {"session": self._public_session(row), "revision": row["revision"],
+                         "events": [{"revision": e["revision"], "actor": e["actor"],
+                                     "hex": e["action"].hex()} for e in events]}
+
+        if method == "POST" and route == "/api/engine/action":
+            raw = bytes.fromhex(str(data.get("hex", "")))
+            if not 1 <= len(raw) <= 190:
+                raise ValueError("engine action must be 1–190 bytes")
+            return 200, self._command({"command": "legal_action", "session_id": sid,
+                                       "action": raw.hex()})
+
+        if method == "POST" and route == "/api/engine/control":
+            command = data.get("command")
+            if command not in ("accept_invite", "join_game", "start_game",
+                               "invite_player", "request_sync", "resend_pending_action"):
+                raise ValueError("unsupported engine session command")
+            return 200, self._command({"command": command, "session_id": sid,
+                                       "peer": data.get("peer")})
+
+        if method == "GET" and route == "/api/engine/opaque":
+            after = int(query.get("after", ["0"])[0])
+            if after < 0:
+                raise ValueError("after must be nonnegative")
+            return 200, {"messages": engine.store.load_engine_opaque(engine._sid(sid), after)}
+
+        if method == "GET" and route == "/api/engine/delivery":
+            sequence = int(query.get("sequence", ["-1"])[0])
+            if not 0 <= sequence <= 65535:
+                raise ValueError("invalid side-channel sequence")
+            return 200, {"state": engine.store.engine_opaque_delivery(
+                engine._sid(sid), engine.callsign, sequence)}
+
+        if method == "POST" and route == "/api/engine/opaque":
+            message = data.get("message")
+            if not isinstance(message, str) or not message.startswith("RA:"):
+                raise ValueError("engine side-channel messages must start with RA:")
+            if self.settings.transport != "practice" and not self.settings.tx_enabled:
+                raise ValueError("TX is disabled")
+            return 200, {"sequence": engine.send_opaque_state(
+                sid, str(data.get("target", "")), message)}
+
+        if method == "POST" and route == "/api/engine/estimate":
+            from .airtime import estimate_action
+            payload_bytes = data.get("payload_bytes")
+            if type(payload_bytes) is not int or not 0 <= payload_bytes <= 189:
+                raise ValueError("payload_bytes must be an integer from 0 to 189")
+            destination = str(data.get("destination") or row["coordinator"])
+            estimate = estimate_action(
+                payload_bytes + 1, source=self.settings.callsign, destination=destination,
+                game_id=10, baud=data.get("baud"), rate_bps=data.get("rate_bps"),
+                bits_per_symbol=data.get("bits_per_symbol"),
+                code_rate=data.get("code_rate"),
+                modem_overhead_bytes=data.get("modem_overhead_bytes", 0),
+                preamble_ms=data.get("preamble_ms", 0),
+                transmissions=data.get("transmissions", 1))
+            return 200, {**asdict(estimate), "game_payload_bytes": payload_bytes,
+                         "note": "Estimate only; excludes dynamic Data2G scheduling and retries"}
+
+        return 404, {"error": "not found"}
+
     def dispatch(self, method: str, path: str, body: bytes = b"") -> tuple[int, Any]:
         """Handle one API request; separated from HTTP for focused integration tests."""
         try:
@@ -253,6 +341,8 @@ class WebController:
             if not isinstance(data, dict):
                 raise ValueError("request body must be a JSON object")
             with self._lock:
+                if route.startswith("/api/engine/"):
+                    return self._engine_bridge(method, route, query, data)
                 if route.startswith("/api/pico8/"):
                     if self.engine is None:
                         raise ValueError(self.last_error or "game service is not ready")

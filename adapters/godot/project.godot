@@ -1,0 +1,15 @@
+config_version=5
+
+[application]
+
+config/name="Radio Arcade Godot Demo"
+run/main_scene="res://examples/strategy/main.tscn"
+
+[display]
+
+window/size/viewport_width=800
+window/size/viewport_height=550
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/radio_arcade/plugin.cfg")

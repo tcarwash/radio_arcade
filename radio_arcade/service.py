@@ -537,8 +537,8 @@ class ArcadeService:
         if new_state.get("finished"):
             row["status"] = "finished"
         self._save(row)
-        if row["game_id"] == 9:
-            self.store.record_pico8_action(row["id"], row["revision"], actor, action)
+        if row["game_id"] in (9, 10):
+            self.store.record_engine_action(row["id"], row["revision"], actor, action)
         if row.get("hosted"):
             self._transmit(self._make(row, "*", Kind.COMMIT,
                                       row["sequence"], row["revision"], payload))
@@ -1105,8 +1105,8 @@ class ArcadeService:
         if new_state.get("finished"):
             row["status"] = "finished"
         self._save(row)
-        if row["game_id"] == 9:
-            self.store.record_pico8_action(row["id"], row["revision"], actor, action)
+        if row["game_id"] in (9, 10):
+            self.store.record_engine_action(row["id"], row["revision"], actor, action)
         self._emit("session_updated", row["id"], session=self.session(row["id"]),
                    action=packet.payload, committed=True)
 

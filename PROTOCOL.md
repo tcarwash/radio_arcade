@@ -76,6 +76,13 @@ Game ID 4 was previously assigned to Island Settlers and is now **retired**. Cur
 
 Game IDs and their rules are permanent; see `GAME-CATALOG.md`. Game-specific codecs must fit the complete 240-byte envelope, including callsigns and any roster or action wrapper. There is currently no independent game-payload version negotiation; incompatible rule or codec changes require a new game ID or an explicit future protocol mechanism.
 
+Game ID **10** is a generic external-engine table, separate from PICO-8's ID 9.
+The compact configuration/event/finish action grammar and shared-state codec
+are deliberately identical for portability, but separate IDs prevent a native
+Godot/LÖVE game from accidentally joining a PICO-8 cartridge session. External
+engine IDs and versions are checked by each adapter; the core cannot validate
+an arbitrary game's move rules. See [adapters/README.md](adapters/README.md).
+
 Opaque state uses the same game ID and the `OPAQUE_STATE` kind/flag. A game may provide optional `encode_opaque_state(value) -> str` and `decode_opaque_state(text)` methods; the engine routes decoded values to `game_opaque_state` events while the bundled UIs show only a synchronization notice. Each game's own format is readable UTF-8, at most 200 bytes per message, and remains public on air.
 
 A cancelled invitation leaves a tombstone even when cancellation arrives before the invitation. To avoid ambiguity from reordered packets, a cancelled station cannot be invited again to the same game instance; create another game instead. Version 4 adds `CANCEL_INVITE`; version 3 and version 4 clients reject each other's packets, so all participants must upgrade together. Hosted kinds 14–17 extend version 4 without changing legacy packet layouts; older version 4 clients do not understand the new kinds. Locally retained game state is not erased, and retained version 3/4 outbox envelopes are upgraded to version 5 on startup because existing message layouts are unchanged.

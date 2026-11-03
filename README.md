@@ -10,6 +10,11 @@ handles multiplayer transport, sessions and committed events. Set
 [PICO-8 developer guide](pico8/README.md) for examples, checkpoint callbacks,
 and restrictions. Native standalone PICO-8 isn't networked by this bridge.
 
+**LÖVE2D and Godot 4:** First-pass adapters exchange compact, committed binary
+actions over the same Radio Arcade transports. They share external-game ID 10,
+while PICO-8 keeps ID 9. See the [engine adapter guide](adapters/README.md)
+for setup, examples, debugging, and checkpoint limitations.
+
 ## Install and run
 
 ```sh
