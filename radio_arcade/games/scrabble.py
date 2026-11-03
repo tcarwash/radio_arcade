@@ -232,6 +232,7 @@ def make_placement(state: dict[str, Any], actor: str, start: str, direction: str
     available = list(rack)
     mask = blank_mask = 0
     new_letters = []
+    slots = []
     for offset, (letter, use_blank) in enumerate(tokens):
         position = origin + step * offset
         cell = state["board"][position]
@@ -243,15 +244,24 @@ def make_placement(state: dict[str, Any], actor: str, start: str, direction: str
         mask |= 1 << offset
         new_letters.append(letter_id)
         if use_blank:
-            try: available.remove(BLANK)
+            try: slot = available.index(BLANK)
             except ValueError as exc: raise ValueError("your rack has no blank tile") from exc
             blank_mask |= 1 << (len(new_letters) - 1)
         else:
-            try: available.remove(letter_id)
+            try: slot = available.index(letter_id)
             except ValueError as exc: raise ValueError(f"your rack has no {letter} tile") from exc
+        slots.append(slot)
+        available[slot] = EMPTY_RACK
     if not new_letters or len(new_letters) > 7:
         raise ValueError("a turn must place one to seven tiles")
-    return _pack_place(origin, horizontal, len(tokens), mask, new_letters, blank_mask)
+    packed = shift = 0
+    for i, slot in enumerate(slots):
+        packed |= slot << shift
+        shift += 3
+        if blank_mask & (1 << i):
+            packed |= new_letters[i] << shift
+            shift += 5
+    return bytes((0x40 | (0x10 if horizontal else 0) | (len(tokens) - 1), origin)) + packed.to_bytes((shift + 7) // 8, "little")
 
 
 def make_exchange(state: dict[str, Any], actor: str, tiles: str) -> bytes:
@@ -270,7 +280,7 @@ def make_exchange(state: dict[str, Any], actor: str, tiles: str) -> bytes:
         except ValueError as exc: raise ValueError(f"rack does not contain tile {char}") from exc
         mask |= 1 << slot
         available[slot] = EMPTY_RACK
-    return bytes((2, mask))
+    return bytes((0x80 | mask,))
 
 
 class OpenWordTilesGame:
@@ -312,6 +322,42 @@ class OpenWordTilesGame:
         player = players.index(actor)
         rack = next_state["racks"][player]
         tag = action[0]
+        if 0x80 <= tag <= 0xFF:
+            if len(action) != 1:
+                raise ValueError("invalid compact exchange length")
+            action = bytes((2, tag & 0x7F))
+            tag = 2
+        if 0x40 <= tag <= 0x5E:
+            if len(action) < 3 or action[1] >= SIZE * SIZE or tag & 15 == 15:
+                raise ValueError("invalid compact placement header")
+            position, span = action[1], (tag & 15) + 1
+            horizontal = bool(tag & 0x10)
+            if (position % SIZE if horizontal else position // SIZE) + span > SIZE:
+                raise ValueError("word placement runs off the board")
+            step = 1 if horizontal else SIZE
+            mask = sum(1 << i for i in range(span) if not state["board"][position + i * step])
+            count = mask.bit_count()
+            if not 1 <= count <= 7:
+                raise ValueError("a turn must place one to seven tiles")
+            packed = int.from_bytes(action[2:], "little")
+            shift = blank_mask = 0
+            letters, used_slots = [], set()
+            for i in range(count):
+                slot = (packed >> shift) & 7
+                shift += 3
+                if slot >= 7 or slot in used_slots or rack[slot] == EMPTY_RACK:
+                    raise ValueError("invalid or reused rack slot")
+                used_slots.add(slot)
+                letter = rack[slot]
+                if letter == BLANK:
+                    blank_mask |= 1 << i
+                    letter = (packed >> shift) & 31
+                    shift += 5
+                letters.append(letter)
+            if len(action) != 2 + (shift + 7) // 8 or packed >> shift:
+                raise ValueError("invalid compact placement length or padding")
+            action = _pack_place(position, horizontal, span, mask, letters, blank_mask)
+            tag = 0
         if tag == 1:
             if action != b"\x01": raise ValueError("invalid pass action")
             next_state["passes"] += 1
@@ -451,11 +497,33 @@ class OpenWordTilesGame:
         board_tiles = _pack_bits([state["board"][index] for index in occupied], 6)
         racks = _pack_bits([tile for rack in state["racks"] for tile in rack], 5)
         winner = state["winner"] + 1
-        return (bytes((BOARD_VERSION, state["turn"], state["passes"], int(state["finished"]), winner))
-                + struct.pack("!Ihh", state["rng"], *state["scores"])
-                + bytes((len(occupied),)) + racks + bytes(bitmap) + board_tiles)
+        flags = state["turn"] | state["passes"] << 1 | int(state["finished"]) << 4 | winner << 5
+        sparse = len(occupied) < len(bitmap)
+        return (bytes((2, flags)) + struct.pack("!Ihh", state["rng"], *state["scores"])
+                + racks + bytes((len(occupied) | (0x80 if sparse else 0),))
+                + (bytes(occupied) if sparse else bytes(bitmap)) + board_tiles)
 
     def decode_state(self, payload: bytes) -> dict[str, Any]:
+        if payload and payload[0] == 2:
+            if len(payload) < 20 or payload[1] & 0x80:
+                raise ValueError("invalid compact word-tile header")
+            flags, count = payload[1], payload[19] & 127
+            sparse = bool(payload[19] & 128)
+            position_bytes = count if sparse else 29
+            if count > 100 or len(payload) != 20 + position_bytes + (count * 6 + 7) // 8:
+                raise ValueError("invalid compact word-tile snapshot size")
+            bitmap = bytearray(29)
+            if sparse:
+                positions = list(payload[20:20 + count])
+                if positions != sorted(set(positions)) or any(p >= SIZE * SIZE for p in positions):
+                    raise ValueError("invalid compact board positions")
+                for position in positions:
+                    bitmap[position >> 3] |= 1 << (position & 7)
+            else:
+                bitmap[:] = payload[20:49]
+            payload = (bytes((BOARD_VERSION, flags & 1, (flags >> 1) & 7, (flags >> 4) & 1, (flags >> 5) & 3))
+                       + payload[2:10] + bytes((count,)) + payload[10:19] + bytes(bitmap)
+                       + payload[20 + position_bytes:])
         fixed = 5 + 8 + 1 + 9 + 29
         if len(payload) < fixed or payload[0] != BOARD_VERSION or payload[1] > 1 or payload[2] > 4 or payload[3] > 1 or payload[4] > 2:
             raise ValueError("invalid word-tile snapshot header")
@@ -501,8 +569,8 @@ class OpenWordTilesGame:
     def describe_action(self, action: bytes) -> str:
         if not action: return "invalid move"
         if action[0] == 1: return "pass"
-        if action[0] == 2: return "exchange tiles"
-        if action[0] == 0 and len(action) >= 3:
+        if action[0] == 2 or action[0] & 0x80: return "exchange tiles"
+        if (action[0] == 0 and len(action) >= 3) or (0x40 <= action[0] <= 0x5E and len(action) >= 3):
             x, y = action[1] % SIZE, action[1] // SIZE
             return f"place tiles at {chr(65+x)}{y+1}"
         return "word-tile move"

@@ -10,6 +10,7 @@ const RESOURCE_COLORS = ["#365f4e", "#77503e", "#5b4b76", "#78633e", "#415e73", 
 const GAME_PREVIEWS = {
   "scorched-earth": ["◈", "Artillery duels · Aim, fire, and reshape the terrain."],
   "open-word-tiles": ["▦", "Build words on a shared board and chase the high score."],
+  "hexxagon": ["⬢", "Clone, jump, and capture your opponent’s stones."],
   "connect-four": ["●", "Drop discs, build a line, and outthink your opponent."],
   "tic-tac-toe": ["✕", "A quick classic for a friendly on-air rivalry."],
   nim: ["◇", "Take turns removing pieces. Plan the final move."],
@@ -41,6 +42,56 @@ function notify(message) {
   toast.classList.add("visible");
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => toast.classList.remove("visible"), 3800);
+}
+
+const activitySeen = new Set();
+let activityInitialized = false;
+let activityInbox;
+function openActivityTable(id) {
+  state.selectedId = id; state.sessionSignature = ""; state.chatSignature = "";
+  activityInbox.hidden = true;
+  switchPane("arena"); refresh();
+}
+function renderActivity(events) {
+  if (!activityInbox) {
+    const button = node("button", "button secondary", "Notifications"); button.type = "button";
+    document.querySelector("#settings-open").before(button);
+    activityInbox = node("section", "activity-inbox"); activityInbox.hidden = true;
+    activityInbox.setAttribute("aria-label", "Notifications");
+    document.body.append(activityInbox);
+    button.addEventListener("click", () => { activityInbox.hidden = !activityInbox.hidden; button.textContent = "Notifications"; });
+    activityInbox.button = button;
+  }
+  activityInbox.replaceChildren();
+  const enable = node("button", "button secondary", "Enable desktop notifications"); enable.type = "button";
+  enable.addEventListener("click", async () => {
+    if (!("Notification" in window)) { notify("Desktop notifications are unavailable in this browser."); return; }
+    try {
+      const permission = await Notification.requestPermission();
+      notify(permission === "granted" ? "Desktop notifications enabled." : "Notifications will still appear in the game room.");
+    } catch { notify("Notifications will still appear in the game room."); }
+  });
+  activityInbox.append(enable);
+  if (!events.length) activityInbox.append(node("p", "", "No new invitations or messages."));
+  for (const event of [...events].reverse()) {
+    const entry = node("button", "activity-entry", `${event.title} · ${event.body}`); entry.type = "button";
+    entry.addEventListener("click", () => openActivityTable(event.session_id));
+    activityInbox.append(entry);
+  }
+  const fresh = events.filter(event => !activitySeen.has(event.id));
+  for (const event of fresh) {
+    activitySeen.add(event.id);
+    if (!activityInitialized) continue;
+    activityInbox.button.textContent = "Notifications ●";
+    notify(`${event.title} · ${event.body}`);
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      try {
+        const alert = new Notification(event.title, { body: event.body, tag: `radio-arcade-${event.id}` });
+        alert.onclick = () => { window.focus(); openActivityTable(event.session_id); alert.close(); };
+      } catch { /* The in-app inbox remains available. */ }
+    }
+  }
+  activityInitialized = true;
 }
 
 function byteLength(text) { return new TextEncoder().encode(text).length; }
@@ -345,13 +396,85 @@ function observeCompletion(session) {
   completionStatuses.set(session.id, session.status);
   if (previous === "active" && session.status === "finished" && !completionAnnounced.has(session.id)) {
     completionAnnounced.add(session.id);
-    if (session.view?.kind === "scorched-earth" && session.view.impact && !session.forfeited_by) {
+    if (((session.view?.kind === "scorched-earth" && session.view.impact) || session.view?.kind === "hexxagon") && !session.forfeited_by) {
       completionDelays.set(session.id, setTimeout(() => {
         completionDelays.delete(session.id);
         if (state.session?.id === session.id && state.session.status === "finished") showMatchResult(session);
-      }, 4800));
+      }, session.view.kind === "hexxagon" ? 1100 : 4800));
     } else showMatchResult(session);
   }
+}
+
+const hexAnimations = new Map();
+function animateHexxagonTransition(session, view, svg, elements) {
+  const prior = hexAnimations.get(session.id);
+  hexAnimations.set(session.id, { revision: session.revision, cells: view.cells });
+  if (!prior || prior.revision + 1 !== session.revision || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const changed = view.cells.filter((cell, i) => cell.owner !== prior.cells[i].owner);
+  const target = changed.find(cell => cell.owner && !prior.cells[cell.id].owner);
+  if (!target) return;
+  const xy = cell => [52 * (cell.q + cell.r / 2), 45 * cell.r];
+  const [x, y] = xy(target);
+  elements.get(target.id).classList.add("hex-arrival");
+  const effects = svgElement("g", { class: "hex-effects", "aria-hidden": "true" });
+  const origin = changed.find(cell => !cell.owner && prior.cells[cell.id].owner);
+  if (origin) {
+    const [sx, sy] = xy(origin);
+    const stone = svgElement("circle", { r: 14, class: "hex-moving-stone" });
+    stone.append(svgElement("animateMotion", { dur: ".35s", path: `M ${sx},${sy} Q ${(sx+x)/2},${(sy+y)/2-32} ${x},${y}`, fill: "freeze" }));
+    effects.append(stone);
+  }
+  effects.append(svgElement("circle", { cx: x, cy: y, r: 24, class: "hex-pulse" }));
+  for (const cell of changed.filter(cell => cell.owner && prior.cells[cell.id].owner)) {
+    const [ex, ey] = xy(cell);
+    const points = Array.from({length: 9}, (_, i) => {
+      const f = i / 8, jitter = i && i < 8 ? (i % 2 ? 1 : -1) * (5 + cell.id % 4) : 0;
+      return `${x+(ex-x)*f+jitter},${y+(ey-y)*f-jitter}`;
+    }).join(" ");
+    effects.append(svgElement("polyline", { points, class: "hex-lightning-glow" }), svgElement("polyline", { points, class: "hex-lightning" }));
+    elements.get(cell.id).classList.add("hex-converted");
+  }
+  svg.append(effects);
+  setTimeout(() => effects.remove(), 1100);
+}
+
+function renderHexxagon(session, view, host) {
+  const hint = node("p", "turn-meta", "Select your stone, then a highlighted hex. Gold = clone · dashed = jump.");
+  const svg = svgElement("svg", { viewBox: "-270 -245 540 490", class: "hexxagon-board", "aria-label": "Hexxagon board" });
+  const legal = new Map(view.legal_moves.map(([a, b]) => [`${a}:${b}`, true]));
+  const elements = new Map();
+  let selected = null;
+  function choose(id) {
+    if (!canAct(session)) return;
+    if (legal.has(`${selected}:${id}`)) {
+      const a = view.cells[selected], b = view.cells[id];
+      const distance = Math.max(Math.abs(a.q-b.q), Math.abs(a.r-b.r), Math.abs(a.q+a.r-b.q-b.r));
+      const code = 0x8000 | selected << 6 | id;
+      submitAction(distance === 1 ? [id] : [code >> 8, code & 255]); return;
+    }
+    selected = view.cells[id].owner === view.active_seat && selected !== id ? id : null;
+    for (const cell of view.cells) {
+      const el = elements.get(cell.id);
+      el.classList.toggle("selected", cell.id === selected);
+      el.classList.toggle("legal", legal.has(`${selected}:${cell.id}`));
+      const a = selected === null ? null : view.cells[selected];
+      el.classList.toggle("jump", !!a && Math.max(Math.abs(a.q-cell.q), Math.abs(a.r-cell.r), Math.abs(a.q+a.r-cell.q-cell.r)) === 2);
+    }
+  }
+  for (const cell of view.cells) {
+    const x = 52 * (cell.q + cell.r / 2), y = 45 * cell.r;
+    const group = svgElement("g", { class: `hex-cell owner-${cell.owner}`, transform: `translate(${x},${y})`,
+      role: "button", tabindex: canAct(session) ? 0 : -1, "aria-disabled": String(!canAct(session)),
+      "aria-label": `Hex ${cell.id + 1}, ${cell.owner ? session.players[cell.owner - 1] : "empty"}` });
+    group.append(svgElement("polygon", { points: "0,-27 23,-13 23,13 0,27 -23,13 -23,-13" }));
+    if (cell.owner) group.append(svgElement("circle", { cx: 0, cy: 0, r: 15 }));
+    const label = svgElement("text", { x: 0, y: 4, "text-anchor": "middle" }); label.textContent = cell.id + 1;
+    group.append(label); group.addEventListener("click", () => choose(cell.id));
+    group.addEventListener("keydown", event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); choose(cell.id); } });
+    elements.set(cell.id, group); svg.append(group);
+  }
+  host.append(svg, hint);
+  if (typeof hexAnimations !== "undefined") animateHexxagonTransition(session, view, svg, elements);
 }
 
 function renderGrid(session, view, host) {
@@ -1093,6 +1216,7 @@ function renderGame(session) {
   const block = node("div", "game-block");
   block.append(renderScoreStrip(session, view));
   switch (view.kind) {
+    case "hexxagon": renderHexxagon(session, view, block); break;
     case "grid": renderGrid(session, view, block); break;
     case "scorched-earth": renderScorchedEarth(session, view, block); break;
     case "piles": renderNim(session, view, block); break;
@@ -1160,6 +1284,7 @@ async function refresh() {
   try {
     const snapshot = await request("/api/state");
     state.snapshot = snapshot;
+    renderActivity(snapshot.notifications || []);
     setConnection(snapshot);
     populateGames(snapshot.catalog || []);
     const tableMode = $("#table-mode");

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -34,6 +35,9 @@ class WebController:
         self.last_error = ""
         self.last_transmission: dict[str, Any] | None = None
         self.transmitting = False
+        self._notifications = deque(maxlen=100)
+        self._notification_sequence = 0
+        self._notification_lock = threading.Lock()
         self._lock = threading.RLock()
         if self.settings.callsign:
             self._connect()
@@ -49,6 +53,14 @@ class WebController:
             self.last_error = str(exc)
 
     def _engine_event(self, event: Any) -> None:
+        if event.name == "invitation" or (event.name == "chat_message" and event.data.get("message", {}).get("sender") != self.settings.callsign):
+            with self._notification_lock:
+                self._notification_sequence += 1
+                self._notifications.append({"id": self._notification_sequence, "session_id": event.session,
+                    "title": "Game invitation" if event.name == "invitation" else "New message",
+                    "body": (f"{event.data.get('sender')} invited you to {event.data.get('game')}"
+                             if event.name == "invitation" else
+                             f"{event.data['message']['sender']}: {event.data['message']['body']}")})
         if event.name == "transmitting":
             self.transmitting = True
             self.last_transmission = {**event.data, "started": time.time(), "active": True}
@@ -74,11 +86,16 @@ class WebController:
         result["has_pending_action"] = result.pop("pending_action", None) is not None
         return result
 
+    def _notification_snapshot(self):
+        with self._notification_lock:
+            return list(self._notifications)
+
     def _state(self) -> dict[str, Any]:
         engine = self.engine
         catalog = [asdict(game) for game in engine.catalog()] if engine else []
         web_game_ids = {game["game_id"] for game in catalog if "web" in game.get("clients", ("web",))}
         return {
+            "notifications": self._notification_snapshot(),
             "callsign": self.settings.callsign,
             "host": self.settings.host,
             "transport": self.settings.transport,

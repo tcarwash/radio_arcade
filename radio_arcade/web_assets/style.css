@@ -491,3 +491,38 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .tank-minimap:focus-visible, .tank-arena:focus-visible { outline:2px solid var(--mint); outline-offset:3px; }
 
 .session-actions .button.forfeit-game-action { color:var(--amber); border-color:#755b3c; }
+
+/* Conversation bubbles remain distinct in both color schemes. */
+.chat-message { max-width: 88%; margin: 4px 0; }
+.chat-bubble { background: #254b47; color: #eefaf6; border: 1px solid #3f6a62; border-radius: 16px 16px 16px 4px; padding: 11px 13px; font-size: 12px; }
+.chat-message.mine .chat-bubble { background: #425391; color: #f3f5ff; border-color: #6071ae; border-radius: 16px 16px 4px 16px; }
+:root[data-scheme="daylight"] .chat-bubble { background: #dcefe5; color: #173e30; }
+:root[data-scheme="daylight"] .chat-message.mine .chat-bubble { background: #dfe5ff; color: #24396d; border-color: #bac6ec; }
+.activity-inbox { position: fixed; right: 18px; top: 72px; z-index: 100; width: min(380px, calc(100vw - 36px)); max-height: 65vh; overflow: auto; padding: 16px; border-radius: 16px; background: var(--panel, #182332); color: var(--text, #eef3ff); border: 1px solid var(--line); box-shadow: 0 15px 45px #0006; }
+.activity-inbox[hidden] { display: none; }
+.activity-entry { display: block; width: 100%; margin-top: 10px; padding: 12px; border: 1px solid #60718b; border-radius: 10px; background: transparent; color: inherit; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+
+.hexxagon-board { display:block; width:100%; max-width:640px; max-height:65vh; margin:auto; }
+.hex-cell { cursor:pointer; outline:none; }
+.hex-cell polygon { fill:#20374b; stroke:#4b687d; stroke-width:2; }
+.hex-cell circle { fill:#6adfcd; stroke:#b2ffec; stroke-width:1.5; }
+.hex-cell.owner-2 circle { fill:#b29aff; stroke:#ded0ff; }
+.hex-cell text { fill:#dce7f0; font-size:10px; pointer-events:none; }
+.hex-cell:not(.owner-0) text { fill:#142238; font-weight:800; }
+.hex-cell.selected polygon, .hex-cell.legal polygon, .hex-cell:focus polygon { stroke:#ffe295; stroke-width:4; }
+.hex-cell.legal polygon { fill:#5a5232; }
+.hex-cell.legal.jump polygon { stroke-dasharray:4 3; }
+
+.hex-effects { pointer-events:none; }
+.hex-lightning-glow, .hex-lightning { fill:none; stroke-linejoin:round; animation:hex-zap .9s linear both; }
+.hex-lightning-glow { stroke:#677bff; stroke-width:8; opacity:.7; filter:blur(2px); }
+.hex-lightning { stroke:#e4ffff; stroke-width:2; }
+.hex-pulse { fill:none; stroke:#c4fcff; stroke-width:2; transform-box:fill-box; transform-origin:center; animation:hex-pulse .85s ease-out both; }
+.hex-arrival circle { transform-box:fill-box; transform-origin:center; animation:hex-arrive .4s ease-out; }
+.hex-converted circle { transform-box:fill-box; transform-origin:center; animation:hex-convert .8s ease-in-out; }
+.hex-moving-stone { fill:#e4ffff; opacity:.9; animation:hex-zap .4s linear both; }
+@keyframes hex-zap { 0%, 20%, 40%, 65% { opacity:1; } 12%, 32%, 52% { opacity:.2; } 100% { opacity:0; } }
+@keyframes hex-pulse { from { transform:scale(.4); opacity:1; } to { transform:scale(2); opacity:0; } }
+@keyframes hex-arrive { from { transform:scale(.2); } 70% { transform:scale(1.2); } to { transform:scale(1); } }
+@keyframes hex-convert { 0%, 30% { filter:brightness(2); transform:scaleX(1); } 50% { transform:scaleX(.05); } 100% { transform:scaleX(1); } }
+@media (prefers-reduced-motion:reduce) { .hex-effects { display:none; } .hex-arrival circle, .hex-converted circle { animation:none; } }

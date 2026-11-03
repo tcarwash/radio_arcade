@@ -35,6 +35,21 @@ class WebControllerScenarios(unittest.TestCase):
         status, value = self.controller.dispatch(method, path, body)
         return status, value
 
+    def test_activity_includes_invites_and_remote_chat_from_other_tables(self):
+        from radio_arcade.service import EngineEvent
+        self.controller._engine_event(EngineEvent("invitation", "invite-table", {"sender": "REMOTE", "game": "Nim"}))
+        self.controller._engine_event(EngineEvent("chat_message", "other-table", {
+            "message": {"sender": "REMOTE", "body": "Hello <friend>"}}))
+        self.controller._engine_event(EngineEvent("chat_message", "other-table", {
+            "message": {"sender": "N0CALL", "body": "My own message"}}))
+        _, state = self.request("GET", "/api/state")
+        events = state["notifications"]
+        self.assertEqual([event["session_id"] for event in events], ["invite-table", "other-table"])
+        self.assertEqual([event["id"] for event in events], [1, 2])
+        self.assertEqual(events[1]["body"], "REMOTE: Hello <friend>")
+        _, again = self.request("GET", "/api/state")
+        self.assertEqual(again["notifications"], events)
+
     def test_scorched_prediction_matches_commit_without_mutating_game(self):
         _, created = self.request("POST", "/api/command", {"command": "create_game", "game": "scorched-earth"})
         sid = created["session_id"]
@@ -83,7 +98,7 @@ class WebControllerScenarios(unittest.TestCase):
         self.assertEqual(value["callsign"], "N0CALL")
         self.assertEqual(value["transport"], "practice")
         self.assertEqual({game["key"] for game in value["catalog"]},
-                         {"tic-tac-toe", "nim", "open-word-tiles", "connect-four", "scorched-earth"})
+                         {"tic-tac-toe", "nim", "open-word-tiles", "connect-four", "scorched-earth", "hexxagon"})
 
     def test_web_settings_preserve_shared_client_preferences(self):
         self.controller.settings.sound_enabled = True

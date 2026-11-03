@@ -11,6 +11,7 @@ Game IDs identify rules and payload codecs. IDs are permanent and must never be 
 | 5 | `radio-civ` | Radio Civ | 2–4 | Standalone desktop/web client (external) |
 | 6 | `connect-four` | Connect Four | 2 | Built in |
 | 7 | `scorched-earth` | Scorched Earth | 2 | Built in (desktop and web) |
+| 8 | `hexxagon` | Hexxagon | 2 | Built in (desktop, terminal, web) |
 
 Open Word Tiles is a Scrabble-style, open-rack variant using the bundled ENABLE1 lexicon. ENABLE1 is a public-domain alternative, not a current official tournament lexicon. Its racks and tile distribution are public; it is not the standard hidden-rack game. The tile seed and deterministic draw state travel in the ordinary game snapshot, not the opaque side channel.
 

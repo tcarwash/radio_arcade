@@ -70,7 +70,7 @@ Tic-tac-toe action is one byte: zero-based cell 0–8, row-major. Its five-byte 
 
 Nim action is two bytes: zero-based pile index and number removed. Its seven-byte state is four pile counts, turn index, winner index (255 if ongoing), and player count. The initial piles are 1, 3, 5 and 7. The last player to take an item wins.
 
-Open Word Tiles uses the bundled ENABLE1 lexicon (SHA-256 `3f16130220645692ed49c7134e24a18504c2ca55b3c012f7290e3e77c63b1a89`) and a public-rack ruleset. Placement actions are 7–11 bytes, exchanges are two bytes, and pass is one byte. The placement encodes its starting square, direction and span, a mask of newly occupied squares, packed letters, and blank-tile markers; receivers reconstruct intersections from the shared board. Its snapshot stores turn/score/rack/random state, a 225-square occupancy bitmap, and six-bit tile values for occupied squares. The deterministic RNG and fixed tile distribution reproduce draws on every station. All player racks are visible by design.
+Open Word Tiles uses the bundled ENABLE1 lexicon (SHA-256 `3f16130220645692ed49c7134e24a18504c2ca55b3c012f7290e3e77c63b1a89`) and a public-rack ruleset. Placement actions are 3–6 bytes, exchanges and pass are one byte. Placements encode direction/span in tag `0x40 | horizontal<<4 | (span-1)`, followed by the starting square and a little-endian bitstream of three-bit rack indices in placement order. A blank rack slot additionally carries its five-bit assigned letter (1–26). Empty squares are inferred from the shared board; rack slots must be distinct, and unused padding bits must be zero. Exchanges use `0x80 | rack-slot mask` (nonzero seven-bit mask); pass remains `0x01`. Legacy tag-0 placements and tag-2 exchanges remain decodable. Snapshot version 2 uses a packed turn/pass/finished/winner flag byte after its version byte, then the existing RNG/scores and nine-byte racks. A count byte uses bit 7 to select a sorted list of occupied square indices, otherwise a 29-byte occupancy bitmap; six-bit tile values follow. Encoders choose the smaller position representation. Empty snapshots are 20 bytes (formerly 52), and dense snapshots save three bytes. Version-1 snapshots remain readable. Upgrade both peers for new actions and snapshots. The deterministic RNG and fixed tile distribution reproduce draws on every station. All player racks are visible by design.
 
 Game ID 4 was previously assigned to Island Settlers and is now **retired**. Current clients do not create, decode, or replay that game's messages. Saved local sessions are retained but not displayed. The ID must never be reused.
 
@@ -104,3 +104,40 @@ Version 5 also removes Scorched Earth's artificial upper sky collision limit;
 shots can rise above the original viewport and return under gravity. Both
 stations must run version 5. Version 4 peers reject these packets; this avoids
 mixed physics and mismatched forfeit interpretation. Local saves are retained.
+
+## Game payload size policy
+
+Minimal turn payloads are a primary goal for fluent gameplay on slow radio links.
+Encode only the decision in normal ACTION/COMMIT game bytes; reconstruct results
+from shared deterministic rules. Do not send a board or rendered animation each
+turn. Measure action bytes separately from envelope, ACK/retry, and transport
+costs. Reserve snapshots for initialization and recovery, and keep them compact.
+
+Connect Four (game 6) uses a one-byte column index, 0–6, for each move. START and
+SNAPSHOT contain a seven-byte little-endian board: seven consecutive seven-bit
+column stacks, left to right. In each stack the highest set bit is a sentinel
+whose index is the height (0–6); bits below it encode bottom-to-top pieces
+(X=0, O=1). Empty columns are 1; zero columns are invalid. Bits 49–55 must be zero.
+Turn, winner, and draw are derived and validated from the board. Decoders also
+accept the older 13-byte board/turn/result snapshots for saved-game migration.
+Upgrade both peers before exchanging the new snapshots. Normal moves retain
+their existing one-byte format and shared ACTION/COMMIT envelope.
+
+## Hexxagon (game 8)
+
+Board indices 0–57 enumerate axial `(q,r)` coordinates in row-major `r`, then
+`q` order, each from -4 through 4, keeping `max(abs(q),abs(r),abs(q+r)) <= 4`
+and omitting `(0,-1)`, `(1,0)`, `(-1,1)`. Alternating players occupy the six
+corners starting at `(0,-4)` clockwise. Hex distance is
+`max(abs(dq),abs(dr),abs(dq+dr))`. Cloning uses one byte: the empty destination
+index, which must border a friendly piece. Jumping uses two bytes, big-endian:
+`0x8000 | source<<6 | destination`; unused bits 12–14 must be zero. Source must
+be friendly and destination empty at distance two. The jump vacates its source;
+either move converts adjacent opposing stones. If the next player has no legal
+move, the mover receives all empty cells and counts determine the winner.
+There is no automatic repetition draw; players may forfeit a looping game.
+
+Snapshots use 15 little-endian bytes. Bits 0–115 contain 58 two-bit cell values
+(0 empty, 1 first player, 2 second player; 3 invalid), bit 116 holds the turn,
+bit 117 is finished, and bits 118–119 must be zero. Scores and winner are derived.
+No geometry, legal-move list, capture list, or scores travel in normal turns.

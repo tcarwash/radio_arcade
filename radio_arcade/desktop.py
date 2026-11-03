@@ -16,7 +16,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPai
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-    QSlider, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
+    QSlider, QSplitter, QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget)
 
 from .presentation import CompletionTracker
 from .desktop_results import Scoreboard, ResultDialog
@@ -32,6 +32,7 @@ from .games.scorched_earth import _trace_shot, _wind, pack_shot
 
 class ScorchedBattlefield(QWidget):
     shot_position = Signal(float, float)
+    animation_finished = Signal()
     """Resolution-independent native rendering of the shared artillery state."""
 
     def __init__(self, view: dict, animate: bool = False, parent=None):
@@ -76,6 +77,7 @@ class ScorchedBattlefield(QWidget):
         if self.flight_progress >= 1:
             if time.monotonic() - self._flight_started >= 4.4:
                 self._flight_timer.stop()
+                self.animation_finished.emit()
 
     def displayed_terrain(self):
         after = self.view["terrain"]
@@ -510,6 +512,15 @@ class ArcadeWindow(QMainWindow):
         self.footer_label.setObjectName("muted"); foot.addWidget(self.footer_label); foot.addStretch(1)
         self.mode_label = QLabel("Offline"); self.mode_label.setObjectName("modeLabel"); foot.addWidget(self.mode_label)
         layout.addLayout(foot)
+        self.notification_button = QPushButton(); self.notification_button.hide()
+        self.notification_button.clicked.connect(self._open_notification)
+        layout.addWidget(self.notification_button)
+        self._notification_session = None
+        self._tray = QSystemTrayIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation), self)
+        self._tray.setToolTip("Radio Arcade")
+        self._tray.messageClicked.connect(self._open_notification)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray.show()
 
     @staticmethod
     def _card(kicker: str, title: str) -> QFrame:
@@ -700,7 +711,29 @@ class ArcadeWindow(QMainWindow):
         self._update_status("Offline", False)
         self.mode_label.setText(error)
 
+    def _open_notification(self):
+        if self._notification_session:
+            self.selected_id = self._notification_session
+            self._refresh_sessions()
+            self.showNormal(); self.raise_(); self.activateWindow()
+            self.notification_button.hide()
+
+    def _notify_activity(self, title, body, sid):
+        self._notification_session = sid
+        self.notification_button.setText(f"{title} · {body} · Open table")
+        self.notification_button.show()
+        QApplication.alert(self, 5000)
+        if self._tray.isVisible():
+            self._tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 6000)
+
     def _on_event(self, event: EngineEvent):
+        if event.name == "invitation":
+            self._notify_activity("Game invitation", f"{event.data.get('sender')} · {event.data.get('game')}", event.session)
+        elif event.name == "chat_message" and event.data.get("message", {}).get("sender") != self.settings.callsign:
+            message = event.data["message"]
+            self._notify_activity("New message", f"{message['sender']}: {message['body']}", event.session)
+            if self.settings.sound_enabled:
+                QApplication.beep()
         if event.name == "transmitting":
             self.tx_activity.setText(f"TX · {event.data.get('kind')} → {event.data.get('destination')} · {event.data.get('reason')}")
             QTimer.singleShot(6000, lambda: self.tx_activity.setText(""))
@@ -871,6 +904,9 @@ class ArcadeWindow(QMainWindow):
             if state and state.get("kind") == "scorched-earth" and state.get("impact") and not session.get("forfeited_by"):
                 self._pending_result_id = sid
                 self._completion_timer.start(4500)
+            elif state and state.get("kind") == "hexxagon" and not session.get("forfeited_by"):
+                self._pending_result_id = sid
+                self._completion_timer.start(1100)
             else:
                 self._view_result()
 
@@ -918,6 +954,48 @@ class ArcadeWindow(QMainWindow):
                 button.clicked.connect(lambda _checked=False, i=cell: self._submit_action(bytes((i,))))
                 grid.addWidget(button, cell // 3, cell % 3)
             self.board_layout.addWidget(board)
+        elif view["kind"] == "hexxagon":
+            from .games.hexxagon import pack_move
+            from PySide6.QtCore import QPoint
+            from PySide6.QtGui import QPolygon, QRegion
+            host = QWidget(); box = QVBoxLayout(host)
+            hint = QLabel("Select your stone, then a highlighted hex. Solid = clone · dotted = jump.")
+            hint.setWordWrap(True); box.addWidget(hint)
+            board = QWidget(); board.setFixedSize(350, 310)
+            enabled = (not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"]
+                       and (self.settings.transport == "practice" or (self.settings.tx_enabled and session["current_player"] == self.settings.callsign)))
+            buttons, selected = {}, [None]
+            legal = set(map(tuple, view["legal_moves"]))
+            def paint_selection():
+                for cell in view["cells"]:
+                    i, owner = cell["id"], cell["owner"]
+                    target = (selected[0], i) in legal
+                    color = "#68daca" if owner == 1 else "#b39bfa" if owner == 2 else "#263c50"
+                    border = "#ffe295" if target or i == selected[0] else "#496276"
+                    style = "dotted" if target and len(pack_move(selected[0], i)) == 2 else "solid"
+                    buttons[i].setStyleSheet(f"background:{color};color:{'#0a1624' if owner else '#c8dce9'};border:2px {style} {border};font-weight:bold;font-size:10px;padding:0;")
+            def choose(i):
+                if (selected[0], i) in legal:
+                    self._submit_action(pack_move(selected[0], i)); return
+                selected[0] = i if view["cells"][i]["owner"] == view["active_seat"] and selected[0] != i else None
+                paint_selection()
+            for cell in view["cells"]:
+                i, q, r = cell["id"], cell["q"], cell["r"]
+                button = QPushButton(str(i + 1), board); button.setObjectName(f"hexCell{i}")
+                button.setGeometry(int(156 + 34 * (q + r / 2)), int(136 + 30 * r), 32, 36)
+                button.setMask(QRegion(QPolygon([QPoint(16, 0), QPoint(31, 9), QPoint(31, 27), QPoint(16, 35), QPoint(0, 27), QPoint(0, 9)])))
+                button.setEnabled(enabled); button.setAccessibleName(f"Hex {i + 1}, " + (session["players"][cell["owner"] - 1] if cell["owner"] else "empty"))
+                button.clicked.connect(lambda _checked=False, index=i: choose(index))
+                buttons[i] = button
+            paint_selection(); box.addWidget(board)
+            if not hasattr(self, "_hex_frames"):
+                self._hex_frames = {}
+            prior = self._hex_frames.get(session["id"])
+            self._hex_frames[session["id"]] = (session["revision"], view["cells"])
+            if prior and prior[0] + 1 == session["revision"]:
+                from .hexxagon_effects import HexLightning
+                HexLightning(board, prior[1], view["cells"])
+            self.board_layout.addWidget(host)
         elif view["kind"] == "connect-four":
             host = QWidget(); box = QVBoxLayout(host)
             board = QWidget(); grid = QGridLayout(board); grid.setSpacing(4)
@@ -1100,6 +1178,7 @@ class ArcadeWindow(QMainWindow):
             shot = _trace_shot(saved["terrain"], saved["x"], saved["turn"],
                                int(weapon.currentData()), angle.value(), _wind(saved["map"], saved["round"]), power.value() * view["power_step"])
             battlefield.set_preview(shot["path"], angle.value(), actor)
+        battlefield.animation_finished.connect(preview)
         power.valueChanged.connect(preview)
         angle.valueChanged.connect(preview)
         weapon.currentIndexChanged.connect(preview)
@@ -1173,6 +1252,18 @@ class ArcadeWindow(QMainWindow):
             item = QListWidgetItem(f"{message['sender']}  ·  {message['delivery']}\n{message['body']}")
             item.setToolTip(message['body'])
             self.chat_list.addItem(item)
+            mine = message['sender'] == self.settings.callsign
+            row = QWidget(); row_layout = QHBoxLayout(row); row_layout.setContentsMargins(2, 4, 2, 4)
+            bubble = QLabel(f"{message['sender']} · {message['delivery']}\n{message['body']}")
+            bubble.setTextFormat(Qt.TextFormat.PlainText); bubble.setWordWrap(True)
+            bubble.setMaximumWidth(max(130, self.chat_list.viewport().width() - 42))
+            bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            bubble.setStyleSheet("padding:10px; border-radius:14px; color:#eef7ff; background:" + ("#425391;" if mine else "#254b47;"))
+            if mine: row_layout.addStretch(1)
+            row_layout.addWidget(bubble)
+            if not mine: row_layout.addStretch(1)
+            item.setSizeHint(row.sizeHint())
+            self.chat_list.setItemWidget(item, row)
         self.chat_list.scrollToBottom()
 
     def _run(self, fn: Callable, on_done: Callable | None = None):

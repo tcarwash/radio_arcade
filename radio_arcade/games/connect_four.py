@@ -61,14 +61,39 @@ class ConnectFourGame:
         return None if state["finished"] else players[state["turn"]]
 
     def encode_state(self, state: dict[str, Any]) -> bytes:
-        symbols = {" ": 0, "X": 1, "O": 2}
+        # Seven bits per column: a sentinel above the stack, with one bit
+        # per occupied cell below it (X=0, O=1), bottom cell first.
         packed = 0
-        for index, mark in enumerate(state["board"]):
-            packed |= symbols[mark] << (index * 2)
-        result = 0 if not state["finished"] else 1 if state["winner"] < 0 else state["winner"] + 2
-        return packed.to_bytes(11, "little") + bytes((state["turn"], result))
+        for col in range(WIDTH):
+            stack = [state["board"][row * WIDTH + col]
+                     for row in range(HEIGHT - 1, -1, -1)
+                     if state["board"][row * WIDTH + col] != " "]
+            column = (1 << len(stack)) | sum((mark == "O") << i for i, mark in enumerate(stack))
+            packed |= column << (col * 7)
+        return packed.to_bytes(7, "little")
 
     def decode_state(self, payload: bytes) -> dict[str, Any]:
+        if len(payload) == 7:
+            packed = int.from_bytes(payload, "little")
+            if packed >> 49:
+                raise ValueError("invalid padding bits")
+            board = [" "] * SIZE
+            for col in range(WIDTH):
+                column = (packed >> (col * 7)) & 127
+                if not column:
+                    raise ValueError("missing Connect Four column sentinel")
+                height = column.bit_length() - 1
+                for i in range(height):
+                    board[(HEIGHT - 1 - i) * WIDTH + col] = "O" if column & (1 << i) else "X"
+            board_text = "".join(board)
+            winners = winning_marks(board_text)
+            result = 2 if "X" in winners else 3 if "O" in winners else 1 if " " not in board else 0
+            turn = board.count("X") - board.count("O")
+            if turn not in (0, 1):
+                raise ValueError("inconsistent Connect Four turn")
+            # Reuse all existing count, winner, and final-move validation.
+            legacy = sum(({" ": 0, "X": 1, "O": 2}[mark]) << (i * 2) for i, mark in enumerate(board))
+            payload = legacy.to_bytes(11, "little") + bytes((turn, result))
         if len(payload) != 13 or payload[11] > 1 or payload[12] > 3:
             raise ValueError("invalid Connect Four snapshot")
         packed = int.from_bytes(payload[:11], "little")

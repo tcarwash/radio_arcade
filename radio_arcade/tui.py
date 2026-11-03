@@ -287,6 +287,11 @@ class ArcadeTUI(App):
     #game-title { color:#f2f6fa; text-style:bold; margin-bottom:1; }
     #board { height:1fr; min-height:15; align: center middle; }
     .board-row { height:7; align: center middle; }
+    .hex-button { width:6; min-width:6; height:3; min-height:3; margin:0; padding:0; border:none; background:transparent; color:#758da2; }
+    .hex-button.-primary { background:transparent; color:#71e5d3; }
+    .hex-button.-warning { background:transparent; color:#c5a4ff; }
+    .hex-button.-success { background:transparent; color:#ffe295; text-style:bold; }
+    .hex-button:focus { background:#263c50; }
     .cell { width:13; height:5; margin:0 1; border:round #395066; background:#172536; color:#77dfc9; text-style:bold; }
     .connect-column { width:7; height:3; margin:0; background:#153e50; color:#80efd5; border:round #3b8290; }
     .connect-row { width:auto; height:1; text-align:center; }
@@ -736,6 +741,30 @@ class ArcadeTUI(App):
                         button = Button(text, id=f"cell-{index}", classes="cell", disabled=not active or bool(state["cells"][index].strip()))
                         cells.append(button)
                     await board.mount(Horizontal(*cells, classes="board-row"))
+            elif state["kind"] == "hexxagon":
+                active = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
+                self._hex_view, self._hex_source = state, None
+                await board.mount(Static("Select your stone, then a destination. Green = clone · yellow = jump.", classes="muted"))
+                for r in range(-4, 5):
+                    cells = {cell["q"]: cell for cell in state["cells"] if cell["r"] == r}
+                    buttons = []
+                    for q in range(max(-4, -r - 4), min(4, -r + 4) + 1):
+                        if q not in cells:
+                            hole = Static("  ×")
+                            hole.styles.width = 6; hole.styles.height = 3
+                            buttons.append(hole)
+                            continue
+                        cell = cells[q]
+                        button = Button(Text(f" /‾‾\\ \n  {' ●○'[cell['owner']]}  \n \\__/ "), id=f"hex-{cell['id']}", classes="hex-button", disabled=not active,
+                                        variant="primary" if cell["owner"] == 1 else "warning" if cell["owner"] == 2 else "default")
+                        button.styles.width = 6; button.styles.min_width = 6
+                        button.styles.border = ("none", "transparent")
+                        button.styles.line_pad = 0
+                        buttons.append(button)
+                    row = Horizontal(*buttons, classes="board-row")
+                    row.styles.height = 3
+                    row.styles.padding = 0
+                    await board.mount(row)
             elif state["kind"] == "connect-four":
                 active = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or turn == self.settings.callsign) and session["status"] == "active" and not session["pending_action"]
                 await board.mount(Static("CONNECT FOUR  ·  X = turquoise   O = amber", classes="muted"))
@@ -1021,6 +1050,25 @@ class ArcadeTUI(App):
         if not self.engine or not self.selected_id: return
         cell = int(event.button.id.split("-")[1])
         self._run_action(partial(self.engine.legal_action, self.selected_id, bytes((cell,))))
+
+    @on(Button.Pressed, ".hex-button")
+    def _hexxagon_move(self, event: Button.Pressed):
+        from .games.hexxagon import pack_move
+        target = int(event.button.id.split("-")[1])
+        view = self._hex_view
+        legal = set(map(tuple, view["legal_moves"]))
+        source = self._hex_source
+        if (source, target) in legal:
+            if self.engine and self.selected_id:
+                self._run_action(partial(self.engine.legal_action, self.selected_id, pack_move(source, target)))
+            return
+        self._hex_source = target if view["cells"][target]["owner"] == view["active_seat"] and source != target else None
+        for button in self.query(".hex-button"):
+            i = int(button.id.split("-")[1])
+            if (self._hex_source, i) in legal:
+                button.variant = "success" if len(pack_move(self._hex_source, i)) == 1 else "warning"
+            else:
+                button.variant = "primary" if view["cells"][i]["owner"] == 1 else "warning" if view["cells"][i]["owner"] == 2 else "default"
 
     @on(Button.Pressed, ".connect-column")
     def _connect_four_drop(self, event: Button.Pressed):

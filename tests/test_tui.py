@@ -10,6 +10,21 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("textual"), "install the tui extra")
 class TuiScenarios(unittest.IsolatedAsyncioTestCase):
+    async def test_hexxagon_board_move(self):
+        from radio_arcade.settings import Settings
+        from radio_arcade.tui import ArcadeTUI
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            app = ArcadeTUI(Settings(callsign="N0CALL", transport="practice"))
+            async with app.run_test(size=(170, 65)) as pilot:
+                await pilot.pause(.2)
+                sid = app.engine.create_game("hexxagon")
+                app.selected_id = sid; await app._show_session(sid)
+                self.assertEqual(len(app.query('.hex-button')), 58)
+                source, target = app.engine.session(sid)["view"]["legal_moves"][0]
+                app.query_one(f"#hex-{source}").press(); await pilot.pause(.1)
+                app.query_one(f"#hex-{target}").press(); await pilot.pause(.4)
+                self.assertEqual(app.engine.session(sid)["revision"], 1)
+
     async def test_chat_display_and_forfeit_confirmation(self):
         from radio_arcade.settings import Settings
         from radio_arcade.tui import ArcadeTUI, ResultScreen

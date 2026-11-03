@@ -1,6 +1,6 @@
 # Radio Arcade
 
-Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Open Word Tiles, and Scorched Earth (desktop and web).
+Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, and Scorched Earth (desktop and web).
 
 ## Install and run
 
@@ -23,6 +23,18 @@ All stations must use the same protocol version. See [PROTOCOL.md](PROTOCOL.md) 
 
 ## Development
 
+**Minimal turn payloads are a primary design goal for fluent radio gameplay.**
+Send only the player's compact binary action and deterministically reconstruct
+its effects on every station. Keep full state, scenery, and presentation data
+out of normal turns; use compact snapshots for starting and recovering games.
+Connect Four moves use **one byte** (column 0–6); its recovery board uses **7 bytes**
+(previously 13). Scorched Earth moves use **two bytes**. These are game payload
+sizes; the shared protocol envelope and radio framing add overhead. Word Tiles
+placements use **3–6 bytes**, exchange/pass **1 byte**, and snapshots use sparse
+positions or a bitmap according to which is smaller (20 bytes for an empty board).
+Older saved moves and snapshots remain readable; upgrade both peers for new encodings.
+
+
 The UI-independent engine API is documented in [ENGINE-API.md](ENGINE-API.md). Games register through the `radio_arcade.games` entry-point group; assigned IDs are in [GAME-CATALOG.md](GAME-CATALOG.md). Radio Civ is a separate desktop game: [apps/civ/README.md](apps/civ/README.md).
 
 To open a two-window Scorched Earth match over a local simulated radio link, run `uv run python scripts/scorched_earth_two_window.py`. It uses no Data2G or RF hardware; press Ctrl+C to stop it.
@@ -36,3 +48,13 @@ Scorched Earth now has independent shot power (25–100%) and 0–90° aiming in
 Scorched Earth camera controls (desktop/web): focus the map or minimap and use **WASD / arrow keys**, drag the main map, click to center, or click/drag the minimap. Camera panning does not consume a turn or fuel; **Drive** moves the tank.
 
 Use **Forfeit game** in desktop/web/terminal, or `forfeit ID` in the CLI, to end the table and award the other player(s) the win. Chat and saved state remain available. This update uses protocol **5**; upgrade every radio station together. High Scorched Earth shots now travel above the visible sky and fall back under gravity, with the camera following the full arc.
+
+Hexxagon is available in desktop, terminal, and web clients, including local
+practice and radio matches. Select a friendly stone, then a highlighted empty hex:
+clone to an adjacent hex or jump two hexes, converting all adjacent enemy stones.
+The 58-cell board starts with three stones per player and three central holes.
+When the next player cannot move, remaining empty hexes go to the mover; the
+larger army wins (equal counts draw). Rules follow [Yucata's Hexxagon rules](https://www.yucata.de/en/Rules/Hexxagon).
+Clone actions are **one byte**, jumps **two bytes**, and snapshots **15 bytes**;
+board geometry and captures are reconstructed locally. Game ID 8 is reserved.
+All participating stations need an updated client to play this new game.

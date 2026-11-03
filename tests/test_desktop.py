@@ -139,6 +139,54 @@ class DesktopScenarios(unittest.TestCase):
         finally:
             battlefield.close(); app.processEvents()
 
+    def test_hex_lightning_capture_overlay(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QWidget
+        from radio_arcade.hexxagon_effects import HexLightning
+        from radio_arcade.games.hexxagon import HexxagonGame, INDEX, pack_move
+        app = QApplication.instance() or QApplication([])
+        game = HexxagonGame(); players = ('A','B'); state = game.new_state(players)
+        board = [0] * 58
+        source, target, victim = INDEX[(-3,0)], INDEX[(-2,0)], INDEX[(-2,1)]
+        board[source], board[victim], board[INDEX[(4,0)]] = 1, 2, 2
+        state['board'] = board
+        after = game.apply_action(state,players,'A',pack_move(source,target))
+        parent = QWidget(); parent.resize(350,310); parent.show()
+        effect = HexLightning(parent,game.view_model(state,players)['cells'],game.view_model(after,players)['cells'])
+        try:
+            self.assertEqual(effect.target,target)
+            self.assertIn(victim,effect.captured)
+            effect.advance(); app.processEvents()
+            self.assertFalse(parent.grab().isNull())
+            for _ in range(30): effect.advance()
+            self.assertFalse(effect.timer.isActive())
+        finally:
+            parent.close(); app.processEvents()
+
+    def test_hexxagon_click_clone(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QPushButton
+        from radio_arcade.desktop import ArcadeWindow
+        from radio_arcade.practice import PracticeService
+        from radio_arcade.settings import Settings
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            window = ArcadeWindow(Settings(callsign="N0CALL", transport="practice"))
+            engine = PracticeService("N0CALL"); window._service_ready(engine)
+            sid = engine.create_game("hexxagon"); window.selected_id = sid
+            window._show_session(sid)
+            try:
+                self.assertEqual(len([button for button in window.findChildren(QPushButton) if button.objectName().startswith('hexCell')]), 58)
+                source, target = engine.session(sid)["view"]["legal_moves"][0]
+                window.findChild(QPushButton, f"hexCell{source}").click()
+                window.findChild(QPushButton, f"hexCell{target}").click()
+                deadline = time.monotonic() + 3
+                while engine.session(sid)["revision"] < 1 and time.monotonic() < deadline:
+                    app.processEvents(); time.sleep(.01)
+                self.assertEqual(engine.session(sid)["revision"], 1)
+            finally:
+                window.close(); engine.close(); app.processEvents()
+
     def test_scorched_earth_native_controls_and_hotseat_fire(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QSlider
@@ -188,6 +236,12 @@ class DesktopScenarios(unittest.TestCase):
                 replay.click()
                 self.assertGreaterEqual(animated._flight_started, started)
                 self.assertEqual(engine.session(sid), before)
+                self.assertEqual(animated.preview, [])
+                with patch("radio_arcade.desktop.time.monotonic", return_value=animated._flight_started + 4.5):
+                    animated._advance_flight()
+                self.assertFalse(animated._flight_timer.isActive())
+                self.assertGreater(len(animated.preview), 1)
+                self.assertEqual(animated.aim_player, engine.session(sid)["current_player"])
             finally:
                 window.close(); engine.close(); app.processEvents()
 

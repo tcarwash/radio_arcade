@@ -73,6 +73,43 @@ class HostedScenarios(unittest.TestCase):
         self.air.pump()
         return sid
 
+    def test_hexxagon_radio_moves_and_recovery(self):
+        from radio_arcade.games.hexxagon import pack_move
+        from radio_arcade.wire import decode_action
+        dealer, guest = self.engines[:2]
+        sid = dealer.create_game("hexxagon", hosted=True)
+        self.air.pump()
+        guest.join_game(sid); self.air.pump()
+        dealer.start_game(sid); self.air.pump()
+        self.air.frames.clear()
+        for engine in (dealer, guest):
+            source, target = engine.session(sid)["view"]["legal_moves"][0]
+            engine.legal_action(sid, pack_move(source, target)); self.air.pump()
+        self.assertEqual(dealer.session(sid)["state"], guest.session(sid)["state"])
+        self.assertEqual(len(dealer.session(sid)["state"]), 15)
+        for packet in self.air.frames:
+            if packet.kind in (Kind.ACTION, Kind.COMMIT):
+                self.assertIn(len(decode_action(packet.payload)[1]), (1, 2))
+        guest.request_sync(sid); self.air.pump()
+        self.assertEqual(dealer.session(sid)["view"], guest.session(sid)["view"])
+
+    def test_connect_four_turns_carry_only_one_game_byte(self):
+        from radio_arcade.wire import decode_action
+        dealer, guest = self.engines[:2]
+        sid = dealer.create_game("connect-four", hosted=True)
+        self.air.pump()
+        guest.join_game(sid); self.air.pump()
+        dealer.start_game(sid); self.air.pump()
+        self.air.frames.clear()
+        dealer.legal_action(sid, b"\x03"); self.air.pump()
+        guest.legal_action(sid, b"\x02"); self.air.pump()
+        turns = [packet for packet in self.air.frames if packet.kind in (Kind.ACTION, Kind.COMMIT)]
+        self.assertEqual(len(turns), 3)  # host COMMIT, guest ACTION, host COMMIT
+        self.assertTrue(all(len(decode_action(packet.payload)[1]) == 1 for packet in turns))
+        self.assertFalse(any(packet.kind == Kind.SNAPSHOT for packet in self.air.frames))
+        self.assertEqual(len(dealer.session(sid)["state"]), 7)
+        self.assertEqual(dealer.session(sid)["state"], guest.session(sid)["state"])
+
     def test_scorched_pending_animation_matches_later_commit(self):
         dealer, guest = self.engines[:2]
         sid = dealer.create_game("scorched-earth", hosted=True)

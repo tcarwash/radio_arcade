@@ -30,7 +30,7 @@ class OpenWordTilesScenarios(unittest.TestCase):
         start_x = 7 - (len(word) - 1) // 2
         start = f"{chr(65 + start_x)}8"
         action = make_placement(state, actor, start, "H", word)
-        self.assertLessEqual(len(action), 11)
+        self.assertLessEqual(len(action), 6)
         next_state = self.game.apply_action(state, self.players, actor, action)
         self.assertEqual(next_state["board"][105 + start_x:105 + start_x + len(word)],
                          [ord(c) - 64 for c in word])
@@ -47,6 +47,40 @@ class OpenWordTilesScenarios(unittest.TestCase):
         snapshot_payload = encode_snapshot(self.players, encoded, action)
         snapshot_frame = encode(Packet(3, Kind.SNAPSHOT, 1, 1, 1, *self.players, snapshot_payload))
         self.assertLessEqual(len(snapshot_frame), 240)
+
+    def test_compact_moves_match_legacy_including_blanks(self):
+        from radio_arcade.games.scrabble import _pack_place
+        state = self.game.new_state(self.players)
+        state["racks"] = [[3, 1, 20, 0, 5, 18, 19], [EMPTY_RACK] * 7]
+        actor = self.players[state["turn"]]
+        for word, blanks in (("CAT", 0), ("C{A}T", 2)):
+            compact = make_placement(state, actor, "G8", "H", word)
+            legacy = _pack_place(111, True, 3, 7, [3, 1, 20], blanks)
+            self.assertLess(len(compact), len(legacy))
+            self.assertEqual(self.game.apply_action(state, self.players, actor, compact),
+                             self.game.apply_action(state, self.players, actor, legacy))
+            for bad in (compact[:-1], compact + b"\x00", bytes((compact[0], compact[1], 255))):
+                with self.assertRaises(ValueError):
+                    self.game.apply_action(state, self.players, actor, bad)
+        compact = make_exchange(state, actor, "CA")
+        self.assertEqual(len(compact), 1)
+        self.assertEqual(self.game.apply_action(state, self.players, actor, compact),
+                         self.game.apply_action(state, self.players, actor, bytes((2, compact[0] & 127))))
+
+    def test_snapshot_migration_and_sparse_size(self):
+        import struct
+        from radio_arcade.games.scrabble import _pack_bits
+        state = self.state
+        legacy = (bytes((1, state["turn"], 0, 0, 0))
+                  + struct.pack("!Ihh", state["rng"], *state["scores"])
+                  + bytes((0,)) + _pack_bits([tile for rack in state["racks"] for tile in rack], 5) + bytes(29))
+        compact = self.game.encode_state(state)
+        self.assertEqual(len(legacy), 52)
+        self.assertEqual(len(compact), 20)
+        self.assertEqual(self.game.decode_state(legacy), self.game.decode_state(compact))
+        for bad in (compact[:-1], compact + b"\x00", compact[:1] + bytes((compact[1] | 128,)) + compact[2:]):
+            with self.assertRaises(ValueError):
+                self.game.decode_state(bad)
 
     def test_exchange_and_pass_are_deterministic_and_preserve_inventory(self):
         player = self.players[self.state["turn"]]

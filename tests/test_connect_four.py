@@ -18,9 +18,24 @@ class ConnectFourTests(unittest.TestCase):
 
     def test_registry_and_snapshot(self):
         self.assertEqual(builtin_registry(load_plugins=False).by_id(6).key, "connect-four")
-        self.assertEqual(len(self.game.encode_state(self.state)), 13)
+        self.assertEqual(len(self.game.encode_state(self.state)), 7)
         self.drop(3)
         self.assertEqual(self.state["board"][38], "X")
+
+    def test_compact_snapshot_padding_and_sentinels(self):
+        payload = self.game.encode_state(self.state)
+        for bad in (bytes(7), payload[:6] + bytes((payload[6] | 128,))):
+            with self.assertRaises(ValueError):
+                self.game.decode_state(bad)
+
+    def test_legacy_snapshot_migrates(self):
+        for col in (0, 1, 0, 2, 3):
+            self.drop(col)
+        packed = sum({" ": 0, "X": 1, "O": 2}[mark] << (i * 2)
+                     for i, mark in enumerate(self.state["board"]))
+        legacy = packed.to_bytes(11, "little") + bytes((self.state["turn"], 0))
+        self.assertEqual(self.game.decode_state(legacy), self.state)
+        self.assertEqual(len(self.game.encode_state(self.game.decode_state(legacy))), 7)
 
     def test_horizontal_win(self):
         for col in (0, 0, 1, 1, 2, 2, 3):
