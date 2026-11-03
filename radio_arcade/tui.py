@@ -780,6 +780,33 @@ class ArcadeTUI(App):
                             "bold #71e5d3" if mark == "X" else "bold #f4bd76" if mark == "O" else "#4b6579"))
                     await board.mount(Static(line, classes="connect-row"))
                 await board.mount(Static("Click a column above to drop a disc. Four in a row wins.", classes="muted"))
+            elif state["kind"] == "signal-siege":
+                active = (not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"]
+                          and (self.settings.transport == "practice" or (self.settings.tx_enabled and turn == self.settings.callsign)))
+                await board.mount(Static(f"SIGNAL SIEGE  ·  WAVE {state['wave']}/3  ·  CORE {state['boss_hp']}/{state['boss_max_hp']} HP", classes="word-meta"))
+                await board.mount(Static(f"INTERFERENCE PULSE: {state['pulse_damage']} damage per station  ·  IN {state['rounds_until_pulse']} ROUND(S)  ·  JAM: {state['jam']}", classes="muted"))
+                for station in state["stations"]:
+                    mine = not self.settings.observer_mode and station["callsign"] == (turn if self.settings.transport == "practice" else self.settings.callsign)
+                    await board.mount(Static(f"{station['callsign']:10}  HP {station['hp']:2}/18  SHIELD {station['shield']:2}  FOCUS {station['focus']:2}  DECK {station['deck_size']}"
+                                             + ("  · YOUR HAND" if mine else "  · ▤ ▤ ▤"), classes="word-meta"))
+                if state["phase"] == "draft":
+                    await board.mount(Static(f"{turn} chooses a card reward:", classes="muted"))
+                    await board.mount(Horizontal(*(Button(f"{card['name']} · {card['description']}", id=f"siege-draft-{card['slot']}",
+                                                          classes="siege-draft", disabled=not active)
+                                                    for card in state["rewards"])))
+                elif state["phase"] == "battle":
+                    actor = next((station for station in state["stations"] if station["callsign"] == (turn if self.settings.transport == "practice" else self.settings.callsign)), None)
+                    if actor:
+                        await board.mount(Select(((s["callsign"], index) for index, s in enumerate(state["stations"])),
+                                                 value=next(i for i, s in enumerate(state["stations"]) if s["callsign"] == actor["callsign"]),
+                                                 allow_blank=False, id="siege-target"))
+                        await board.mount(Horizontal(*(Button(f"{card['name']} · {card['description']}", id=f"siege-play-{card['slot']}",
+                                                              classes="siege-play", disabled=not active)
+                                                        for card in actor["hand"])))
+                    else:
+                        await board.mount(Static("Waiting for the other station. Their hand remains facedown.", classes="muted"))
+                else:
+                    await board.mount(Static(f"MISSION {state['result'].upper()}", classes="word-meta"))
             elif state["kind"] == "piles":
                 for i, count in enumerate(state["piles"]):
                     await board.mount(Static(f"PILE {i+1}   {'◆ ' * count} ({count})", classes="nim-pile"))
@@ -1075,6 +1102,21 @@ class ArcadeTUI(App):
         if self.engine and self.selected_id:
             col = int(event.button.id.rsplit("-", 1)[1])
             self._run_action(partial(self.engine.legal_action, self.selected_id, bytes((col,))))
+
+    @on(Button.Pressed, ".siege-play")
+    def _siege_play(self, event: Button.Pressed):
+        if self.engine and self.selected_id:
+            from .games.signal_siege import pack_play
+            slot = int(event.button.id.rsplit("-", 1)[1])
+            target = int(self.query_one("#siege-target", Select).value)
+            self._run_action(partial(self.engine.legal_action, self.selected_id, pack_play(slot, target)))
+
+    @on(Button.Pressed, ".siege-draft")
+    def _siege_draft(self, event: Button.Pressed):
+        if self.engine and self.selected_id:
+            from .games.signal_siege import pack_draft
+            choice = int(event.button.id.rsplit("-", 1)[1])
+            self._run_action(partial(self.engine.legal_action, self.selected_id, pack_draft(choice)))
 
     @on(Button.Pressed, "#nim-take")
     def _nim_take(self):

@@ -1,6 +1,16 @@
 # Radio Arcade
 
-Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, and Scorched Earth (desktop and web).
+Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, and Signal Siege.
+
+**Signal Siege (prototype):** A 1–4-player cooperative deck-building game. In
+solo practice, fight three interference waves; after waves one and two choose
+one of three new cards to add to your rotating deck. Up to four radio stations
+can join a hosted KISS broadcast table. Playing a card (including its support
+target) and drafting a card each take **one game-action byte**. Other stations'
+hands are rendered face-down even though they are part of the shared state:
+this is a *UI convention, not cryptographic secrecy*. Your earned cards stay
+with the saved game session, but there is no account-wide collection or custom
+pre-match deck construction yet. See [Signal Siege rules](docs/SIGNAL-SIEGE.md).
 
 **PICO-8 cartridges:** A reusable [`pico8/radio.lua`](pico8/radio.lua) SDK and
 browser GPIO bridge now let cartridges own their game rules while Radio Arcade
@@ -46,6 +56,9 @@ sizes; the shared protocol envelope and radio framing add overhead. Word Tiles
 placements use **3–6 bytes**, exchange/pass **1 byte**, and snapshots use sparse
 positions or a bitmap according to which is smaller (20 bytes for an empty board).
 Older saved moves and snapshots remain readable; upgrade both peers for new encodings.
+Signal Siege uses one-byte card plays/drafts with a compact 19–49-byte initial
+snapshot (depending on player count, growing to at most 57 bytes after drafts); packets still carry normal Radio Arcade
+headers, callsigns, roster data, and hosted dealer commits.
 
 
 The UI-independent engine API is documented in [ENGINE-API.md](ENGINE-API.md). Games register through the `radio_arcade.games` entry-point group; assigned IDs are in [GAME-CATALOG.md](GAME-CATALOG.md). Radio Civ is a separate desktop game: [apps/civ/README.md](apps/civ/README.md).
