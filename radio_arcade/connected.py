@@ -7,7 +7,7 @@ import socket
 import threading
 import time
 
-from .wire import decode
+from .wire import CompactFrame, Kind, decode
 
 MAX_PACKET = 240
 
@@ -173,9 +173,13 @@ class ConnectedConnection:
             raise ConnectionError("no connected Data2G session")
         if not 0 < len(frame) <= MAX_PACKET:
             raise ValueError("game packet is too large")
-        destination = decode(frame).destination
-        if destination != self.peer:
-            raise ConnectionError(f"packet is for {destination}; connected peer is {self.peer}")
+        packet = decode(frame)
+        # An established compact turn has no destination: the connected stream
+        # already names exactly one peer. Station IDs use the broadcast '*'
+        # destination so the same compliant full ID packet works in both modes.
+        if not isinstance(packet, CompactFrame) and packet.kind != Kind.STATION_ID:
+            if packet.destination != self.peer:
+                raise ConnectionError(f"packet is for {packet.destination}; connected peer is {self.peer}")
         with self._send_lock:
             self._data.sendall(len(frame).to_bytes(2, "big") + frame)
 

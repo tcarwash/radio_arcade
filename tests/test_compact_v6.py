@@ -1,13 +1,14 @@
 """Live compact turn transport, recovery, and station ID regressions."""
 
 from pathlib import Path
+import threading
 import tempfile
 import time
 import unittest
 
 from radio_arcade.service import ArcadeService, ID_INTERVAL_SECONDS
 from radio_arcade.store import SessionStore
-from radio_arcade.wire import CompactFrame, Kind, Packet, decode, encode_compact
+from radio_arcade.wire import CompactFrame, Kind, Packet, decode, encode, encode_compact
 
 
 class Air:
@@ -214,6 +215,45 @@ class CompactServiceScenarios(unittest.TestCase):
             outgoing = [decode(raw).kind for radio, raw in self.air.frames
                         if radio is observer.transport]
             self.assertEqual(outgoing, [Kind.STATION_ID, Kind.SYNC_REQUEST])
+        finally:
+            observer.close()
+
+    def test_connected_data_stream_accepts_compact_and_full_station_id(self):
+        from radio_arcade.connected import ConnectedConnection
+
+        class Socket:
+            def __init__(self):
+                self.frames = []
+
+            def sendall(self, data):
+                self.frames.append(data)
+
+        link = ConnectedConnection.__new__(ConnectedConnection)
+        link.connected = threading.Event()
+        link.connected.set()
+        link.peer = "K7ABC"
+        link._send_lock = threading.Lock()
+        link._data = Socket()
+        move = encode_compact(Kind.ACTION, 42, 1, 0, b"\x00")
+        station_id = encode(Packet(1, Kind.STATION_ID, 0, 0, 0, "AG7SU", "*", b"ID AG7SU"))
+        for frame in (station_id, move):
+            link.send(frame)
+        self.assertEqual(link._data.frames,
+                         [len(frame).to_bytes(2, "big") + frame for frame in (station_id, move)])
+        with self.assertRaises(ConnectionError):
+            link.send(encode(Packet(1, Kind.CHAT, 42, 1, 1, "AG7SU", "N0WRONG", b"hi")))
+
+    def test_passive_observer_reconstructs_compact_broadcast_commits(self):
+        observer = ArcadeService("W7OBS", self.air.station(),
+                                 SessionStore(Path(self.directory.name) / "passive.sqlite3"),
+                                 observer_mode=True)
+        try:
+            sid = self.hosted()
+            self.assertEqual(observer.session(sid)["revision"], 0)
+            self.engines[0].legal_action(sid, bytes((0, 1)))
+            self.air.pump()
+            self.assertEqual(observer.session(sid)["revision"], 1)
+            self.assertEqual(observer.session(sid)["state"], self.engines[0].session(sid)["state"])
         finally:
             observer.close()
 
