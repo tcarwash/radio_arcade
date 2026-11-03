@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PICO-8 Radio Arcade</title><style>
+body{background:#101722;color:#e8f2f3;font:16px system-ui,sans-serif;max-width:900px;margin:3rem auto;padding:0 1rem}
+header{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap}
+h1{font-size:2rem;margin:0}small,.muted{color:#92a9b4}a{color:#77d4d7}
+section{border:1px solid #2b4050;background:#172331;border-radius:12px;padding:1.2rem;margin:1rem 0}
+label{display:block;margin:1rem 0 .3rem}input,select,button{padding:.65rem;border-radius:7px;border:1px solid #486071;background:#0d1723;color:#e8f2f3;font:inherit}
+button{cursor:pointer;background:#245d68;border-color:#448493;margin:.25rem}button:hover{background:#317a85}button:disabled{opacity:.4}
+.game{border-top:1px solid #355063;padding:.9rem 0}.row{display:flex;gap:.8rem;flex-wrap:wrap;align-items:center}
+#error{color:#ffb6a8}#status{color:#9dd5bf}
+</style></head><body>
+<header><div><h1>PICO-8 × Radio Arcade</h1><small>Cartridge-managed multiplayer over Data2G</small></div><a href="/">Back to Radio Arcade</a></header>
+<section><h2>Cartridge</h2><div id="status">Connecting...</div><label for="cart">Exported PICO-8 HTML</label>
+<select id="cart"></select><p class="muted">Set <code>RADIO_ARCADE_PICO8_CARTS</code> to your trusted HTML export directory before starting the web server.</p>
+<label for="peer">Invite a callsign (optional)</label><input id="peer" placeholder="K7ABC" maxlength="10">
+<label><input type="checkbox" id="hosted"> Hosted broadcast lobby (players join over KISS)</label>
+<button id="create">Create table</button><div id="error" role="alert"></div></section>
+<section><h2>Discovered tables</h2><div id="games">Loading...</div></section>
+<script src="/pico8/lobby.js" defer></script></body></html>

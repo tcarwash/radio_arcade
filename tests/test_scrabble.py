@@ -51,6 +51,7 @@ class OpenWordTilesScenarios(unittest.TestCase):
     def test_compact_moves_match_legacy_including_blanks(self):
         from radio_arcade.games.scrabble import _pack_place
         state = self.game.new_state(self.players)
+        state["turn"] = 0  # The test's synthetic rack belongs to player zero.
         state["racks"] = [[3, 1, 20, 0, 5, 18, 19], [EMPTY_RACK] * 7]
         actor = self.players[state["turn"]]
         for word, blanks in (("CAT", 0), ("C{A}T", 2)):

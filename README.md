@@ -2,6 +2,14 @@
 
 Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, and Scorched Earth (desktop and web).
 
+**PICO-8 cartridges:** A reusable [`pico8/radio.lua`](pico8/radio.lua) SDK and
+browser GPIO bridge now let cartridges own their game rules while Radio Arcade
+handles multiplayer transport, sessions and committed events. Set
+`RADIO_ARCADE_PICO8_CARTS` to a directory of trusted PICO-8 HTML exports, run
+`radio-arcade-web`, and open `/pico8/` to launch or join a table. See the
+[PICO-8 developer guide](pico8/README.md) for examples, checkpoint callbacks,
+and restrictions. Native standalone PICO-8 isn't networked by this bridge.
+
 ## Install and run
 
 ```sh

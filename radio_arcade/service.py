@@ -467,7 +467,7 @@ class ArcadeService:
             if row["pending_action"] is not None:
                 raise ValueError("waiting for the previous move to be committed")
             state = game.decode_state(row["state"])
-            if game.current_player(state, tuple(row["players"])) != self.callsign:
+            if not self._can_act(game, state, tuple(row["players"]), self.callsign):
                 raise ValueError("it is not your turn")
             # Validate before sending. The committed transition is applied only
             # by the coordinator/COMMIT path.
@@ -537,6 +537,8 @@ class ArcadeService:
         if new_state.get("finished"):
             row["status"] = "finished"
         self._save(row)
+        if row["game_id"] == 9:
+            self.store.record_pico8_action(row["id"], row["revision"], actor, action)
         if row.get("hosted"):
             self._transmit(self._make(row, "*", Kind.COMMIT,
                                       row["sequence"], row["revision"], payload))
@@ -546,6 +548,11 @@ class ArcadeService:
                     self._reliable(row, player, Kind.COMMIT, row["sequence"], row["revision"], payload)
         self._emit("session_updated", row["id"], session=self.session(row["id"]),
                    action=payload, committed=True)
+
+    @staticmethod
+    def _can_act(game, state, players, actor):
+        custom = getattr(game, "can_act", None)
+        return bool(custom(state, players, actor)) if callable(custom) else game.current_player(state, players) == actor
 
     def send_chat(self, session_id: str | int, text: str) -> int:
         self._require_player()
@@ -925,6 +932,10 @@ class ArcadeService:
         elif packet.kind == Kind.HOST_CHAT:
             if packet.source == row["coordinator"] and packet.destination == "*":
                 self._receive_host_chat(row, packet)
+        elif packet.kind == Kind.OPAQUE_STATE:
+            if packet.destination == self.callsign and packet.source in row["players"]:
+                if self._receive_opaque_state(row, packet):
+                    self._ack(packet)
         elif packet.kind == Kind.REJECT and packet.source == row["coordinator"]:
             if row["pending_action"] is not None and packet.sequence == row["sequence"] + 1:
                 row["pending_action"] = None
@@ -1038,7 +1049,7 @@ class ArcadeService:
             return
         game = self.registry.by_id(row["game_id"])
         state = game.decode_state(row["state"])
-        if game.current_player(state, tuple(row["players"])) != actor:
+        if not self._can_act(game, state, tuple(row["players"]), actor):
             self._send_reject(row, actor, packet, "not your turn")
             return
         try:
@@ -1094,6 +1105,8 @@ class ArcadeService:
         if new_state.get("finished"):
             row["status"] = "finished"
         self._save(row)
+        if row["game_id"] == 9:
+            self.store.record_pico8_action(row["id"], row["revision"], actor, action)
         self._emit("session_updated", row["id"], session=self.session(row["id"]),
                    action=packet.payload, committed=True)
 

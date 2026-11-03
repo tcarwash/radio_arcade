@@ -6,12 +6,13 @@ import argparse
 from collections import deque
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .service import ArcadeService, station_name
 from .settings import Settings
@@ -245,12 +246,67 @@ class WebController:
         """Handle one API request; separated from HTTP for focused integration tests."""
         try:
             route = urlsplit(path).path
+            query = parse_qs(urlsplit(path).query)
             if len(body) > MAX_REQUEST_BYTES:
                 raise ValueError("request body is too large")
             data = json.loads(body.decode("utf-8")) if body else {}
             if not isinstance(data, dict):
                 raise ValueError("request body must be a JSON object")
             with self._lock:
+                if route.startswith("/api/pico8/"):
+                    if self.engine is None:
+                        raise ValueError(self.last_error or "game service is not ready")
+                    engine = self.engine
+                    if method == "GET" and route == "/api/pico8/sessions":
+                        return 200, {"callsign": self.settings.callsign,
+                                     "transport": self.settings.transport,
+                                     "sessions": [self._public_session(s) for s in engine.sessions()
+                                                  if s["game_id"] == 9]}
+                    if method == "POST" and route == "/api/pico8/create":
+                        return 200, self._command({"command": "create_game", "game": "pico8-cartridge",
+                                                   "hosted": bool(data.get("hosted", False)),
+                                                   "peer": data.get("peer")})
+                    sid = (data.get("session_id") if method == "POST" else
+                           query.get("session_id", [None])[0])
+                    if sid is None:
+                        raise ValueError("session_id is required")
+                    row = engine.session(sid)
+                    if row["game_id"] != 9:
+                        raise ValueError("not a PICO-8 cartridge session")
+                    if method == "GET" and route == "/api/pico8/events":
+                        after = int(query.get("after", ["0"])[0])
+                        if after < 0:
+                            raise ValueError("after must be nonnegative")
+                        events = engine.store.load_pico8_actions(engine._sid(sid), after)
+                        return 200, {"session": self._public_session(row),
+                                     "revision": row["revision"],
+                                     "events": [{"revision": e["revision"], "actor": e["actor"],
+                                                 "hex": e["action"].hex()} for e in events]}
+                    if method == "GET" and route == "/api/pico8/opaque":
+                        after = int(query.get("after", ["0"])[0])
+                        if after < 0:
+                            raise ValueError("after must be nonnegative")
+                        return 200, {"messages": engine.store.load_pico8_opaque(engine._sid(sid), after)}
+                    if method == "GET" and route == "/api/pico8/delivery":
+                        sequence = int(query.get("sequence", ["-1"])[0])
+                        if not 0 <= sequence <= 65535:
+                            raise ValueError("invalid side-channel sequence")
+                        return 200, {"state": engine.store.pico8_opaque_delivery(
+                            engine._sid(sid), engine.callsign, sequence)}
+                    if method == "POST" and route == "/api/pico8/action":
+                        raw = bytes.fromhex(str(data.get("hex", "")))
+                        if not 1 <= len(raw) <= 190:
+                            raise ValueError("PICO-8 action must be 1–190 bytes")
+                        return 200, self._command({"command": "legal_action", "session_id": sid,
+                                                   "action": raw.hex()})
+                    if method == "POST" and route == "/api/pico8/opaque":
+                        message = str(data.get("message", ""))
+                        if not message.startswith("P8:"):
+                            raise ValueError("invalid PICO-8 side-channel message")
+                        if self.settings.transport != "practice" and not self.settings.tx_enabled:
+                            raise ValueError("TX is disabled")
+                        return 200, {"sequence": engine.send_opaque_state(sid, str(data.get("target", "")), message)}
+                    return 404, {"error": "not found"}
                 if method == "GET" and route == "/api/state":
                     return 200, self._state()
                 if method == "POST" and route == "/api/settings":
@@ -286,22 +342,68 @@ class ArcadeRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, _format: str, *_args: Any) -> None:
         return
 
-    def _send(self, status: int, payload: bytes, content_type: str, cache: str = "no-store") -> None:
+    def _send(self, status: int, payload: bytes, content_type: str, cache: str = "no-store",
+              *, exported_cart: bool = False) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        scripts = "'self' 'unsafe-inline' 'wasm-unsafe-eval'" if exported_cart else "'self'"
+        self.send_header("Content-Security-Policy", f"default-src 'self'; script-src {scripts}; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(payload)
 
     def do_GET(self) -> None:
         path = urlsplit(self.path).path
+        if path == "/api/pico8/carts":
+            directory = os.environ.get("RADIO_ARCADE_PICO8_CARTS")
+            carts = (sorted(p.name for p in Path(directory).glob("*.html") if p.is_file())
+                     if directory and Path(directory).is_dir() else [])
+            self._send(200, json.dumps({"carts": carts}).encode(), "application/json")
+            return
         if path.startswith("/api/"):
             status, value = self.controller.dispatch("GET", self.path)
             self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+            return
+        if path == "/pico8/bridge.js":
+            self._send(200, (ASSETS / "pico8_bridge.js").read_bytes(),
+                       "text/javascript; charset=utf-8", "no-cache")
+            return
+        if path == "/pico8/":
+            self._send(200, (ASSETS / "pico8_lobby.html").read_bytes(), "text/html; charset=utf-8")
+            return
+        if path == "/pico8/lobby.js":
+            self._send(200, (ASSETS / "pico8_lobby.js").read_bytes(), "text/javascript; charset=utf-8")
+            return
+        if path.startswith("/pico8/carts/"):
+            # Only explicitly configured local exports. Never resolve paths
+            # outside the designated cartridge directory.
+            name = unquote(path[len("/pico8/carts/"):])
+            directory = os.environ.get("RADIO_ARCADE_PICO8_CARTS")
+            if not directory or not name or Path(name).name != name or Path(name).suffix not in (".html", ".js", ".png", ".wasm", ".data"):
+                self._send(404, b"Not found", "text/plain")
+                return
+            try:
+                base = Path(directory).resolve()
+                target = (base / name).resolve()
+                if not target.is_relative_to(base):
+                    raise OSError("cartridge path escapes configured directory")
+                payload = target.read_bytes()
+            except OSError:
+                self._send(404, b"Not found", "text/plain")
+                return
+            if name.endswith(".html"):
+                # Exported PICO-8 defines pico8_gpio in the HTML shell.
+                injection = b'<script src="/pico8/bridge.js" defer></script>'
+                payload = payload.replace(b"</body>", injection + b"</body>")
+                if injection not in payload:
+                    payload += injection
+            types = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                     ".png": "image/png", ".wasm": "application/wasm", ".data": "application/octet-stream"}
+            self._send(200, payload, types[Path(name).suffix], "no-cache",
+                       exported_cart=name.endswith(".html"))
             return
         asset_names = {"/": "index.html", "/index.html": "index.html",
                        "/app.js": "app.js", "/style.css": "style.css",

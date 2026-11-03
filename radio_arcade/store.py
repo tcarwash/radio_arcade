@@ -65,6 +65,11 @@ class SessionStore:
                     session TEXT NOT NULL, target TEXT NOT NULL,
                     PRIMARY KEY(session, target)
                 );
+                CREATE TABLE IF NOT EXISTS pico8_actions(
+                    session TEXT NOT NULL, revision INTEGER NOT NULL,
+                    actor TEXT NOT NULL, body BLOB NOT NULL,
+                    PRIMARY KEY(session, revision)
+                );
             """)
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(sessions)")}
             if "opaque_sequence" not in columns:
@@ -187,8 +192,21 @@ class SessionStore:
         """Remove one local game's saved state and related queued data."""
         with self._lock, self.db:
             self.db.execute("DELETE FROM sessions WHERE id=?", (session,))
-            for table in ("outbox", "chat", "opaque_states", "cancelled_invites"):
+            for table in ("outbox", "chat", "opaque_states", "cancelled_invites", "pico8_actions"):
                 self.db.execute(f"DELETE FROM {table} WHERE session=?", (session,))
+
+    def record_pico8_action(self, session: str, revision: int, actor: str, body: bytes) -> None:
+        with self._lock, self.db:
+            self.db.execute("INSERT OR IGNORE INTO pico8_actions VALUES(?,?,?,?)",
+                            (session, revision, actor, body))
+
+    def load_pico8_actions(self, session: str, after: int = 0, limit: int = 256) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.db.execute("SELECT revision,actor,body FROM pico8_actions "
+                                   "WHERE session=? AND revision>? ORDER BY revision LIMIT ?",
+                                   (session, after, limit)).fetchall()
+        return [{"revision": int(row["revision"]), "actor": row["actor"],
+                 "action": bytes(row["body"])} for row in rows]
 
     def remember_cancelled_invite(self, session: str, target: str) -> None:
         with self._lock, self.db:
@@ -233,6 +251,26 @@ class SessionStore:
             rows = self.db.execute("SELECT * FROM (SELECT * FROM opaque_states WHERE session=? ORDER BY created DESC LIMIT ?) ORDER BY created",
                                    (session, limit)).fetchall()
         return [{**dict(row), "body": bytes(row["body"])} for row in rows]
+
+    def load_pico8_opaque(self, session: str, after_id: int = 0, limit: int = 256) -> list[dict[str, Any]]:
+        """Bounded, ordered side-channel stream for the PICO-8 bridge only."""
+        with self._lock:
+            rows = self.db.execute(
+                "SELECT rowid,sender,sequence,body,delivery FROM opaque_states "
+                "WHERE session=? AND rowid>? AND CAST(body AS TEXT) LIKE 'P8:%' "
+                "ORDER BY rowid LIMIT ?", (session, after_id, limit)).fetchall()
+        return [{"id": row["rowid"], "sender": row["sender"],
+                 "sequence": row["sequence"],
+                 "delivery": row["delivery"],
+                 "body": bytes(row["body"]).decode("utf-8")}
+                for row in rows if bytes(row["body"]).startswith(b"P8:")]
+
+    def pico8_opaque_delivery(self, session: str, sender: str, sequence: int) -> str | None:
+        with self._lock:
+            row = self.db.execute("SELECT delivery FROM opaque_states "
+                                  "WHERE session=? AND sender=? AND sequence=?",
+                                  (session, sender, sequence)).fetchone()
+        return row["delivery"] if row else None
 
     def close(self) -> None:
         with self._lock:
