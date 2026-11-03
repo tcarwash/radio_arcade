@@ -526,3 +526,48 @@ select.field, .settings-card select { appearance: none; background-image: linear
 @keyframes hex-arrive { from { transform:scale(.2); } 70% { transform:scale(1.2); } to { transform:scale(1); } }
 @keyframes hex-convert { 0%, 30% { filter:brightness(2); transform:scaleX(1); } 50% { transform:scaleX(.05); } 100% { transform:scaleX(1); } }
 @media (prefers-reduced-motion:reduce) { .hex-effects { display:none; } .hex-arrival circle, .hex-converted circle { animation:none; } }
+/* Signal Siege: the synchronized game model contains all hands, but only the
+   local station's hand is revealed in this presentation layer. */
+.siege-layout { width:100%; display:grid; gap:18px; }
+.siege-hero { position:relative; overflow:hidden; padding:22px 24px; border:1px solid rgba(173,150,246,.23); border-radius:17px;
+  background:radial-gradient(ellipse at 90% 15%,rgba(150,86,207,.25),transparent 42%),
+    repeating-radial-gradient(circle at 89% 25%,transparent 0 22px,rgba(162,118,236,.045) 23px 24px),
+    linear-gradient(125deg,#172237,#121a2c 75%); }
+.siege-wave { color:#bea7fb; font:700 10px 'Space Grotesk',sans-serif; letter-spacing:.18em; margin-bottom:10px; }
+.siege-hero h2 { font:700 clamp(23px,3vw,32px) 'Space Grotesk',sans-serif; margin:0 0 8px; letter-spacing:-.04em; }
+.siege-hero p { color:#aeb9cf; font-size:12px; line-height:1.5; max-width:520px; margin:0 0 18px; }
+.siege-integrity { max-width:520px; }
+.siege-meter-label { display:flex; justify-content:space-between; align-items:center; font:700 10px 'Space Grotesk',sans-serif; letter-spacing:.08em; color:#aeb7d1; margin-bottom:7px; }
+.siege-meter-label strong { color:#f5c0a0; font-size:14px; }
+.siege-meter { height:10px; border:1px solid #655370; border-radius:20px; overflow:hidden; background:rgba(0,0,0,.35); }
+.siege-meter-fill { height:100%; border-radius:20px; background:linear-gradient(90deg,#e87675,#f0b27b); box-shadow:0 0 20px rgba(248,135,111,.45); transition:width .3s; }
+.siege-roster { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:10px; }
+.siege-station { padding:12px; border:1px solid rgba(199,211,242,.13); border-radius:12px; background:rgba(19,31,47,.7); }
+.siege-station.on-turn { border-color:rgba(154,236,194,.48); box-shadow:inset 0 0 0 1px rgba(154,236,194,.06); }
+.siege-station-top { display:flex; justify-content:space-between; gap:6px; align-items:baseline; margin-bottom:10px; }
+.siege-station-top strong { color:#e5ecf8; font-size:11px; }
+.siege-station-top span { color:#f3bfab; font-size:10px; white-space:nowrap; }
+.siege-health { height:5px; background:#422e3e; border-radius:10px; overflow:hidden; }
+.siege-health span { display:block; height:100%; background:linear-gradient(90deg,#64b8a6,#a5e6c0); }
+.siege-stats { margin:9px 0 10px; font-size:9px; line-height:1.5; letter-spacing:.02em; color:#97aaca; white-space:pre-wrap; }
+.siege-card-backs { display:flex; gap:5px; min-height:42px; align-items:center; }
+.siege-card-back { width:27px; height:38px; display:grid; place-items:center; border:1px solid rgba(190,162,250,.4); border-radius:5px; color:#ab96dc;
+  background:repeating-linear-gradient(145deg,#1c2341,#1c2341 4px,#29264b 5px,#29264b 7px); font-size:14px; }
+.siege-own-hand { color:#97e7d0; font:700 9px 'Space Grotesk',sans-serif; letter-spacing:.11em; }
+.siege-controls { border-top:1px solid var(--line); padding-top:15px; }
+.siege-controls h3 { font:650 18px 'Space Grotesk',sans-serif; letter-spacing:-.03em; margin-bottom:4px; }
+.siege-helper { color:#94a4ba; font-size:11px; line-height:1.6; margin-bottom:13px; }
+.siege-target-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; max-width:380px; }
+.siege-target-row label { color:#a8b7ce; font-size:11px; white-space:nowrap; }
+.siege-cards { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.siege-card { min-height:174px; text-align:left; display:flex; flex-direction:column; align-items:flex-start; padding:14px; gap:10px; cursor:pointer;
+  color:#eff5fd; border:1px solid rgba(134,220,187,.36); border-radius:12px; background:radial-gradient(circle at 80% 10%,rgba(130,232,203,.17),transparent 58%),linear-gradient(145deg,#203f43,#162c38); transition:transform .14s,border-color .14s; }
+.siege-card.defense { border-color:rgba(129,174,247,.36); background:radial-gradient(circle at 80% 10%,rgba(115,172,238,.16),transparent 58%),linear-gradient(145deg,#1e344c,#17283d); }
+.siege-card.support { border-color:rgba(187,149,244,.37); background:radial-gradient(circle at 80% 10%,rgba(181,151,248,.19),transparent 58%),linear-gradient(145deg,#362b4d,#231f3d); }
+.siege-card:not(:disabled):hover { transform:translateY(-4px); border-color:rgba(242,244,255,.75); }
+.siege-card:disabled { opacity:.5; cursor:not-allowed; }
+.siege-card-number { font:700 9px 'Space Grotesk',sans-serif; letter-spacing:.14em; color:#b6c7db; }
+.siege-card strong { font:700 20px 'Space Grotesk',sans-serif; letter-spacing:-.04em; }
+.siege-card p { font-size:11px; line-height:1.5; color:#b6cadd; margin:0; }
+.siege-play { margin-top:auto; color:#a1f0d5; font:700 9px 'Space Grotesk',sans-serif; letter-spacing:.1em; }
+@media(max-width:700px) { .siege-cards {grid-template-columns:1fr;} .siege-card {min-height:115px;} .siege-hero {padding:18px;} }

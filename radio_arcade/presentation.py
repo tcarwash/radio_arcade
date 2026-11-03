@@ -8,10 +8,10 @@ def scoreboard(session: dict) -> dict:
     winners = view.get("winners") or ([winner] if winner else [])
     scores = view.get("scores") or {}
     tanks = {tank["player"]: tank for tank in view.get("tanks", [])}
-    unit = "HP" if tanks else "POINTS" if scores else "RESULT"
+    unit = "HP" if tanks or view.get("kind") == "signal-siege" else "POINTS" if scores else "RESULT"
     entries = []
     for player in session.get("players", []):
-        result = "WIN" if player in winners else "LOSS" if winners else "DRAW"
+        result = "WIN" if player in winners else "LOSS" if winners or (view.get("kind") == "signal-siege" and finished) else "DRAW"
         value = tanks[player]["hp"] if player in tanks else scores.get(player, result if finished else "—")
         entries.append({"player": player, "value": str(value), "unit": unit,
                         "active": not finished and player == session.get("current_player"),
@@ -22,6 +22,8 @@ def scoreboard(session: dict) -> dict:
 
 def result_title(session: dict, callsign: str, *, practice=False, observer=False) -> str:
     view = session.get("view") or {}
+    if view.get("kind") == "signal-siege":
+        return "VICTORY" if view.get("result") == "victory" else "DEFEAT"
     winners = view.get("winners") or ([view["winner"]] if view.get("winner") else [])
     if not winners:
         return "DRAW"
