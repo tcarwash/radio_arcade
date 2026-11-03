@@ -110,8 +110,9 @@ complete symbols. With no rate, airtime is `None` but frame bytes are exact.
 **These are planning estimates, not Data2G airtime readings.** Actual time
 also depends on modem preamble/pilots, FEC block padding, interleaving,
 transmission scheduling, adaptive mode changes, turnarounds, ACKs and retries.
-The periodic full callsign-ID packets are additional transmissions and are not
-included in each compact move's estimate.
+Station IDs are additional transmissions not included in each compact move's
+estimate: Data2G-managed CWID uses Morse audio (default), while the application
+fallback sends periodic full callsign-ID packets.
 KISS/TCP delimiters are not included as on-air bytes. In hosted play, estimate
 the participant's directed ACTION and the dealer's broadcast COMMIT as two
 separate frames. This utility is intended to back the proposed PICO-8

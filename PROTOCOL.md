@@ -76,22 +76,40 @@ Older peers **cannot** interpret v6 traffic; every station must upgrade.
 
 ## Station identification (v6)
 
-The service sends a full, explicit `STATION_ID` packet with the complete ASCII
-callsign **before its first game transmission** and at no more than **nine
-minutes** between IDs while it is transmitting. An ID send failure blocks
-game traffic until identification succeeds. Active ongoing traffic causes an
-ID to be sent by the retry worker when the nine-minute interval arrives.
-An idle game does **not** beacon an ID forever; the next user transmission
-first checks the deadline. Finishing a match schedules a final station ID,
-staggered by seat to avoid four simultaneous broadcasts; closing the service
-also sends one after local traffic. Identifications are standalone full frames,
-not repeated callsign bytes in every nine-byte turn.
+**Default for Data2G transports: modem-managed Morse CWID.** Radio Arcade
+configures the Data2G command socket using `MYCALL <call>`, `DATA2G ON`,
+`CWID ONLY 20` (or the configured 15–40 WPM). Data2G keys `DE <call>` as a
+1,500 Hz Morse audio tone. This is supported in both native C++ and Python
+Data2G engines. The exact setting is `station_id_mode="auto"`; a successful
+`CWID` command response suppresses Radio Arcade's additional application ID
+packets. A rejected CWID command leaves the original app IDs enabled and
+exposes a fallback warning. Connection loss or command timeout instead fails
+the setup safely. An operator may select `"application"` explicitly to avoid
+changing modem settings; this does not disable any CWID independently enabled
+in the modem. Observer-mode and initially TX-disabled clients do not configure
+autonomous CWID; any later explicitly permitted transmission uses the app-ID
+fallback.
 
-This implements Radio Arcade's application-level identification policy for
+For connected ARQ, Data2G identifies at its scheduled interval and at the end
+of a session. For broadcast/KISS, it plans a CWID nine minutes after activity
+and transmits it when the channel permits, including when no game action is
+queued. Data2G may delay an ID when the channel is busy. A broadcast KISS game
+ending is not the same as a modem ARQ session ending, so operators should
+verify that an appropriate ending ID is actually transmitted (especially
+before stopping the modem).
+
+**Application fallback:** The service sends a full, explicit `STATION_ID`
+packet with the complete ASCII callsign before its first game transmission
+and at no more than nine-minute intervals while transmitting. An ID failure
+blocks game traffic until it succeeds. An idle game doesn't beacon
+indefinitely, and final ID frames are scheduled when games end or the service
+closes. All these ID packets are standalone full frames, not repeated callsign
+bytes in every nine-byte turn.
+
+These features support identification under
 [47 CFR §97.119](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-B/section-97.119).
 **Operators must still ensure the transmitted waveform satisfies the permitted
-identification methods** (for example, a modem-specific CW/RTTY ID where
-necessary); an ASCII payload inside a binary game packet does not by itself
+identification methods**; an ASCII payload inside a binary game packet does not by itself
 prove every modem/emission combination is compliant. The configured callsign
 must be the station's actual assigned call sign for legal identification.
 

@@ -21,8 +21,13 @@ class ConnectedConnection:
     with a two-byte unsigned big-endian length.
     """
 
-    def __init__(self, host: str, command_port: int, callsign: str, on_frame=None):
+    def __init__(self, host: str, command_port: int, callsign: str, on_frame=None,
+                 *, station_id_mode: str = "auto", cw_wpm: int = 20):
+        if station_id_mode not in ("auto", "application") or type(cw_wpm) is not int or not 15 <= cw_wpm <= 40:
+            raise ValueError("station ID must be auto/application and CW speed 15–40 WPM")
         self.callsign = callsign.upper()
+        self.cwid_active = False
+        self.cwid_warning: str | None = None
         self.on_frame = on_frame or (lambda _frame: None)
         self.on_status = lambda _state, _peer: None
         self.closed = threading.Event()
@@ -49,6 +54,14 @@ class ConnectedConnection:
         try:
             self._command(f"MYCALL {self.callsign}")
             self._command("DATA2G ON")
+            if station_id_mode == "auto":
+                try:
+                    self._command(f"CWID ONLY {cw_wpm}")
+                except RuntimeError as exc:
+                    # Older modems may reject CWID; application IDs remain on.
+                    self.cwid_warning = f"Data2G CWID unavailable ({exc}); using Radio Arcade IDs"
+                else:
+                    self.cwid_active = True
             self._command("LISTEN ON")
         except Exception:
             self.close()

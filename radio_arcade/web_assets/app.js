@@ -152,7 +152,8 @@ function setConnection(snapshot) {
   if (!snapshot.ready) label.textContent = snapshot.callsign ? "Engine offline" : "Set up station";
   else if (isPractice()) label.textContent = `Local practice · ${snapshot.callsign}`;
   else if (!snapshot.connected) label.textContent = "Data2G offline";
-  else label.textContent = `${snapshot.transport === "broadcast" ? "Broadcast" : "Connected"} · ${snapshot.callsign}`;
+  else label.textContent = `${snapshot.transport === "broadcast" ? "Broadcast" : "Connected"} · ${snapshot.callsign}${snapshot.identification_method === "Data2G CW" ? " · CWID" : " · app ID"}`;
+  status.title = snapshot.identification_warning || snapshot.identification_method || "";
   $("#transport-label").textContent = !snapshot.ready ? "STATION OFFLINE" : isPractice() ? "LOCAL PRACTICE · HOT-SEAT" : `${snapshot.transport.toUpperCase()} · ${snapshot.group}`;
   document.documentElement.dataset.scheme = snapshot.color_scheme || "midnight";
   const tx = $("#tx-toggle");
@@ -1363,7 +1364,7 @@ function submitAction(bytes) {
 function openSettings() {
   const form = $("#settings-form");
   if (state.snapshot) {
-    for (const key of ["callsign", "host", "transport", "group", "broadcast_mode", "command_port", "kiss_port", "color_scheme", "dx_cluster_url"]) {
+    for (const key of ["callsign", "host", "transport", "group", "broadcast_mode", "station_id_mode", "cw_wpm", "command_port", "kiss_port", "color_scheme", "dx_cluster_url"]) {
       if (form.elements[key]) form.elements[key].value = state.snapshot[key] ?? "";
     }
     form.elements.observer_mode.checked = Boolean(state.snapshot.observer_mode);
@@ -1389,6 +1390,7 @@ $("#settings-form").addEventListener("submit", async event => {
   const form = event.currentTarget;
   const data = Object.fromEntries(new FormData(form).entries());
   data.command_port = Number(data.command_port); data.kiss_port = Number(data.kiss_port);
+  data.cw_wpm = Number(data.cw_wpm);
   data.observer_mode = form.elements.observer_mode.checked;
   data.sound_enabled = form.elements.sound_enabled.checked;
   try {
@@ -1396,6 +1398,7 @@ $("#settings-form").addEventListener("submit", async event => {
     state.snapshot = snapshot; state.sessionSignature = ""; state.chatSignature = "";
     $("#settings-dialog").close();
     if (snapshot.error) notify(`Settings saved, but the station could not connect: ${snapshot.error}`);
+    if (snapshot.identification_warning) notify(snapshot.identification_warning);
     await refresh();
   } catch (error) { const field = $("#settings-error"); field.textContent = error.message; field.hidden = false; }
 });

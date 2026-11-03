@@ -30,14 +30,19 @@ def main() -> None:
     parser.add_argument("--command-port", type=int, default=8300)
     parser.add_argument("--kiss-port", type=int, default=8100)
     parser.add_argument("--group", default="RAGAMES")
+    parser.add_argument("--station-id-mode", choices=("auto", "application"), default="auto")
+    parser.add_argument("--cw-wpm", type=int, default=20)
     args = parser.parse_args()
     settings = Settings(args.callsign, args.host, args.transport, args.kiss_port, args.command_port, args.group)
+    settings.station_id_mode, settings.cw_wpm = args.station_id_mode, args.cw_wpm
     try:
         engine = create_service(settings)
     except Exception as exc:
         raise SystemExit(f"Unable to connect to Data2G: {exc}") from exc
     unsubscribe = engine.subscribe(_print_event)
     print("Radio Arcade headless client. Commands: games, new GAME [CALL], invite ID CALL,")
+    print(f"Identification: {engine.identification_method}" +
+          (f" · {engine.identification_warning}" if engine.identification_warning else ""))
     print("accept ID, start ID, move ID CELL | move ID PILE AMOUNT, chat ID TEXT,")
     print("connect CALL, disconnect, sync ID, forfeit ID, show ID, sessions, quit")
     try:

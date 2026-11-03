@@ -49,9 +49,13 @@ class ArcadeService:
         if observer_mode and hasattr(transport, "connect_peer"):
             raise ValueError("observer mode requires a broadcast transport")
         self.transport = transport
+        self.cwid_active = bool(getattr(transport, "cwid_active", False))
+        self.identification_method = "Data2G CW" if self.cwid_active else "Radio Arcade data ID"
+        self.identification_warning = getattr(transport, "cwid_warning", None)
         # Receive-only observers may explicitly transmit SYNC_REQUEST; they
         # still need to identify whenever they exercise that exception.
-        self.station_id_enabled = bool(getattr(transport, "supports_compact", False) or compact_turns)
+        self.station_id_enabled = (bool(getattr(transport, "supports_compact", False) or compact_turns)
+                                   and not self.cwid_active)
         self.compact_turns = (bool(getattr(transport, "supports_compact", False))
                               if compact_turns is None else bool(compact_turns)) and not observer_mode
         self.store = store or SessionStore((SessionStore.default_observer_path() if observer_mode else None))

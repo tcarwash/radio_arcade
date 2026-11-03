@@ -110,11 +110,13 @@
         <div class="settings-top"><div><p class="eyebrow">YOUR STATION</p><h2>Connection settings</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button></div>
         <p class="settings-intro">Choose how this game room talks to Data2G. Your station preferences are saved locally.</p>
         <div class="settings-grid">
-          <label>Callsign<input name="callsign" required maxlength="10" placeholder="N0CALL" autocomplete="off"></label>
+          <label>Callsign<input name="callsign" required maxlength="15" placeholder="N0CALL" autocomplete="off"></label>
           <label>Data2G host<input name="host" placeholder="127.0.0.1" autocomplete="off"></label>
           <label>Transport<select name="transport"><option value="broadcast">Broadcast · KISS</option><option value="connected">Connected · VARA-like</option><option value="practice">Local practice · hot-seat</option></select></label>
           <label>Broadcast group<input name="group" maxlength="10" value="RAGAMES"></label>
           <label>Broadcast modem mode<input name="broadcast_mode" placeholder="Default, or e.g. n10-qpsk-r1/5"></label>
+          <label>Station identification<select name="station_id_mode"><option value="auto">Data2G CWID (with fallback)</option><option value="application">Radio Arcade data ID</option></select></label>
+          <label>CW ID speed (WPM)<input name="cw_wpm" type="number" min="15" max="40" value="20"></label>
           <label>Command port<input name="command_port" type="number" min="1" max="65535" value="8300"></label>
           <label>KISS port<input name="kiss_port" type="number" min="1" max="65535" value="8100"></label>
           <label>Color scheme<select name="color_scheme"><option value="midnight">Midnight</option><option value="daylight">Daylight</option><option value="monochrome">Monochrome</option></select></label>

@@ -39,10 +39,14 @@ a one-byte game move takes **9 application bytes** on the radio (8 bytes of
 control/short-session reference + 1 action byte); a compact ACK takes **8**.
 Four-player dealer tables share the same format, using a two-bit seat index.
 The initial invitation/START, recovery, and other control traffic remain full
-frames. Before transmission, the station sends a full callsign ID and repeats
-it at nine-minute intervals while active on air, with a final ID at game end.
-All peers must run v6; operators remain responsible for a compliant CW/RTTY or
-other permitted ID on their particular modem. See the protocol ID section.
+frames. For actual Data2G operation the station now defaults to **CWID ONLY**
+(20 WPM, configurable): Data2G itself keys the callsign in Morse rather than
+carrying extra station-ID packets inside Radio Arcade. If Data2G rejects that
+command, Radio Arcade falls back to its original first/9-minute/final data-ID
+policy and displays a warning. Configure this in desktop/web station settings
+or using `--station-id-mode auto --cw-wpm 20` in the headless client.
+All peers must run v6; operators must verify identification on their modem,
+including at the end of KISS broadcast sessions. See the protocol ID section.
 
 ## Development
 
