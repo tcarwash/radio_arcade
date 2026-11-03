@@ -12,6 +12,23 @@ class ScorchedEarthTests(unittest.TestCase):
         self.players = ("AG7SU", "N0CALL")
         self.state = self.game.new_state(self.players)
 
+    def test_fast_round_cannot_skip_tank_between_steps(self):
+        shot = _trace_shot([0] * WIDTH, [10, 17], 0, 6, 0, 3)
+        self.assertEqual(shot["kind"], "tank")
+        self.assertLess(shot["x"], 17_000)
+
+    def test_zero_height_ground_explodes_instead_of_exiting(self):
+        shot = _trace_shot([0] * WIDTH, [10, 110], 0, 0, 0, 3)
+        self.assertEqual(shot["kind"], "terrain")
+        self.assertEqual(shot["y"], 0)
+
+    def test_precision_round_on_hull_deals_damage_and_splash_reaches_hull(self):
+        from radio_arcade.games.scorched_earth import _resolve_blast
+        for x, y in ((18_950, 1650), (18_400, 650)):
+            hp, shields = _resolve_blast([0] * WIDTH, [10, 20], 6, x, y, [100, 100], [False, False])
+            self.assertLess(hp[1], 100)
+            self.assertEqual(hp[0], 100)
+
     def test_desktop_and_web_are_supported(self):
         self.assertEqual(self.game.ui_clients, ("desktop", "web"))
 

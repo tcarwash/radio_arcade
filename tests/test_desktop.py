@@ -165,7 +165,12 @@ class DesktopScenarios(unittest.TestCase):
                 power.setValue(10)  # 50% power
 
                 self.assertTrue(window.findChild(QPushButton, "scorchedFire").isEnabled())
+                # Prediction starts synchronously, before worker/COMMIT events.
+                original = window.findChild(ScorchedBattlefield, "scorchedBattlefield")
                 window.findChild(QPushButton, "scorchedFire").click()
+                self.assertTrue(original._flight_timer.isActive())
+                self.assertLess(original.flight_progress, 1)
+                started = original._flight_started
                 deadline = time.monotonic() + 3
                 while engine.session(sid)["revision"] < 1 and time.monotonic() < deadline:
                     app.processEvents(); time.sleep(.01)
@@ -176,6 +181,13 @@ class DesktopScenarios(unittest.TestCase):
                 self.assertIsNotNone(animated)
                 self.assertLess(animated.flight_progress, 1)
                 self.assertTrue(animated._flight_timer.isActive())
+                self.assertEqual(animated._flight_started, started)
+                replay = window.findChild(QPushButton, "scorchedReplay")
+                self.assertTrue(replay.isEnabled())
+                before = engine.session(sid)
+                replay.click()
+                self.assertGreaterEqual(animated._flight_started, started)
+                self.assertEqual(engine.session(sid), before)
             finally:
                 window.close(); engine.close(); app.processEvents()
 

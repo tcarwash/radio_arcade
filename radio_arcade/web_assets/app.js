@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (selector, root = document) => root.querySelector(selector);
-const state = { snapshot: null, selectedId: null, session: null, listSignature: "", sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null, tankZoom: 1 };
+const state = { snapshot: null, selectedId: null, session: null, listSignature: "", sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null, tankZoom: 1, tankWeapons: new Map() };
 const RESOURCE_META = [
   ["timber", "♣"], ["clay", "⬟"], ["wool", "✿"], ["grain", "✳"], ["ore", "◈"],
 ];
@@ -633,7 +633,8 @@ function renderPlugin(session, view, host) {
 }
 
 function renderScorchedEarth(session, view, host) {
-  const shotKey = `${session.id}:${session.revision}`;
+  view = session.animation_view || view;
+  const shotKey = `${session.id}:${session.animation_revision ?? session.revision}`;
   const animateShot = Boolean(view.last_actor && view.impact && view.trajectory.length > 1 && state.lastTankAnimation !== shotKey);
   const beforeTerrain = animateShot ? view.previous_terrain || view.terrain : view.terrain;
   const wrap = node("div", "tank-layout");
@@ -854,6 +855,10 @@ function renderScorchedEarth(session, view, host) {
     const option = node("option", "", `${item.name} · ${item.tag} · ${item.id ? `${stock} rounds` : "∞ rounds"}`);
     option.value = item.id; option.disabled = !stock; weapon.append(option);
   }
+  const weaponKey = JSON.stringify([session.id, activeTank?.player]);
+  const selectedWeapon = state.tankWeapons.get(weaponKey) ?? 0;
+  weapon.value = String(activeTank?.ammo[selectedWeapon] ? selectedWeapon : 0);
+  weapon.addEventListener("change", () => state.tankWeapons.set(weaponKey, Number(weapon.value)));
   const angleLabel = node("label", "tank-angle-label", "Firing angle · 45°");
   const angle = node("input", "field tank-angle"); angle.type = "range"; angle.min = String(view.min_angle); angle.max = String(view.max_angle); angle.value = "45";
   angleLabel.append(angle);
@@ -878,14 +883,23 @@ function renderScorchedEarth(session, view, host) {
   angle.addEventListener("input", updatePreview);
   weapon.addEventListener("change", updatePreview);
   updatePreview();
-  form.addEventListener("submit", event => {
+  form.addEventListener("submit", async event => {
     event.preventDefault();
+    if (!canAct(session) || submit.disabled) return;
     const degrees = Number(angle.value);
     if (!Number.isInteger(degrees) || degrees < view.min_angle || degrees > view.max_angle) { notify(`Firing angle must be between ${view.min_angle}° and ${view.max_angle}°.`); return; }
     const strength = Number(power.value);
     if (!Number.isInteger(strength) || strength < view.min_power || strength > view.max_power || strength % view.power_step) { notify("Choose a valid firing power."); return; }
     const slot = strength === 100 ? 0 : (strength - 25) / 5 + 1;
-    submitAction([Number(weapon.value) | slot << 3, degrees]);
+    const bytes = [Number(weapon.value) | slot << 3, degrees];
+    submit.disabled = true;
+    try {
+      const action = bytes.map(value => value.toString(16).padStart(2, "0")).join("");
+      const prediction = await request("/api/command", { method: "POST", body: JSON.stringify({ command: "preview_shot", session_id: session.id, action }) });
+      renderGame({ ...session, has_pending_action: true, animation_revision: session.revision + 1, animation_view: prediction.view });
+      const result = await sendCommand("legal_action", { session_id: session.id, action });
+      if (!result) { state.tankPlayback = null; state.sessionSignature = ""; await refresh(); }
+    } catch (error) { submit.disabled = !canAct(session); notify(error.message); }
   });
   const shop = node("div", "tank-shop");
   shop.append(node("div", "tank-shop-title", "ARMORY · BUY AMMUNITION (USES TURN)"));
@@ -914,6 +928,13 @@ function renderScorchedEarth(session, view, host) {
   side.append(shop);
   const callout = node("div", "tank-shot-result", view.last_action ? `${view.last_actor} ${view.last_action}` : "Take the first turn");
   side.append(callout);
+  const replay = node("button", "button secondary", "Instant replay"); replay.type = "button";
+  replay.disabled = !view.impact;
+  replay.addEventListener("click", () => {
+    state.lastTankAnimation = null;
+    renderGame(session);
+  });
+  side.append(replay);
   wrap.append(navigation, arena, panHint, side); host.append(wrap);
   // On a panoramic map, start near the tank whose turn it is; players can pan
   // across the entire battlefield with touch, trackpad or the scrollbar.
@@ -927,6 +948,14 @@ function renderScorchedEarth(session, view, host) {
   const actor = view.last_actor;
   if (animateShot) {
     state.lastTankAnimation = shotKey;
+    const playback = { id: session.id, svg };
+    state.tankPlayback = playback;
+    setTimeout(() => {
+      if (state.tankPlayback !== playback) return;
+      state.tankPlayback = null;
+      state.sessionSignature = "";
+      refresh();
+    }, 6200);
     const firingArt = tankArtwork.get(actor);
     if (firingArt) { firingArt.classList.add("recoiling"); setTimeout(() => firingArt.classList.remove("recoiling"), 550); }
     animateTankShot(svg, view, actor, callout, settleTerrain, (x, y) => {
@@ -949,14 +978,23 @@ function traceTankPreview(view, shooter, weapon, angle, power = 100) {
   const target = view.tanks.find(tank => tank.player !== shooter.player);
   const points = [[x / 1000, y / 1000]];
   for (let step = 0; step < 240; step++) {
-    x += vx; y += vy; vx += roundEven(view.wind.acceleration * 1000);
+    const startX = x, startY = y;
+    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(vx), Math.abs(vy)) / 100));
+    let collided = false;
+    for (let substep = 1; substep <= steps; substep++) {
+      x = startX + roundEven(vx * substep / steps);
+      y = startY + roundEven(vy * substep / steps);
+      const ty = target ? roundEven(target.world_y * 1000) : 0;
+      if (target && Math.abs(x - target.x * 1000) <= 1050 && y >= ty - 500 && y <= ty + 1000) { collided = true; break; }
+      if (x < 0 || x >= view.width * 1000) { collided = true; break; }
+      const column = Math.max(0, Math.min(view.width - 1, roundEven(x / 1000)));
+      if (y <= view.terrain[column] * 1000) { y = view.terrain[column] * 1000; collided = true; break; }
+    }
+    points.push([x / 1000, y / 1000]);
+    if (collided) break;
+    vx += roundEven(view.wind.acceleration * 1000);
     if (direction * vx < 0) vx = 0;
     vy -= roundEven(view.gravity * 1000);
-    points.push([x / 1000, y / 1000]);
-    if (target && (x - target.x * 1000) ** 2 + (y - roundEven(target.world_y * 1000)) ** 2 <= 820 ** 2) break;
-    if (x < 0 || x >= view.width * 1000 || y < 0) break;
-    const column = Math.max(0, Math.min(view.width - 1, roundEven(x / 1000)));
-    if (y <= view.terrain[column] * 1000) { points[points.length - 1] = [x / 1000, view.terrain[column]]; break; }
   }
   return points;
 }
@@ -1108,6 +1146,8 @@ function renderSession(session, messages) {
   updateChatCount();
   renderChat(messages);
   const gameSignature = JSON.stringify([signature, state.snapshot.tx_enabled, state.snapshot.observer_mode]);
+  const playing = state.tankPlayback;
+  if (playing?.id === session.id && playing.svg.isConnected) return;
   if (gameSignature !== state.sessionSignature) {
     state.sessionSignature = gameSignature;
     renderGame(session);

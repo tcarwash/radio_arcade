@@ -153,6 +153,16 @@ class WebController:
         if name in transmit_commands and self.settings.transport != "practice" and not self.settings.tx_enabled:
             raise ValueError("TX is disabled. Enable TX to send radio traffic.")
         sid = data.get("session_id")
+        if name == "preview_shot":
+            row = engine.session(sid)
+            game = engine.registry.by_id(row["game_id"])
+            action = bytes.fromhex(str(data.get("action", "")))
+            if game.key != "scorched-earth" or len(action) != 2 or action[0] >= 128:
+                raise ValueError("expected a Scorched Earth shot")
+            actor = row["current_player"] if self.settings.transport == "practice" else self.settings.callsign
+            predicted = game.apply_action(game.decode_state(row["state"]), tuple(row["players"]), actor, action)
+            return {"ok": True, "view": game.view_model(predicted, tuple(row["players"]))}
+
         def place_word() -> None:
             from .games.scrabble import make_placement
             row = engine.session(sid)

@@ -9,6 +9,34 @@ from radio_arcade.games.scorched_earth import ScorchedEarthGame, MAPS, _trace_sh
 
 @unittest.skipUnless(shutil.which('node'), 'Node is required for browser preview parity')
 class PreviewParityTests(unittest.TestCase):
+    def test_commit_refresh_preserves_active_animation(self):
+        source = (Path(__file__).parents[1] / 'radio_arcade/web_assets/app.js').read_text()
+        start = source.index('function renderSession(')
+        end = source.index('\nasync function refresh(', start)
+        script = """
+const assert = require('assert');
+const state = {snapshot: {}, tankPlayback: {id: 'table', svg: {isConnected: true}}};
+const element = {};
+const $ = () => element;
+const observeCompletion = () => {}, setTurnBanner = () => {}, renderRoster = () => {};
+const renderSessionActions = () => {}, updateChatCount = () => {}, renderChat = () => {};
+const canTransmit = () => true;
+let renders = 0;
+const renderGame = () => renders++;
+""" + source[start:end] + """
+const session = {id: 'table', status: 'active', players: ['A', 'B'], revision: 2};
+renderSession(session, []);
+assert.equal(renders, 0, 'COMMIT must not remove a flying shell or blast');
+assert.equal(state.session.revision, 2, 'authoritative session still updates');
+state.tankPlayback = null;
+renderSession(session, []);
+assert.equal(renders, 1, 'latest board renders after animation ends');
+state.tankPlayback = {id: 'other', svg: {isConnected: true}};
+renderSession({...session, revision: 3}, []);
+assert.equal(renders, 2, 'other tables are not blocked');
+"""
+        subprocess.run(['node', '-e', script], text=True, capture_output=True, check=True)
+
     def test_browser_matches_engine(self):
         source = (Path(__file__).parents[1] / 'radio_arcade/web_assets/app.js').read_text()
         start = source.index('function traceTankPreview(')

@@ -73,6 +73,25 @@ class HostedScenarios(unittest.TestCase):
         self.air.pump()
         return sid
 
+    def test_scorched_pending_animation_matches_later_commit(self):
+        dealer, guest = self.engines[:2]
+        sid = dealer.create_game("scorched-earth", hosted=True)
+        self.air.pump()
+        guest.join_game(sid); self.air.pump()
+        dealer.start_game(sid); self.air.pump()
+        dealer.legal_action(sid, bytes((0, 90))); self.air.pump()
+        before = guest.session(sid)
+        guest.legal_action(sid, bytes((0, 45)))
+        pending = guest.session(sid)
+        self.assertEqual(pending["state"], before["state"])
+        self.assertEqual(pending["view"], before["view"])
+        self.assertEqual(pending["animation_revision"], before["revision"] + 1)
+        self.air.pump()
+        committed = guest.session(sid)
+        self.assertNotIn("animation_view", committed)
+        self.assertEqual(pending["animation_view"], committed["view"])
+        self.assertEqual(guest.session(sid)["state"], dealer.session(sid)["state"])
+
     def test_forfeit_ends_multiplayer_table_with_shared_winners(self):
         from radio_arcade.presentation import result_title
         sid = self.start()

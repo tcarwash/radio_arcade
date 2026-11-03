@@ -148,6 +148,13 @@ class ArcadeService:
             result["last_move"] = ({"actor": row["last_actor"],
                                     "description": "forfeits the game" if row["last_action"] == FORFEIT_ACTION else game.describe_action(row["last_action"])}
                                    if row.get("last_actor") and row.get("last_action") is not None else None)
+            # Presentation-only prediction: authoritative state and turn remain
+            # unchanged until COMMIT. Both clients can animate while radio waits.
+            pending = row.get("pending_action")
+            if game.key == "scorched-earth" and state is not None and pending and pending[0] < 128:
+                predicted = game.apply_action(state, tuple(row["players"]), self.callsign, pending)
+                result["animation_view"] = game.view_model(predicted, tuple(row["players"]))
+                result["animation_revision"] = row["revision"] + 1
             self._present_forfeit(result)
             return result
 

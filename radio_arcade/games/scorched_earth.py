@@ -157,25 +157,32 @@ def _trace_shot(terrain: list[int], positions: list[int], shooter: int,
     ty = _tank_world_y(terrain, positions[target])
     impact_kind = "edge"
     for _ in range(240):
-        x += vx
-        y += vy
+        start_x, start_y = x, y
+        # Sweep each step in <= 0.1-world-unit increments. Fast rounds must
+        # not tunnel through tanks, narrow ridges, or the ground at y=0.
+        steps = max(1, (max(abs(vx), abs(vy)) + 99) // 100)
+        collided = False
+        for substep in range(1, steps + 1):
+            x = start_x + round(vx * substep / steps)
+            y = start_y + round(vy * substep / steps)
+            if abs(x - tx) <= 1050 and ty - 500 <= y <= ty + 1000:
+                impact_kind, collided = "tank", True
+                break
+            if x < 0 or x >= WIDTH * SCALE:
+                impact_kind, collided = "edge", True
+                break
+            surface = _surface(terrain, round(x / SCALE)) * SCALE
+            if y <= surface:
+                y = surface
+                impact_kind, collided = "terrain", True
+                break
+        path.append((x, y))
+        if collided:
+            break
         vx += WIND_ACCEL[wind_id]
         if direction * vx < 0:
             vx = 0
         vy -= GRAVITY
-        path.append((x, y))
-        if (x - tx) ** 2 + (y - ty) ** 2 <= 820 * 820:
-            impact_kind = "tank"
-            break
-        column = x // SCALE
-        if column < 0 or column >= WIDTH or y < 0:
-            impact_kind = "edge"
-            break
-        if y <= _surface(terrain, round(x / SCALE)) * SCALE:
-            y = _surface(terrain, round(x / SCALE)) * SCALE
-            path[-1] = (x, y)
-            impact_kind = "terrain"
-            break
     return {"path": path, "x": x, "y": y, "kind": impact_kind}
 
 
@@ -190,7 +197,10 @@ def _resolve_blast(terrain: list[int], positions: list[int], weapon_id: int,
         ty = _tank_world_y(terrain, positions[player])
         damage = 0
         for center_x, center_y in centers:
-            distance = isqrt((center_x - tx) ** 2 + (center_y - ty) ** 2)
+            # Blast falloff starts at the sprite's hull, not its center.
+            dx = max(0, abs(center_x - tx) - 1050)
+            dy = max(0, ty - 500 - center_y, center_y - ty - 1000)
+            distance = isqrt(dx * dx + dy * dy)
             if distance <= weapon["radius"]:
                 damage += max(1, weapon["damage"] * (weapon["radius"] + SCALE - distance) // (weapon["radius"] + SCALE))
         if damage:

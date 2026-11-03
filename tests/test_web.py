@@ -35,6 +35,18 @@ class WebControllerScenarios(unittest.TestCase):
         status, value = self.controller.dispatch(method, path, body)
         return status, value
 
+    def test_scorched_prediction_matches_commit_without_mutating_game(self):
+        _, created = self.request("POST", "/api/command", {"command": "create_game", "game": "scorched-earth"})
+        sid = created["session_id"]
+        before = self.controller.engine.session(sid)
+        status, prediction = self.request("POST", "/api/command", {
+            "command": "preview_shot", "session_id": sid, "action": "002d"})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.controller.engine.session(sid), before)
+        _, committed = self.request("POST", "/api/command", {
+            "command": "legal_action", "session_id": sid, "action": "002d"})
+        self.assertEqual(prediction["view"], committed["session"]["view"])
+
     def test_scorched_power_command_and_recovered_view(self):
         from radio_arcade.games.scorched_earth import pack_shot
         status, created = self.request("POST", "/api/command", {"command": "create_game", "game": "scorched-earth"})

@@ -55,6 +55,17 @@ class ScorchedBattlefield(QWidget):
             self._flight_started = time.monotonic()
             self._flight_timer.start()
 
+    def replay(self, view=None, started=None):
+        if view is not None:
+            self.view = view
+        if len(self.view.get("trajectory", [])) < 2:
+            return
+        self.preview = []
+        self._flight_started = time.monotonic() if started is None else started
+        self.flight_progress = 0.0
+        self._flight_timer.start()
+        self._advance_flight()
+
     def _advance_flight(self):
         self.flight_progress = min(1.0, (time.monotonic() - self._flight_started) / 2.0)
         path = self.view.get("trajectory", [])
@@ -339,6 +350,7 @@ class ArcadeWindow(QMainWindow):
         self._completion_timer.timeout.connect(self._finish_scorched_result)
         self._board_signature = None
         self._last_scorched_animation_key = None
+        self._scorched_weapons = {}
         self._event_bridge = EventBridge(self)
         self._event_bridge.received.connect(self._on_event, Qt.ConnectionType.QueuedConnection)
         self._pool = QThreadPool.globalInstance()
@@ -1009,11 +1021,16 @@ class ArcadeWindow(QMainWindow):
     def _render_scorched(self, session: dict, view: dict):
         """Native artillery controls; only two-byte moves enter the shared engine."""
         host = QWidget(); host.setObjectName("scorchedHost"); layout = QHBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0)
-        shot_key = (session["id"], session["revision"])
+        view = session.get("animation_view", view)
+        shot_key = (session["id"], session.get("animation_revision", session["revision"]))
         animate = bool(view.get("impact") and self._last_scorched_animation_key != shot_key)
         if animate:
             self._last_scorched_animation_key = shot_key
-        battlefield = ScorchedBattlefield(view, animate=animate)
+            self._scorched_started = time.monotonic()
+        battlefield = ScorchedBattlefield(view)
+        started = getattr(self, "_scorched_started", 0)
+        if view.get("impact") and time.monotonic() - started < 4.4:
+            battlefield.replay(started=started)
         # Maintain a consistent, readable vertical view while letting the
         # extra horizontal world extend beyond the desktop viewport.
         scene_scale = 14
@@ -1024,7 +1041,7 @@ class ArcadeWindow(QMainWindow):
         map_scroll.setFrameShape(QFrame.Shape.NoFrame)
         map_scroll.setToolTip("WASD / arrows to pan · click to center · drag to explore")
         battlefield.shot_position.connect(lambda x, y: map_scroll.ensureVisible(int(x * scene_scale + 12),
-            int((view["sky_height"] - y) * scene_scale + 12), max(1, map_scroll.viewport().width() // 3), max(1, map_scroll.viewport().height() // 3)) if map_scroll.follow_shot else None)
+            int((battlefield.view["sky_height"] - y) * scene_scale + 12), max(1, map_scroll.viewport().width() // 3), max(1, map_scroll.viewport().height() // 3)) if map_scroll.follow_shot else None)
         map_column = QWidget(); map_column.setObjectName("scorchedMapColumn"); map_layout = QVBoxLayout(map_column); map_layout.setContentsMargins(0, 0, 0, 0)
         map_layout.addWidget(ScorchedMinimap(view, map_scroll))
         hint = QLabel("WASD / arrows · click to center · drag to pan"); hint.setObjectName("muted")
@@ -1056,6 +1073,13 @@ class ArcadeWindow(QMainWindow):
             weapon.addItem(label, item["id"])
             weapon.model().item(item["id"]).setEnabled(bool(stock))
             weapon.setItemData(item["id"], f"{item['tag']} · blast {item['radius']:.1f}", Qt.ItemDataRole.ToolTipRole)
+        weapon_key = (session["id"], actor)
+        selected_weapon = self._scorched_weapons.get(weapon_key, 0)
+        if not tank or not tank["ammo"][selected_weapon]:
+            selected_weapon = 0
+        weapon.setCurrentIndex(weapon.findData(selected_weapon))
+        weapon.currentIndexChanged.connect(
+            lambda: self._scorched_weapons.__setitem__(weapon_key, int(weapon.currentData())))
         box.addWidget(weapon)
         angle_label = QLabel("Angle: 45°")
         angle = QSlider(Qt.Orientation.Horizontal); angle.setObjectName("scorchedAngle")
@@ -1081,8 +1105,28 @@ class ArcadeWindow(QMainWindow):
         weapon.currentIndexChanged.connect(preview)
         fire = QPushButton("Fire weapon"); fire.setObjectName("scorchedFire")
         fire.setEnabled(can_play and bool(tank))
-        fire.clicked.connect(lambda: self._submit_action(pack_shot(int(weapon.currentData()), angle.value(), power.value() * view["power_step"])))
+        def fire_now():
+            action = pack_shot(int(weapon.currentData()), angle.value(), power.value() * view["power_step"])
+            game = self.engine.registry.by_id(session["game_id"])
+            saved = game.decode_state(session["state"])
+            predicted = game.apply_action(saved, tuple(session["players"]), actor, action)
+            predicted_view = game.view_model(predicted, tuple(session["players"]))
+            self._last_scorched_animation_key = (session["id"], session["revision"] + 1)
+            self._scorched_started = time.monotonic()
+            battlefield.setFixedSize(predicted_view["width"] * scene_scale, predicted_view["sky_height"] * scene_scale)
+            battlefield.replay(predicted_view, self._scorched_started)
+            fire.setEnabled(False)
+            self._submit_action(action)
+        fire.clicked.connect(fire_now)
         box.addWidget(fire)
+        replay = QPushButton("Instant replay"); replay.setObjectName("scorchedReplay")
+        replay.setEnabled(bool(view.get("impact")))
+        def replay_last():
+            self._scorched_started = time.monotonic()
+            map_scroll.follow_shot = True
+            battlefield.replay(started=self._scorched_started)
+        replay.clicked.connect(replay_last)
+        box.addWidget(replay)
         movement = QHBoxLayout()
         for direction, label in ((0, "◀ Drive"), (1, "Drive ▶")):
             button = QPushButton(label)
