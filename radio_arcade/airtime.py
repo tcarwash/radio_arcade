@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil, isfinite
 
-from .wire import Kind, Packet, encode, encode_action
+from .wire import Kind, Packet, encode, encode_action, encode_compact
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,7 @@ def estimate_action(
     modem_overhead_bytes: int = 0,
     preamble_ms: float = 0,
     transmissions: int = 1,
+    compact: bool = False,
 ) -> AirtimeEstimate:
     """Calculate the exact app frame size and optionally rough transmit time.
 
@@ -54,7 +55,8 @@ def estimate_action(
     The baud calculation rounds up to whole symbols per transmission.
 
     Additional modem bytes and a preamble duration can be estimated per
-    transmission. This is not a Data2G airtime measurement and does not
+    transmission. Set compact=True for v6 turns after START has established
+    an unambiguous short session ID. This is not a Data2G airtime measurement and does not
     include dynamic mode changes, scheduling, turnarounds, or extra ACKs.
     """
     if type(payload_bytes) is not int or not 0 <= payload_bytes <= 200:
@@ -90,9 +92,12 @@ def estimate_action(
         effective_rate_bps = rate_bps
 
     actor = actor or source
-    wrapped_action = encode_action(actor, bytes(payload_bytes))
-    packet = Packet(game_id, kind, 0, 0, 0, source, destination, wrapped_action)
-    frame_bytes = len(encode(packet))  # Real encoder enforces the 240-byte limit.
+    if compact:
+        frame_bytes = len(encode_compact(kind, 0, 1, 0, bytes(payload_bytes)))
+    else:
+        wrapped_action = encode_action(actor, bytes(payload_bytes))
+        packet = Packet(game_id, kind, 0, 0, 0, source, destination, wrapped_action)
+        frame_bytes = len(encode(packet))  # Real encoder enforces the 240-byte limit.
     estimated_symbols = None
     estimated_ms = None
     if effective_rate_bps is not None:

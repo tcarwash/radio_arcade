@@ -1,4 +1,4 @@
-# Radio Arcade wire protocol, version 5
+# Radio Arcade wire protocol, version 6
 
 This describes the current implementation in `radio_arcade/wire.py` and `service.py`. All radio traffic is public. Multi-byte envelope integers use network (big-endian) byte order. One complete packet is at most 240 bytes. The first byte identifies the game type; it is not the identity of an individual game.
 
@@ -7,17 +7,16 @@ This describes the current implementation in `radio_arcade/wire.py` and `service
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 1 | Game type ID: 1 tic-tac-toe, 2 Nim, 3 Open Word Tiles; ID 4 retired |
-| 1 | 1 | Envelope version: 5 |
+| 1 | 1 | Envelope version: 6 |
 | 2 | 1 | Message kind |
 | 3 | 1 | Flags |
 | 4 | 8 | Random game instance ID |
 | 12 | 2 | Sequence |
 | 14 | 2 | State revision; for ACK, the acknowledged message kind |
-| 16 | 1 | Source callsign length |
-| 17 | 1 | Destination callsign length |
-| 18 | variable | Source ASCII, destination ASCII, then payload |
+| 16 | 1 | Source length (high nibble) + destination length (low nibble) |
+| 17 | variable | Source ASCII, destination ASCII, then payload |
 
-Callsign fields are 1–10 ASCII bytes. Flag `0x01` is required for opaque state and forbidden for other kinds. Unknown flags and versions are rejected. Broadcast uses the Data2G named KISS group and application destination; connected mode prefixes each packet with its two-byte big-endian length on the Data2G byte stream.
+Callsign fields are 1–15 ASCII bytes; the full header uses **one byte total for both callsign lengths**, not two bytes per callsign. The one-byte length encoding is used only for the initial/session-recovery envelope, not established compact turns. Flag `0x01` is required for opaque state and forbidden for other kinds. Unknown flags and versions are rejected. Broadcast uses the Data2G named KISS group and application destination; connected mode prefixes each packet with its two-byte big-endian length on the Data2G byte stream.
 
 | Kind | Value | Payload |
 | --- | ---: | --- |
@@ -38,6 +37,63 @@ Callsign fields are 1–10 ASCII bytes. Flag `0x01` is required for opaque state
 | JOIN_REQUEST | 15 | empty; directed request for a seat in hosted lobby |
 | HOST_ROSTER | 16 | roster; dealer's authoritative order and seated stations |
 | HOST_CHAT | 17 | actor and UTF-8 text; dealer broadcast of participant chat |
+| STATION_ID | 18 | ASCII `ID ` followed by the station's full callsign; always full envelope |
+
+## Compact established-session turns (v6)
+
+After the full `START` frame establishes the 64-bit session ID and player
+roster, ordinary game moves and their acknowledgements omit repeated game ID,
+callsigns, destinations, revisions, actor wrapper, and action-length byte. The
+first byte `00` distinguishes a compact frame from the full envelope (game ID
+zero is reserved). A compact frame is:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 1 | Compact marker `00` |
+| 1 | 1 | Control: high four bits zero; next two bits kind; low two bits player seat (0–3) |
+| 2 | 4 | Low 32 bits of previously established session ID, big endian |
+| 6 | 2 | Sequence, big endian, 1–65535 |
+| 8 | variable | Game action bytes for ACTION/COMMIT; empty for ACK |
+
+Kind codes are `00` ACTION (station at seat is actor), `01` COMMIT (dealer is
+sender; seat names original actor), `10` ACK of ACTION, `11` ACK of COMMIT.
+For ACK the seat names the **sending** station. An ordinary one-byte move is
+**9 bytes total**, a two-byte move **10 bytes**, and its ACK **8 bytes**.
+
+The 32-bit value is a reference, **not** a newly generated session ID. The
+receiver resolves it against an existing full 64-bit ID and roster. If two
+local sessions share those low 32 bits, the sender falls back to the full
+envelope and the receiver rejects ambiguous compact frames. Unknown sessions
+cannot be decoded from a compact frame alone; a full START or SNAPSHOT is
+required. Sequence and authoritative actor/rules validation still apply.
+
+Compact mode is used automatically by the KISS and connected Data2G
+transports for active directed two-player and hosted (up-to-four-player) games.
+Other messages, including setup, chat, snapshots, resign, rejection, and
+station IDs, remain full-size. The reliable outbox retains full canonical
+frames for durable retries and compresses them only when actually sending.
+Older peers **cannot** interpret v6 traffic; every station must upgrade.
+
+## Station identification (v6)
+
+The service sends a full, explicit `STATION_ID` packet with the complete ASCII
+callsign **before its first game transmission** and at no more than **nine
+minutes** between IDs while it is transmitting. An ID send failure blocks
+game traffic until identification succeeds. Active ongoing traffic causes an
+ID to be sent by the retry worker when the nine-minute interval arrives.
+An idle game does **not** beacon an ID forever; the next user transmission
+first checks the deadline. Finishing a match schedules a final station ID,
+staggered by seat to avoid four simultaneous broadcasts; closing the service
+also sends one after local traffic. Identifications are standalone full frames,
+not repeated callsign bytes in every nine-byte turn.
+
+This implements Radio Arcade's application-level identification policy for
+[47 CFR §97.119](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-B/section-97.119).
+**Operators must still ensure the transmitted waveform satisfies the permitted
+identification methods** (for example, a modem-specific CW/RTTY ID where
+necessary); an ASCII payload inside a binary game packet does not by itself
+prove every modem/emission combination is compliant. The configured callsign
+must be the station's actual assigned call sign for legal identification.
 
 Roster encoding is `[count:u8][length:u8, ASCII callsign]...`. START is `[roster byte length:u8][roster][state byte length:u8][state]`. SNAPSHOT appends `[last-action length:u8][last-action]`, with zero length if absent. ACTION and COMMIT use `[actor length:u8][actor ASCII][action length:u8][action bytes]`; the snapshot last action uses the same encoding.
 
@@ -85,7 +141,7 @@ an arbitrary game's move rules. See [adapters/README.md](adapters/README.md).
 
 Opaque state uses the same game ID and the `OPAQUE_STATE` kind/flag. A game may provide optional `encode_opaque_state(value) -> str` and `decode_opaque_state(text)` methods; the engine routes decoded values to `game_opaque_state` events while the bundled UIs show only a synchronization notice. Each game's own format is readable UTF-8, at most 200 bytes per message, and remains public on air.
 
-A cancelled invitation leaves a tombstone even when cancellation arrives before the invitation. To avoid ambiguity from reordered packets, a cancelled station cannot be invited again to the same game instance; create another game instead. Version 4 adds `CANCEL_INVITE`; version 3 and version 4 clients reject each other's packets, so all participants must upgrade together. Hosted kinds 14–17 extend version 4 without changing legacy packet layouts; older version 4 clients do not understand the new kinds. Locally retained game state is not erased, and retained version 3/4 outbox envelopes are upgraded to version 5 on startup because existing message layouts are unchanged.
+A cancelled invitation leaves a tombstone even when cancellation arrives before the invitation. To avoid ambiguity from reordered packets, a cancelled station cannot be invited again to the same game instance; create another game instead. Version 4 adds `CANCEL_INVITE`; version 3 and version 4 clients reject each other's packets, so all participants must upgrade together. Hosted kinds 14–17 extend version 4 without changing legacy packet layouts; older version 4 clients do not understand the new kinds. Locally retained game state is not erased. Queued version 3/4/5 outbox full envelopes are rewritten to the packed-length version 6 header on startup; live older-version packets are rejected.
 
 ## Forfeit (version 5)
 

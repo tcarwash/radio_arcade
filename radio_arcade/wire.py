@@ -1,7 +1,7 @@
 """Versioned compact envelope shared by games and transports.
 
 Layout: game (u8), envelope version (u8), kind (u8), flags (u8), instance ID
-(u64), sequence (u16), revision (u16), source/destination lengths (u8 each),
+(u64), sequence (u16), revision (u16), source/destination lengths (u4 each),
 callsigns, then plugin-specific payload. Multi-byte integers use network byte order.
 """
 
@@ -11,15 +11,20 @@ from dataclasses import dataclass
 from enum import IntEnum
 import struct
 
-PROTOCOL_VERSION = 5
+PROTOCOL_VERSION = 6
 # Reserved core action; never passed to a game plugin.
 FORFEIT_ACTION = b"\xffRA"
 TICTACTOE = 1
 MAX_PACKET = 240
-_MAX_CALL = 10
+_MAX_CALL = 15
 FLAG_OPAQUE = 0x01
 KNOWN_FLAGS = FLAG_OPAQUE
-_HEADER = struct.Struct("!BBBBQHHBB")
+_HEADER = struct.Struct("!BBBBQHHB")
+_LEGACY_HEADER = struct.Struct("!BBBBQHHBB")  # v3-v5, for stored outbox migration only
+# Established-session fast path. Zero is never a valid full-frame game ID.
+# [marker=0][kind:2|seat:2][low 32 bits of session][sequence:u16][action...]
+_COMPACT_HEADER = struct.Struct("!BBIH")
+COMPACT_MARKER = 0
 
 
 class Kind(IntEnum):
@@ -40,6 +45,24 @@ class Kind(IntEnum):
     JOIN_REQUEST = 15
     HOST_ROSTER = 16
     HOST_CHAT = 17
+    STATION_ID = 18
+
+
+# Compact control's two-bit kind: ACTION, COMMIT, ACK of ACTION, ACK of COMMIT.
+_COMPACT_CODES = {Kind.ACTION: 0, Kind.COMMIT: 1}
+_CODE_KINDS = (Kind.ACTION, Kind.COMMIT, Kind.ACK, Kind.ACK)
+
+
+@dataclass(frozen=True)
+class CompactFrame:
+    """Unresolved wire frame; a saved session roster supplies the callsigns."""
+
+    kind: Kind
+    short_session: int
+    sequence: int
+    seat: int
+    payload: bytes
+    acknowledged_kind: Kind | None = None
 
 
 @dataclass(frozen=True)
@@ -63,23 +86,26 @@ def encode(packet: Packet) -> bytes:
     if not 0 <= packet.sequence <= 65535 or not 0 <= packet.revision <= 65535:
         raise ValueError("sequence and revision must fit in 16 bits")
     if not 1 <= len(source) <= _MAX_CALL or not 1 <= len(destination) <= _MAX_CALL:
-        raise ValueError("callsigns must be 1 to 10 ASCII bytes")
+        raise ValueError("callsigns must be 1 to 15 ASCII bytes")
     if packet.flags & ~KNOWN_FLAGS:
         raise ValueError("unknown packet flag")
     if bool(packet.flags & FLAG_OPAQUE) != (packet.kind == Kind.OPAQUE_STATE):
         raise ValueError("opaque flag is required only for opaque game state packets")
     result = _HEADER.pack(packet.game, PROTOCOL_VERSION, int(packet.kind), packet.flags, packet.session,
-                          packet.sequence, packet.revision, len(source), len(destination))
+                          packet.sequence, packet.revision, len(source) << 4 | len(destination))
     result += source + destination + packet.payload
     if len(result) > MAX_PACKET:
         raise ValueError("game packet exceeds the 240 byte limit")
     return result
 
 
-def decode(frame: bytes) -> Packet:
+def decode(frame: bytes) -> Packet | CompactFrame:
+    if frame and frame[0] == COMPACT_MARKER:
+        return decode_compact(frame)
     if len(frame) < _HEADER.size + 2 or len(frame) > MAX_PACKET:
         raise ValueError("invalid game packet length")
-    game, version, kind, flags, session, sequence, revision, src_len, dst_len = _HEADER.unpack_from(frame)
+    game, version, kind, flags, session, sequence, revision, call_lengths = _HEADER.unpack_from(frame)
+    src_len, dst_len = call_lengths >> 4, call_lengths & 15
     if version != PROTOCOL_VERSION:
         raise ValueError(f"unsupported Radio Arcade protocol version {version}")
     if flags & ~KNOWN_FLAGS or bool(flags & FLAG_OPAQUE) != (kind == int(Kind.OPAQUE_STATE)):
@@ -99,6 +125,60 @@ def decode(frame: bytes) -> Packet:
                   frame[end_destination:], flags)
 
 
+def migrate_legacy_full_frame(frame: bytes) -> bytes:
+    """Convert persisted v3-v5 full frames to the shorter v6 header.
+
+    This is deliberately for trusted local outbox migration, never for live
+    v5 traffic; old on-air versions are rejected rather than intermingled.
+    """
+    if len(frame) < _LEGACY_HEADER.size + 2 or len(frame) > MAX_PACKET:
+        raise ValueError("invalid legacy frame length")
+    game, version, kind, flags, session, seq, rev, src_len, dst_len = _LEGACY_HEADER.unpack_from(frame)
+    if version not in (3, 4, 5) or not 1 <= src_len <= _MAX_CALL or not 1 <= dst_len <= _MAX_CALL:
+        raise ValueError("invalid legacy frame header")
+    converted = _HEADER.pack(game, PROTOCOL_VERSION, kind, flags, session, seq, rev,
+                             src_len << 4 | dst_len) + frame[_LEGACY_HEADER.size:]
+    decode(converted)
+    return converted
+
+
+def encode_compact(kind: Kind, session: int, sequence: int, seat: int,
+                   action: bytes = b"", *, acknowledged_kind: Kind | None = None) -> bytes:
+    """Encode a short move/ACK after START has established session and roster.
+
+    The 32-bit key is a *reference* to an existing 64-bit session, not a new
+    identifier. Services must detect collisions and fall back to full frames.
+    """
+    if not 0 <= session < 1 << 64 or not 1 <= sequence <= 65535 or not 0 <= seat < 4:
+        raise ValueError("invalid compact session, sequence, or player seat")
+    if kind == Kind.ACK:
+        if acknowledged_kind not in (Kind.ACTION, Kind.COMMIT) or action:
+            raise ValueError("compact ACK must name ACTION/COMMIT and have no payload")
+        code = 2 if acknowledged_kind == Kind.ACTION else 3
+    elif kind in _COMPACT_CODES:
+        if acknowledged_kind is not None or len(action) > MAX_PACKET - _COMPACT_HEADER.size:
+            raise ValueError("invalid compact action")
+        code = _COMPACT_CODES[kind]
+    else:
+        raise ValueError("only moves and their acknowledgements may use compact frames")
+    return _COMPACT_HEADER.pack(COMPACT_MARKER, code << 2 | seat,
+                                session & 0xFFFFFFFF, sequence) + action
+
+
+def decode_compact(frame: bytes) -> CompactFrame:
+    if len(frame) < _COMPACT_HEADER.size or len(frame) > MAX_PACKET:
+        raise ValueError("invalid compact packet length")
+    marker, control, short_session, sequence = _COMPACT_HEADER.unpack_from(frame)
+    if marker != COMPACT_MARKER or control & 0xF0 or sequence == 0:
+        raise ValueError("invalid compact packet header")
+    code, seat = control >> 2, control & 3
+    payload = frame[_COMPACT_HEADER.size:]
+    if code >= 2 and payload:
+        raise ValueError("compact ACK cannot carry an action")
+    return CompactFrame(_CODE_KINDS[code], short_session, sequence, seat, payload,
+                        (Kind.ACTION if code == 2 else Kind.COMMIT) if code >= 2 else None)
+
+
 def encode_roster(players: tuple[str, ...]) -> bytes:
     if not 1 <= len(players) <= 255:
         raise ValueError("invalid player roster")
@@ -106,7 +186,7 @@ def encode_roster(players: tuple[str, ...]) -> bytes:
     for player in players:
         call = player.upper().encode("ascii")
         if not 1 <= len(call) <= _MAX_CALL:
-            raise ValueError("callsigns must be 1 to 10 ASCII bytes")
+            raise ValueError("callsigns must be 1 to 15 ASCII bytes")
         result.append(len(call))
         result.extend(call)
     return bytes(result)

@@ -21,31 +21,41 @@ class AirtimeTests(unittest.TestCase):
         result = estimate_action(2, source="AG7SU", destination="K7ABC",
                                  rate_bps=1200, modem_overhead_bytes=10,
                                  preamble_ms=300, transmissions=2)
-        self.assertEqual(result.radio_arcade_frame_bytes, 37)
-        self.assertAlmostEqual(result.estimated_airtime_ms, 2 * (47 * 8 / 1200 * 1000 + 300))
+        self.assertEqual(result.radio_arcade_frame_bytes, 36)
+        self.assertAlmostEqual(result.estimated_airtime_ms, 2 * (46 * 8 / 1200 * 1000 + 300))
         self.assertIsNone(result.estimated_symbols)
 
     def test_symbol_rate_8fsk_half_rate_fec(self):
         result = estimate_action(2, source="AG7SU", destination="K7ABC",
                                  baud=600, bits_per_symbol=3, code_rate=0.5)
         self.assertEqual(result.effective_rate_bps, 900)
-        self.assertEqual(result.estimated_symbols, 198)  # 37 * 8 / (3 * 0.5)
-        self.assertAlmostEqual(result.estimated_airtime_ms, 330)
-        self.assertAlmostEqual(result.estimated_airtime_s, 0.33)
+        self.assertEqual(result.estimated_symbols, 192)  # 36 * 8 / (3 * 0.5)
+        self.assertAlmostEqual(result.estimated_airtime_ms, 320)
+        self.assertAlmostEqual(result.estimated_airtime_s, 0.32)
 
     def test_baud_defaults_to_uncoded_and_rounds_whole_symbols(self):
         result = estimate_action(1, source="AG7SU", destination="K7ABC",
                                  baud=600, bits_per_symbol=3)
         self.assertEqual(result.effective_rate_bps, 1800)
-        self.assertEqual(result.estimated_symbols, 96)  # 36 * 8 / 3
-        self.assertAlmostEqual(result.estimated_airtime_ms, 160)
+        self.assertEqual(result.estimated_symbols, 94)  # ceil(35 * 8 / 3)
+        self.assertAlmostEqual(result.estimated_airtime_ms, 94 / 600 * 1000)
 
     def test_hosted_broadcast_commit_has_different_size(self):
         action = estimate_action(1, source="K7ABC", destination="AG7SU")
         commit = estimate_action(1, source="AG7SU", destination="*",
                                  actor="K7ABC", kind=Kind.COMMIT)
-        self.assertEqual(action.radio_arcade_frame_bytes, 36)
-        self.assertEqual(commit.radio_arcade_frame_bytes, 32)
+        self.assertEqual(action.radio_arcade_frame_bytes, 35)
+        self.assertEqual(commit.radio_arcade_frame_bytes, 31)
+
+    def test_v6_compact_airtime_and_overhead(self):
+        move = estimate_action(1, source="AG7SU", destination="K7ABC",
+                               compact=True, baud=600, bits_per_symbol=3, code_rate=0.5)
+        self.assertEqual(move.radio_arcade_frame_bytes, 9)
+        self.assertEqual(move.radio_arcade_overhead_bytes, 8)
+        self.assertEqual(move.estimated_symbols, 48)
+        self.assertAlmostEqual(move.estimated_airtime_ms, 80)
+        self.assertEqual(estimate_action(2, source="AG7SU", destination="K7ABC",
+                                         compact=True).radio_arcade_frame_bytes, 10)
 
     def test_validation_and_maximum_frame(self):
         kwargs = dict(source="AG7SU", destination="K7ABC")

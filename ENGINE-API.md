@@ -84,18 +84,24 @@ and the actor/action wrapper, without transmitting anything:
 from radio_arcade.airtime import estimate_action
 
 size = estimate_action(2, source="AG7SU", destination="K7ABC")
-print(size.payload_bytes, size.radio_arcade_frame_bytes)  # 2 37
+print(size.payload_bytes, size.radio_arcade_frame_bytes)  # 2 36 (full v6 frame)
 
 # Hypothetical 600-baud 8-FSK, rate-1/2 FEC (3 * 0.5 bits/symbol):
 estimate = estimate_action(2, source="AG7SU", destination="K7ABC",
-                           baud=600, bits_per_symbol=3, code_rate=0.5)
+                           baud=600, bits_per_symbol=3, code_rate=0.5,
+                           compact=True)
 print(estimate.effective_rate_bps)       # 900.0
-print(estimate.estimated_airtime_ms)     # 330.0, not a measurement
+print(estimate.radio_arcade_frame_bytes) # 10: 8-byte compact header + 2-byte move
+print(estimate.estimated_airtime_ms)     # 90.0, not a measurement
 ```
 
 Alternatively, pass `rate_bps` as the assumed effective bitrate, without
 `baud` or modulation parameters. `modem_overhead_bytes`, `preamble_ms`, and
 `transmissions` permit explicit per-transmission overhead and repeats.
+Specify `compact=True` for an established v6 session (the default is the
+conservative full-envelope estimate); a compact ACK is always 8 application
+bytes. The short-session path does not carry callsigns with every move. It is
+only available after both sides know the full session ID and roster.
 Using `baud` requires `bits_per_symbol` (e.g. 1 for 2-FSK, 2 for 4-FSK, 3 for
 8-FSK); the FEC `code_rate` defaults to 1 for an uncoded estimate. The helper
 reports `estimated_symbols` for the baud-based calculation, rounded up to
@@ -104,6 +110,8 @@ complete symbols. With no rate, airtime is `None` but frame bytes are exact.
 **These are planning estimates, not Data2G airtime readings.** Actual time
 also depends on modem preamble/pilots, FEC block padding, interleaving,
 transmission scheduling, adaptive mode changes, turnarounds, ACKs and retries.
+The periodic full callsign-ID packets are additional transmissions and are not
+included in each compact move's estimate.
 KISS/TCP delimiters are not included as on-air bytes. In hosted play, estimate
 the participant's directed ACTION and the dealer's broadcast COMMIT as two
 separate frames. This utility is intended to back the proposed PICO-8
@@ -116,10 +124,10 @@ integer range. It does not depend on the networking bridge:
 
 ```lua
 -- #include pico8/radio_debug.lua
-local info=radio.estimate(2,{source="AG7SU",destination="K7ABC",
+local info=radio.estimate(2,{source="AG7SU",destination="K7ABC",compact=true,
  baud=600,bits_per_symbol=3,code_rate=0.5})
--- info.radio_arcade_frame_bytes == 37
--- info.estimated_airtime_s is about 0.33 (estimate, not measurement)
+-- info.radio_arcade_frame_bytes == 10
+-- info.estimated_airtime_s is about 0.09 (estimate, not measurement)
 ```
 
 ## Add a game plugin

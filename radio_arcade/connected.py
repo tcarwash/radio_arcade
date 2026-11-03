@@ -13,6 +13,8 @@ MAX_PACKET = 240
 
 
 class ConnectedConnection:
+    supports_compact = True
+
     """Connected-mode transport using command TCP and the session byte stream.
 
     The Data2G stream has no message boundaries, so app packets are prefixed

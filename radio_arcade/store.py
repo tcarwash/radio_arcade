@@ -159,17 +159,16 @@ class SessionStore:
                                 (time.time(), target))
 
     def upgrade_v3_outbox(self) -> None:
-        """Upgrade retained version 3/4 envelopes; existing ordinary packet layouts are unchanged."""
-        from .wire import decode, PROTOCOL_VERSION
+        """Migrate queued legacy full headers without changing game payloads."""
+        from .wire import migrate_legacy_full_frame
         with self._lock, self.db:
             for row in self.db.execute("SELECT session,target,kind,sequence,frame FROM outbox").fetchall():
-                frame = bytearray(row["frame"])
-                if len(frame) < 2 or frame[1] not in (3, 4):
+                frame = bytes(row["frame"])
+                if len(frame) < 2 or frame[1] not in (3, 4, 5):
                     continue
-                frame[1] = PROTOCOL_VERSION
-                decode(bytes(frame))
+                upgraded = migrate_legacy_full_frame(frame)
                 self.db.execute("UPDATE outbox SET frame=? WHERE session=? AND target=? AND kind=? AND sequence=?",
-                                (bytes(frame), row["session"], row["target"], row["kind"], row["sequence"]))
+                                (upgraded, row["session"], row["target"], row["kind"], row["sequence"]))
 
     def count_outgoing(self, session: str, kind: int, sequence: int) -> int:
         with self._lock:

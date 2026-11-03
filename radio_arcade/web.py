@@ -316,16 +316,20 @@ class WebController:
             payload_bytes = data.get("payload_bytes")
             if type(payload_bytes) is not int or not 0 <= payload_bytes <= 189:
                 raise ValueError("payload_bytes must be an integer from 0 to 189")
+            compact = data.get("compact", row["status"] == "active" and engine.compact_turns)
+            if type(compact) is not bool:
+                raise ValueError("compact must be a boolean")
             destination = str(data.get("destination") or row["coordinator"])
             estimate = estimate_action(
                 payload_bytes + 1, source=self.settings.callsign, destination=destination,
-                game_id=10, baud=data.get("baud"), rate_bps=data.get("rate_bps"),
+                game_id=10, compact=compact, baud=data.get("baud"), rate_bps=data.get("rate_bps"),
                 bits_per_symbol=data.get("bits_per_symbol"),
                 code_rate=data.get("code_rate"),
                 modem_overhead_bytes=data.get("modem_overhead_bytes", 0),
                 preamble_ms=data.get("preamble_ms", 0),
                 transmissions=data.get("transmissions", 1))
             return 200, {**asdict(estimate), "game_payload_bytes": payload_bytes,
+                         "compact": compact,
                          "note": "Estimate only; excludes dynamic Data2G scheduling and retries"}
 
         return 404, {"error": "not found"}
