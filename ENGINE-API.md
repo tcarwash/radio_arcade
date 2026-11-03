@@ -66,6 +66,54 @@ A game plugin may own its opaque text format by implementing `encode_opaque_stat
 
 The service owns the transport and store passed to it. It schedules bounded retries for important packets, validates turn order at the coordinator, commits actions by revision, suppresses duplicate chat, and serves/request snapshots to repair state after reconnects.
 
+## Developer payload/airtime estimates
+
+Use `radio_arcade.airtime.estimate_action()` to preview the **exact** Radio
+Arcade application frame size for a proposed binary action, including callsigns
+and the actor/action wrapper, without transmitting anything:
+
+```python
+from radio_arcade.airtime import estimate_action
+
+size = estimate_action(2, source="AG7SU", destination="K7ABC")
+print(size.payload_bytes, size.radio_arcade_frame_bytes)  # 2 37
+
+# Hypothetical 600-baud 8-FSK, rate-1/2 FEC (3 * 0.5 bits/symbol):
+estimate = estimate_action(2, source="AG7SU", destination="K7ABC",
+                           baud=600, bits_per_symbol=3, code_rate=0.5)
+print(estimate.effective_rate_bps)       # 900.0
+print(estimate.estimated_airtime_ms)     # 330.0, not a measurement
+```
+
+Alternatively, pass `rate_bps` as the assumed effective bitrate, without
+`baud` or modulation parameters. `modem_overhead_bytes`, `preamble_ms`, and
+`transmissions` permit explicit per-transmission overhead and repeats.
+Using `baud` requires `bits_per_symbol` (e.g. 1 for 2-FSK, 2 for 4-FSK, 3 for
+8-FSK); the FEC `code_rate` defaults to 1 for an uncoded estimate. The helper
+reports `estimated_symbols` for the baud-based calculation, rounded up to
+complete symbols. With no rate, airtime is `None` but frame bytes are exact.
+
+**These are planning estimates, not Data2G airtime readings.** Actual time
+also depends on modem preamble/pilots, FEC block padding, interleaving,
+transmission scheduling, adaptive mode changes, turnarounds, ACKs and retries.
+KISS/TCP delimiters are not included as on-air bytes. In hosted play, estimate
+the participant's directed ACTION and the dealer's broadcast COMMIT as two
+separate frames. This utility is intended to back the proposed PICO-8
+`radio.estimate()` debug API when that bridge is implemented.
+
+For cartridge developers, [`pico8/radio_debug.lua`](pico8/radio_debug.lua)
+already provides the matching **offline** `radio.estimate(payload_bytes, opts)`
+function. Its duration is in seconds to avoid PICO-8's limited fixed-point
+integer range. It does not depend on the networking bridge:
+
+```lua
+-- #include pico8/radio_debug.lua
+local info=radio.estimate(2,{source="AG7SU",destination="K7ABC",
+ baud=600,bits_per_symbol=3,code_rate=0.5})
+-- info.radio_arcade_frame_bytes == 37
+-- info.estimated_airtime_s is about 0.33 (estimate, not measurement)
+```
+
 ## Add a game plugin
 
 Implement the game contract in `radio_arcade.games.base.Game`: API version, stable one-byte `game_id`, unique ASCII `key`, name, player limits, deterministic `new_state`, `current_player`, `apply_action`, state encode/decode, action description, and a UI-neutral `view_model`. Rules receive bytes for actions and never import a UI toolkit or transport. Register an installed factory under the `radio_arcade.games` Python entry-point group:
