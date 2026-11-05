@@ -8,6 +8,7 @@ const RESOURCE_META = [
 const PLAYER_COLORS = ["#8edbfa", "#ffb777", "#d6a8ff", "#a2e4a5"];
 const RESOURCE_COLORS = ["#365f4e", "#77503e", "#5b4b76", "#78633e", "#415e73", "#365f4e"];
 const GAME_PREVIEWS = {
+  "signal-siege": ["✦", "A 1–4 station co-op deck-builder. Earn a card after each wave."],
   "scorched-earth": ["◈", "Artillery duels · Aim, fire, and reshape the terrain."],
   "open-word-tiles": ["▦", "Build words on a shared board and chase the high score."],
   "hexxagon": ["⬢", "Clone, jump, and capture your opponent’s stones."],
@@ -242,7 +243,7 @@ function setTurnBanner(session) {
   else if (session.status === "invited") { text = `INVITATION FROM ${session.coordinator} · ACCEPT TO JOIN`; tone = "warning"; }
   else if (session.status === "lobby") { text = session.hosted ? (session.coordinator === state.snapshot.callsign ? "DEALER · OPEN TO JOIN REQUESTS" : "PUBLIC TABLE · JOIN TO PLAY") : "LOBBY · INVITE STATIONS, THEN START"; tone = "waiting"; }
   else if (session.status === "joining") { text = session.hosted ? "JOIN REQUEST SENT · WAITING FOR DEALER" : "WAITING FOR THE HOST TO START"; tone = "waiting"; }
-  else if (session.status === "finished") { text = session.forfeited_by ? `${session.forfeited_by} FORFEITED` : session.view?.winner ? `GAME WON BY ${session.view.winner}` : "GAME OVER · DRAW"; tone = "warning"; }
+  else if (session.status === "finished") { text = session.forfeited_by ? `${session.forfeited_by} FORFEITED` : session.view?.kind === "signal-siege" ? `SIGNAL SIEGE · ${session.view.result.toUpperCase()}` : session.view?.winner ? `GAME WON BY ${session.view.winner}` : "GAME OVER · DRAW"; tone = "warning"; }
   else if (session.has_pending_action) { text = "MOVE SENT · WAITING FOR COMMIT"; tone = "waiting"; }
   else if (session.status === "active") {
     text = isPractice() ? `LOCAL PRACTICE · ${session.current_player || "GAME OVER"} TO MOVE` :
@@ -382,7 +383,7 @@ function showMatchResult(session) {
   clearTimeout(completionDelays.get(session.id)); completionDelays.delete(session.id);
   document.querySelector("#match-result")?.remove();
   const winners = session.view?.winners || (session.view?.winner ? [session.view.winner] : []);
-  const title = !winners.length ? "DRAW" : isPractice() || isObserver() ? `${winners.join(" / ")} ${winners.length === 1 ? "WINS" : "WIN"}` : winners.includes(state.snapshot.callsign) ? "VICTORY" : "DEFEAT";
+  const title = session.view?.kind === "signal-siege" ? (session.view.result === "victory" ? "VICTORY" : "DEFEAT") : !winners.length ? "DRAW" : isPractice() || isObserver() ? `${winners.join(" / ")} ${winners.length === 1 ? "WINS" : "WIN"}` : winners.includes(state.snapshot.callsign) ? "VICTORY" : "DEFEAT";
   const dialog = node("dialog", `match-result${title === "DEFEAT" ? " result-loss" : title === "DRAW" ? " result-draw" : ""}`); dialog.id = "match-result";
   const heading = node("h2", "result-title", title); heading.id = "match-result-title";
   dialog.setAttribute("aria-labelledby", heading.id);
@@ -754,6 +755,88 @@ function renderPlugin(session, view, host) {
   const submit = node("button", "button primary", "Submit action"); submit.type = "submit"; submit.disabled = !canAct(session); form.append(action, submit);
   form.addEventListener("submit", event => { event.preventDefault(); if (!/^(?:[0-9a-fA-F]{2})+$/.test(action.value.trim())) { notify("Enter hexadecimal bytes, for example 0102."); return; } sendCommand("legal_action", { session_id: session.id, action: action.value.trim() }); });
   host.append(form);
+}
+
+function renderSignalSiege(session, view, host) {
+  const wrap = node("section", "siege-layout");
+  const hero = node("header", "siege-hero");
+  const wave = node("div", "siege-wave", `WAVE ${view.wave} / ${view.waves}   ·   ROUND ${view.round + 1}`);
+  const title = node("h2", "", view.result === "victory" ? "Signal cleared" : view.result === "defeat" ? "Link lost" : "The interference core");
+  const subtitle = node("p", "", view.phase === "draft" ? "Wave cleared. Each station chooses one upgrade for its deck." :
+    view.result === "victory" ? "All three waves survived. The crew's earned cards remain in this run." :
+    view.result === "defeat" ? "The formation went dark. Try a different mix of attack, defense, and support." :
+    `The core broadcasts ${view.pulse_damage} damage to every station ${view.pulse_every === 2 ? "every second round" : "each round"}${view.jam ? `, weakened by ${view.jam} jam` : ""}.`);
+  const integrity = node("div", "siege-integrity");
+  const meterText = node("div", "siege-meter-label");
+  meterText.append(node("span", "", "CORE INTEGRITY"), node("strong", "", `${view.boss_hp} / ${view.boss_max_hp}`));
+  const meter = node("div", "siege-meter");
+  const fill = node("div", "siege-meter-fill"); fill.style.width = `${100 * view.boss_hp / view.boss_max_hp}%`; meter.append(fill);
+  integrity.append(meterText, meter);
+  hero.append(wave, title, subtitle, integrity); wrap.append(hero);
+
+  const roster = node("div", "siege-roster");
+  for (const station of view.stations) {
+    const card = node("article", `siege-station${station.callsign === session.current_player ? " on-turn" : ""}`);
+    const top = node("div", "siege-station-top");
+    top.append(node("strong", "", station.callsign), node("span", "", `${station.hp}/${station.max_hp} HP`));
+    const hp = node("div", "siege-health");
+    const hpFill = node("span", ""); hpFill.style.width = `${station.hp / station.max_hp * 100}%`; hp.append(hpFill);
+    const stats = node("div", "siege-stats", `◈ ${station.shield} SHIELD    ✦ ${station.focus} FOCUS    ▤ ${station.deck_size} CARDS`);
+    const myHand = !isObserver() && (isPractice() ? station.callsign === session.current_player : station.callsign === state.snapshot?.callsign);
+    const secret = node("div", "siege-card-backs");
+    if (!myHand) {
+      for (let i = 0; i < 3; i++) secret.append(node("span", "siege-card-back", "✦"));
+    } else {
+      secret.append(node("span", "siege-own-hand", "YOUR HAND ↓"));
+    }
+    card.append(top, hp, stats, secret); roster.append(card);
+  }
+  wrap.append(roster);
+
+  const controls = node("section", "siege-controls");
+  const actor = view.stations.find(station => station.callsign === (isPractice() ? session.current_player : state.snapshot?.callsign));
+  const canChoose = canAct(session);
+  if (view.phase === "draft") {
+    controls.append(node("h3", "", "Choose a card reward"));
+    controls.append(node("p", "siege-helper", `${session.current_player} is picking one card to add to their deck. Cards are permanent for this run.`));
+    const offers = node("div", "siege-cards");
+    for (const reward of view.rewards) {
+      const card = node("button", `siege-card ${reward.family}`);
+      card.type = "button"; card.disabled = !canChoose;
+      card.append(node("span", "siege-card-number", `REWARD ${reward.slot + 1}`), node("strong", "", reward.name), node("p", "", reward.description), node("span", "siege-play", "ADD TO DECK +"));
+      card.addEventListener("click", () => submitAction([0x40 | reward.slot])); offers.append(card);
+    }
+    controls.append(offers);
+  } else if (view.phase === "battle") {
+    controls.append(node("h3", "", actor ? "Your signal cards" : "Awaiting your turn"));
+    controls.append(node("p", "siege-helper", actor ? "Choose one of your three cards. The card cycles to the back of your deck." :
+      isObserver() ? "Observer mode · hands are concealed" : "The other station's hand is not shown here."));
+    if (actor) {
+      const row = node("div", "siege-target-row");
+      const text = node("label", "", "Support target"); text.htmlFor = "siege-target";
+      const target = node("select", "field"); target.id = "siege-target";
+      view.stations.forEach((station, i) => {
+        const option = node("option", "", station.callsign); option.value = String(i); target.append(option);
+      });
+      target.value = String(view.stations.findIndex(station => station.callsign === actor.callsign));
+      target.disabled = !canChoose;
+      row.append(text, target); controls.append(row);
+      const hand = node("div", "siege-cards");
+      for (const choice of actor.hand) {
+        const card = node("button", `siege-card ${choice.family}`);
+        card.type = "button"; card.disabled = !canChoose;
+        card.append(node("span", "siege-card-number", `CARD ${choice.slot + 1}`), node("strong", "", choice.name),
+          node("p", "", choice.description), node("span", "siege-play", "PLAY CARD →"));
+        card.addEventListener("click", () => submitAction([(Number(target.value) << 2) | choice.slot]));
+        hand.append(card);
+      }
+      controls.append(hand);
+    }
+  } else {
+    controls.append(node("h3", "", view.result === "victory" ? "Formation victorious" : "Formation defeated"));
+    controls.append(node("p", "siege-helper", "Create a new table to try a different strategy."));
+  }
+  wrap.append(controls); host.append(wrap);
 }
 
 function renderScorchedEarth(session, view, host) {
@@ -1217,6 +1300,7 @@ function renderGame(session) {
   const block = node("div", "game-block");
   block.append(renderScoreStrip(session, view));
   switch (view.kind) {
+    case "signal-siege": renderSignalSiege(session, view, block); break;
     case "hexxagon": renderHexxagon(session, view, block); break;
     case "grid": renderGrid(session, view, block); break;
     case "scorched-earth": renderScorchedEarth(session, view, block); break;

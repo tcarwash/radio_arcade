@@ -1033,6 +1033,52 @@ class ArcadeWindow(QMainWindow):
             box.addWidget(board)
             box.addWidget(QLabel("Select a column to drop a disc. Four in a row wins."))
             self.board_layout.addWidget(host)
+        elif view["kind"] == "signal-siege":
+            from .games.signal_siege import pack_play, pack_draft
+            host = QWidget(); box = QVBoxLayout(host); box.setSpacing(14)
+            title = QLabel(f"SIGNAL SIEGE   ·   WAVE {view['wave']}/3   ·   CORE {view['boss_hp']}/{view['boss_max_hp']} HP")
+            title.setStyleSheet("color:#e5b9ff;font-size:20px;font-weight:800")
+            box.addWidget(title)
+            box.addWidget(QLabel(f"Interference pulse: {view['pulse_damage']} per station · in {view['rounds_until_pulse']} round(s) · Jam {view['jam']}"))
+            actor_call = session["current_player"] if self.settings.transport == "practice" else self.settings.callsign
+            active = not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"] and (self.settings.transport == "practice" or (self.settings.tx_enabled and actor_call == session["current_player"]))
+            for station in view["stations"]:
+                is_mine = not self.settings.observer_mode and station["callsign"] == actor_call
+                description = (f"{station['callsign']}    ♥ {station['hp']}/18     ◈ {station['shield']} shield     ✦ {station['focus']} focus     "
+                               f"▤ {station['deck_size']} cards" + ("   YOUR HAND" if is_mine else "   ▤ ▤ ▤"))
+                row = QLabel(description); row.setStyleSheet("color:#aee7d7;font-size:12px" if is_mine else "color:#a9b8ce;font-size:12px")
+                box.addWidget(row)
+            if view["phase"] == "draft":
+                box.addWidget(QLabel(f"{session['current_player']} chooses one upgrade for their deck:"))
+                row = QHBoxLayout()
+                for reward in view["rewards"]:
+                    button = QPushButton(f"{reward['name']}\n{reward['description']}\nADD TO DECK +")
+                    button.setMinimumSize(150, 115); button.setEnabled(active)
+                    button.setStyleSheet("font-size:13px;font-weight:700;color:#f0e5ff;background:#302a4a;border:1px solid #8c79bf;border-radius:12px")
+                    button.clicked.connect(lambda _checked=False, i=reward["slot"]: self._submit_action(pack_draft(i)))
+                    row.addWidget(button)
+                box.addLayout(row)
+            elif view["phase"] == "battle":
+                station = next((s for s in view["stations"] if s["callsign"] == actor_call), None) if not self.settings.observer_mode else None
+                if station:
+                    chooser = QComboBox(); chooser.setObjectName("siegeTarget")
+                    for index, ally in enumerate(view["stations"]):
+                        chooser.addItem(f"Support target · {ally['callsign']}", index)
+                        if ally["callsign"] == actor_call: chooser.setCurrentIndex(index)
+                    box.addWidget(chooser)
+                    row = QHBoxLayout()
+                    for card in station["hand"]:
+                        button = QPushButton(f"{card['name']}\n{card['description']}\nPLAY CARD →")
+                        button.setMinimumSize(150, 125); button.setEnabled(active)
+                        button.setStyleSheet("font-size:13px;font-weight:700;color:#dbf7ee;background:#194043;border:1px solid #428b81;border-radius:12px")
+                        button.clicked.connect(lambda _checked=False, i=card["slot"]: self._submit_action(pack_play(i, chooser.currentData())))
+                        row.addWidget(button)
+                    box.addLayout(row)
+                else:
+                    box.addWidget(QLabel("Waiting for another station. Their hand remains face down."))
+            else:
+                box.addWidget(QLabel(f"MISSION {view['result'].upper()}"))
+            self.board_layout.addWidget(host)
         elif view["kind"] == "piles":
             host = QWidget(); box = QVBoxLayout(host)
             for index, count in enumerate(view["piles"]):

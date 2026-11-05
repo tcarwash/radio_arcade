@@ -150,6 +150,13 @@ Game ID 4 was previously assigned to Island Settlers and is now **retired**. Cur
 
 Game IDs and their rules are permanent; see `GAME-CATALOG.md`. Game-specific codecs must fit the complete 240-byte envelope, including callsigns and any roster or action wrapper. There is currently no independent game-payload version negotiation; incompatible rule or codec changes require a new game ID or an explicit future protocol mechanism.
 
+Signal Siege (game 11) uses a one-byte action for both card plays and draft
+choices. Low bits 0–1 select hand slot 0–2, bits 2–3 select support target
+seat 0–3; `0x40..0x42` draft an offered card. The deterministic rotating
+deck means card IDs need not be included in normal moves. Recovery state is
+versioned and includes per-station deck order and HP/shield/focus. Full
+details: [docs/SIGNAL-SIEGE.md](docs/SIGNAL-SIEGE.md).
+
 Game ID **10** is a generic external-engine table, separate from PICO-8's ID 9.
 The compact configuration/event/finish action grammar and shared-state codec
 are deliberately identical for portability, but separate IDs prevent a native
