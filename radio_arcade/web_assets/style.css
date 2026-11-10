@@ -571,3 +571,6 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .siege-card p { font-size:11px; line-height:1.5; color:#b6cadd; margin:0; }
 .siege-play { margin-top:auto; color:#a1f0d5; font:700 9px 'Space Grotesk',sans-serif; letter-spacing:.1em; }
 @media(max-width:700px) { .siege-cards {grid-template-columns:1fr;} .siege-card {min-height:115px;} .siege-hero {padding:18px;} }
+
+.siege-art { width:100%; height:150px; display:grid; place-items:center; font-size:60px; color:#d9c398; border:1px solid #c5ad7855; background:radial-gradient(ellipse at center,#8da5cc33,transparent 70%),repeating-linear-gradient(45deg,transparent,transparent 20px,#ffffff04 21px); }
+.siege-card {box-shadow:0 10px 22px #0005,inset 0 0 0 3px #c9b87b12; border-radius:12px;}

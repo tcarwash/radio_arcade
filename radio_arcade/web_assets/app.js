@@ -759,6 +759,7 @@ function renderPlugin(session, view, host) {
 
 function renderSignalSiege(session, view, host) {
   const wrap = node("section", "siege-layout");
+  const crawl = node("a", "button", "Offline dungeon · The Silent Vault"); crawl.href = "siege-crawl.html"; crawl.target = "_blank"; wrap.append(crawl);
   const hero = node("header", "siege-hero");
   const wave = node("div", "siege-wave", `WAVE ${view.wave} / ${view.waves}   ·   ROUND ${view.round + 1}`);
   const title = node("h2", "", view.result === "victory" ? "Signal cleared" : view.result === "defeat" ? "Link lost" : "The interference core");
@@ -803,7 +804,7 @@ function renderSignalSiege(session, view, host) {
     for (const reward of view.rewards) {
       const card = node("button", `siege-card ${reward.family}`);
       card.type = "button"; card.disabled = !canChoose;
-      card.append(node("span", "siege-card-number", `REWARD ${reward.slot + 1}`), node("strong", "", reward.name), node("p", "", reward.description), node("span", "siege-play", "ADD TO DECK +"));
+      card.append(node("span", "siege-card-number", `REWARD ${reward.slot + 1}`), node("strong", "", reward.name), node("span", "siege-art", "✦"), node("p", "", reward.description), node("span", "siege-play", "ADD TO DECK +"));
       card.addEventListener("click", () => submitAction([0x40 | reward.slot])); offers.append(card);
     }
     controls.append(offers);
@@ -825,7 +826,7 @@ function renderSignalSiege(session, view, host) {
       for (const choice of actor.hand) {
         const card = node("button", `siege-card ${choice.family}`);
         card.type = "button"; card.disabled = !canChoose;
-        card.append(node("span", "siege-card-number", `CARD ${choice.slot + 1}`), node("strong", "", choice.name),
+        card.append(node("span", "siege-card-number", `CARD ${choice.slot + 1}`), node("strong", "", choice.name), node("span", "siege-art", "✦"),
           node("p", "", choice.description), node("span", "siege-play", "PLAY CARD →"));
         card.addEventListener("click", () => submitAction([(Number(target.value) << 2) | choice.slot]));
         hand.append(card);
