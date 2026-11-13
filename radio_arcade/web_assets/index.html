@@ -58,7 +58,7 @@
             <label class="field-label" for="cq-game">Call for a game</label>
             <select id="cq-game" class="field"><option value="">Any game</option></select>
             <button id="cq-send" class="button full" type="button">Call CQ to all stations</button>
-            <p class="micro-copy">Recent calls from other stations:</p>
+            <p class="micro-copy">CQ broadcasts a request; it does not open a table. To answer an “Any game” call, choose a game above first. Recent calls:</p>
             <div id="cq-list" class="cq-list" aria-live="polite"></div>
           </details>
         </section>
@@ -130,7 +130,7 @@
           <label>Color scheme<select name="color_scheme"><option value="midnight">Midnight</option><option value="daylight">Daylight</option><option value="monochrome">Monochrome</option></select></label>
           <label>DX Cluster URL<input name="dx_cluster_url" type="url" placeholder="https://cluster.example.org"></label>
           <label class="check-setting"><input name="sound_enabled" type="checkbox"> Invitation and turn sounds <span>Desktop and terminal clients</span></label>
-          <label class="check-setting"><input name="experimental_games" type="checkbox"> Experimental games <span>Show prototypes when creating a table or calling CQ</span></label>
+          <label class="check-setting"><input name="experimental_games" type="checkbox"> Experimental games <span>Also show the Signal Siege prototype in game and CQ choices</span></label>
           <label class="check-setting"><input name="observer_mode" type="checkbox"> Observer mode <span>Receive-only · broadcast only</span></label>
         </div>
         <p id="settings-error" class="form-error" hidden></p>

@@ -26,6 +26,7 @@ from .settings import Settings
 from .store import SessionStore
 from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
+from .games.base import builtin_registry
 from .dx_cluster import build_spot, post_spot
 from .games.scorched_earth import _trace_shot, _wind, pack_shot
 
@@ -281,7 +282,7 @@ class SettingsDialog(QDialog):
         self.scheme.setCurrentIndex(max(0, self.scheme.findData(settings.color_scheme)))
         self.sound = QCheckBox("Play sounds"); self.sound.setChecked(settings.sound_enabled)
         self.experimental_games = QCheckBox("Experimental games")
-        self.experimental_games.setToolTip("Show prototypes when creating a table or calling CQ")
+        self.experimental_games.setToolTip("Show the Signal Siege prototype when creating a table or calling CQ")
         self.experimental_games.setChecked(settings.experimental_games)
         self.observer = QCheckBox("Receive-only observer")
         self.observer.setToolTip("Manual snapshot requests still transmit")
@@ -396,6 +397,10 @@ class ArcadeWindow(QMainWindow):
         self.resize(1320, 820)
         self.setMinimumSize(360, 400)
         self._build_ui()
+        # Keep game and CQ choices usable while the radio service is offline.
+        # The controls used to retain only their two starter placeholders until
+        # a connection succeeded, making the experimental setting appear inert.
+        self._populate_games()
         self._apply_style()
         self._update_status("Starting up", False)
         self._update_compact_layout()
@@ -720,6 +725,9 @@ class ArcadeWindow(QMainWindow):
         if self.settings.color_scheme == "daylight":
             self.setStyleSheet(self.styleSheet() + """
                 QWidget#root { background:#eaf0f4; color:#17212d; }
+                QDialog { background:#ffffff; color:#17212d; }
+                QLabel#dialogTitle { color:#1c2936; }
+                QLabel#muted { color:#52677b; }
                 QFrame#card { background:#ffffff; border-color:#c9d4de; }
                 QLabel#brand,QLabel#gameTitle,QLabel#cardTitle,QLabel { color:#1b2936; }
                 QLabel#eyebrow { color:#087d70; }
@@ -842,10 +850,11 @@ class ArcadeWindow(QMainWindow):
         self._run(partial(self.engine.delete_game, sid), deleted)
 
     def _populate_games(self):
-        if not self.engine: return
+        catalog = (self.engine.catalog() if self.engine
+                   else builtin_registry(load_plugins=False).catalog())
         current = self.game_choice.currentData()
         self.game_choice.clear()
-        for game in self.engine.catalog():
+        for game in catalog:
             if "desktop" not in game.clients or not self.settings.can_offer_game(game.key):
                 continue
             self.game_choice.addItem(f"{game.name} · {game.min_players}–{game.max_players}", game.key)
@@ -854,7 +863,7 @@ class ArcadeWindow(QMainWindow):
         selected_cq_game = self.cq_choice.currentData()
         self.cq_choice.clear()
         self.cq_choice.addItem("Any game", None)
-        for game in self.engine.catalog():
+        for game in catalog:
             if "desktop" in game.clients and game.max_players >= 2 and self.settings.can_offer_game(game.key):
                 self.cq_choice.addItem(game.name, game.key)
         index = self.cq_choice.findData(selected_cq_game)
@@ -1942,6 +1951,7 @@ class ArcadeWindow(QMainWindow):
             if self.settings.transport != "broadcast":
                 self.hosted_checkbox.setChecked(False)
             self._update_new_game_mode()
+            self._populate_games()
             self._apply_style()
             self.connect_service()
 
@@ -1969,6 +1979,9 @@ def main():
         dialog = SettingsDialog(settings, window)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        # The first-run dialog edits settings before a service exists. Refresh
+        # local choices now so offline startup still reflects the checkbox.
+        window._populate_games()
     window.show(); window.connect_service()
     sys.exit(app.exec())
 
