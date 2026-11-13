@@ -30,7 +30,7 @@ class Settings:
 
     def can_offer_game(self, key: str) -> bool:
         """Limit outgoing game choices without affecting received invitations."""
-        return self.experimental_games or key not in {"signal-siege", "battleship"}
+        return self.experimental_games or key != "signal-siege"
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Settings":

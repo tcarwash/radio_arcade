@@ -9,7 +9,8 @@ const PLAYER_COLORS = ["#8edbfa", "#ffb777", "#d6a8ff", "#a2e4a5"];
 const RESOURCE_COLORS = ["#365f4e", "#77503e", "#5b4b76", "#78633e", "#415e73", "#365f4e"];
 const GAME_PREVIEWS = {
   "signal-siege": ["✦", "A 1–4 station co-op deck-builder. Earn a card after each wave."],
-  "battleship": ["▦", "Hide a fleet of five ships, then hunt your opponent's fleet."],
+  "battleship-classic": ["▦", "Hide a fleet of five ships, then hunt your opponent's fleet."],
+  "sea-warfare": ["⚓", "A six-ship fleet with compact salvos, sonar, movement, mines, decoys, and silent sinks."],
   "scorched-earth": ["◈", "Artillery duels · Aim, fire, and reshape the terrain."],
   "open-word-tiles": ["▦", "Build words on a shared board and chase the high score."],
   "hexxagon": ["⬢", "Clone, jump, and capture your opponent’s stones."],
@@ -527,35 +528,89 @@ function renderGrid(session, view, host) {
 
 function renderBattleship(session, view, host) {
   const wrapper = node("div", "battleship-view"), draftKey = `ra-bs-draft-${session.id}`;
+  const sea = view.kind === "sea-warfare", fleetSizes = sea ? [5,4,3,3,3,2] : [5,4,3,3,2];
+  const shipNames = sea ? ["Carrier","Battleship","Cruiser","Destroyer","Submarine","Patrol boat"] : ["Carrier","Battleship","Cruiser","Destroyer","Patrol boat"];
+  const shipSprites = ["battleship-carrier.png", "battleship-hull.png", "battleship-cruiser.png", "battleship-destroyer.png", "battleship-submarine.png", "battleship-patrol.png"];
+  if (sea) {
+    const rules=node("details","bs-rules"), summary=node("summary","","Sea Warfare abilities · compact radio actions");
+    rules.append(summary,node("p","","Carrier: one 50% fighter intercept roll. Battleship: one adjacent double shot. Cruiser: one free move; other moves cost one of three supplies. Destroyer: silently disarms one mine. Submarine: one row sonar scan. Patrol boat: carries one optional hidden mine. One-cell inflatable decoy is optional."));
+    wrapper.append(rules);
+  }
+  const drawFleet = (grid, fleets) => {
+    fleets.forEach((cells, index) => {
+      const first = Math.min(...cells), vertical = cells.length > 1 && cells[1] - cells[0] === 10;
+      const row = Math.floor(first / 10), col = first % 10;
+      const ship = node("span", "bs-fleet-ship");
+      ship.style.gridRow = `${row + 1} / span ${vertical ? cells.length : 1}`;
+      ship.style.gridColumn = `${col + 1} / span ${vertical ? 1 : cells.length}`;
+      const sprite = shipSprites[index].replace(".png", vertical ? ".png" : "-horizontal.png");
+      ship.style.backgroundImage = `url("/${sprite}")`;
+      ship.setAttribute("aria-label", `Ship ${index + 1}`);
+      grid.append(ship);
+    });
+  };
   const ownCells = new Set((session.private_fleet || []).flat());
   const ownGrid = () => {
     wrapper.append(node("h3", "", "Your fleet · stored on this station"));
+    if (sea) {
+      const carrierLost = (session.private_fleet?.[0] || []).length > 0 && session.private_fleet[0].every(cell => (session.private_hits || []).includes(cell));
+      const fighter=node("div","bs-fighter-status"); const plane=node("img","","");plane.src="/battleship-fighter.png";plane.alt="Carrier fighter plane";
+      fighter.append(plane,node("span","",carrierLost?"Carrier lost · fighter unavailable":session.fighter_used?"Fighter interception expended":"Fighter interception ready · first incoming hit gets a 50% block roll"));wrapper.append(fighter);
+    }
     const grid=node("div","battleship-grid");
-    for(let i=0;i<100;i++){const b=node("span",`battleship-cell ${ownCells.has(i)?"bs-ship":""}`,ownCells.has(i)?"■":"");grid.append(b);}
+    for(let i=0;i<100;i++){const b=node("span",`battleship-cell ${ownCells.has(i)?"bs-ship":""}`);grid.append(b);}
+    drawFleet(grid, session.private_fleet || []);
+    if (sea) {
+      for (const cell of session.private_deploy?.mines || []) { const token=node("span","bs-token bs-mine","✹"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
+      for (const cell of session.private_deploy?.decoys || []) { const token=node("span","bs-token bs-decoy","◉"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
+      for (const cell of session.private_hits || []) { const token=node("span","bs-token bs-own-hit","×"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
+    }
     wrapper.append(grid);
   };
-  wrapper.append(node("p", "turn-meta", view.phase === "setup" ? "Place your full fleet locally. Ship positions never go over the air." : view.phase === "reply" ? `Called row ${Math.floor(view.pending/10)+1}, column ${view.pending%10+1}. Your station is preparing its private result.` : `${session.current_player}: call a coordinate on the enemy grid.`));
+  const pendingText = view.pending_kind === 2 ? `Submarine sonar is checking row ${view.pending+1}. The result returns in a compact reply.` : view.pending_kind === 1 ? `Battleship salvo called across row ${Math.floor(view.pending/10)+1}.` : `Called row ${Math.floor(view.pending/10)+1}, column ${view.pending%10+1}.`;
+  wrapper.append(node("p", "turn-meta", view.phase === "setup" ? "Fleet, mine, and decoy positions stay on this station. Only compact actions and results are transmitted." : view.phase === "reply" ? `${pendingText} Your station is resolving it privately.` : `${session.current_player}: choose a tactical action.`));
   if (view.phase === "setup" && !session.private_fleet) {
-    let ships; try { ships = JSON.parse(localStorage.getItem(draftKey) || "[]"); } catch { ships = []; }
+    let draft; try { draft = JSON.parse(localStorage.getItem(draftKey) || (sea ? "{}" : "[]")); } catch { draft = sea ? {} : []; }
+    if (sea && Array.isArray(draft)) draft = {ships:draft};
+    const ships = sea ? (draft.ships || []) : draft;
+    draft.ships = ships;
+    if (sea) { draft.minePlaced = Boolean(draft.minePlaced); draft.decoyPlaced = Boolean(draft.decoyPlaced); }
     let vertical = false;
-    const size = [5,4,3,3,2][ships.length];
+    const size = fleetSizes[ships.length];
     const rotate = node("button", "button secondary", "Orientation: horizontal · rotate"); rotate.type = "button";
     rotate.addEventListener("click", () => { vertical = !vertical; rotate.textContent = `Orientation: ${vertical ? "vertical" : "horizontal"} · rotate`; });
-    wrapper.append(node("p", "", `Place ship ${ships.length+1} of 5 · length ${size}`), rotate);
+    const stage = ships.length < fleetSizes.length ? `Place ${shipNames[ships.length]} ${ships.length+1} of ${fleetSizes.length} · length ${size}` : sea && !draft.minePlaced ? "Place the hidden mine on your patrol boat (optional)" : sea && !draft.decoyPlaced ? "Place the one-cell inflatable decoy in open water (optional)" : "Fleet ready";
+    wrapper.append(node("p", "", stage));
+    if (ships.length < fleetSizes.length) wrapper.append(rotate);
+    if (sea && ships.length === fleetSizes.length && !draft.minePlaced) { const skip=node("button","button secondary","Skip mine");skip.type="button";skip.addEventListener("click",()=>{draft.minePlaced=true;localStorage.setItem(draftKey,JSON.stringify(draft));renderGame(session);});wrapper.append(skip); }
+    if (sea && ships.length === fleetSizes.length && draft.minePlaced && !draft.decoyPlaced) { const skip=node("button","button secondary","Skip decoy");skip.type="button";skip.addEventListener("click",async()=>{draft.decoyPlaced=true;localStorage.setItem(draftKey,JSON.stringify(draft));try{await request("/api/command",{method:"POST",body:JSON.stringify({command:"place_battleship_fleet",session_id:session.id,ships,mines:draft.mine==null?[]:[draft.mine],decoys:[]})});localStorage.removeItem(draftKey);await refresh();}catch(error){notify(error.message);renderGame(session);}});wrapper.append(skip); }
     const grid = node("div", "battleship-grid");
     for (let i=0;i<100;i++) {
-      const button = node("button", "battleship-cell", ships.flat().includes(i) ? "■" : ""); button.type="button";
+      const shipCells = ships.flat(), isShip = shipCells.includes(i);
+      const button = node("button", `battleship-cell${isShip ? " bs-ship" : ""}`); button.type="button";
       button.addEventListener("click", async () => {
-        const row=Math.floor(i/10), col=i%10;
-        const cells=Array.from({length:size},(_,j)=>vertical?(row+j)*10+col:row*10+col+j);
-        if ((vertical&&row+size>10)||(!vertical&&col+size>10)||cells.some(x=>ships.flat().includes(x))) { notify("That ship does not fit there."); return; }
-        ships.push(cells); localStorage.setItem(draftKey,JSON.stringify(ships));
-        if(ships.length===5) {
-          try { await request("/api/command",{method:"POST",body:JSON.stringify({command:"place_battleship_fleet",session_id:session.id,ships})}); localStorage.removeItem(draftKey); await refresh(); }
+        if (ships.length < fleetSizes.length) {
+          const row=Math.floor(i/10), col=i%10;
+          const cells=Array.from({length:size},(_,j)=>vertical?(row+j)*10+col:row*10+col+j);
+          if ((vertical&&row+size>10)||(!vertical&&col+size>10)||cells.some(x=>shipCells.includes(x))) { notify("That ship does not fit there."); return; }
+          ships.push(cells);
+        } else if (sea && !draft.minePlaced) {
+          if (!(ships[5] || []).includes(i)) { notify("Place the mine on your patrol boat."); return; }
+          draft.mine = i; draft.minePlaced = true;
+        } else if (sea && draft.minePlaced && !draft.decoyPlaced) {
+          if (isShip || draft.mine === i) { notify("Place the decoy in open water."); return; }
+          draft.decoy = i; draft.decoyPlaced = true;
+        }
+        localStorage.setItem(draftKey,JSON.stringify(sea ? draft : ships));
+        if(ships.length===fleetSizes.length && (!sea || (draft.minePlaced && draft.decoyPlaced))) {
+          try { await request("/api/command",{method:"POST",body:JSON.stringify({command:"place_battleship_fleet",session_id:session.id,ships,mines:sea&&draft.mine!=null?[draft.mine]:[],decoys:sea&&draft.decoy!=null?[draft.decoy]:[]})}); localStorage.removeItem(draftKey); await refresh(); }
           catch(error){notify(error.message);}
         } else renderGame(session);
       }); grid.append(button);
     }
+    drawFleet(grid, ships);
+    if (sea && draft.mine != null) { const token=node("span","bs-token bs-mine","✹"); token.style.gridArea=`${Math.floor(draft.mine/10)+1} / ${draft.mine%10+1}`; grid.append(token); }
+    if (sea && draft.decoy != null) { const token=node("span","bs-token bs-decoy","◉"); token.style.gridArea=`${Math.floor(draft.decoy/10)+1} / ${draft.decoy%10+1}`; grid.append(token); }
     wrapper.append(grid);
   } else if (view.phase === "setup") {
     wrapper.append(node("p", "", "Fleet saved privately. Waiting for both stations to finish placement."));
@@ -565,8 +620,31 @@ function renderBattleship(session, view, host) {
   } else {
     ownGrid();
     wrapper.append(node("h3", "", "Enemy waters · called coordinates"));
+    let seaMode = "shot", seaSeat = session.players.indexOf(state.snapshot?.callsign), used = view.used?.[seaSeat] || 0, seaGridButtons = [];
+    if (sea && canAct(session)) {
+      const controls=node("div","bs-tactical-controls");
+      const sunk = ship => (session.private_fleet?.[ship] || []).length > 0 && session.private_fleet[ship].every(cell => (session.private_hits || []).includes(cell));
+      const mode=node("select","field");
+      [["shot","Fire one shot"],["double","Battleship salvo · once/game"],["sonar","Submarine sonar · once/game"]].forEach(([value,label])=>{const o=node("option","",label);o.value=value;o.disabled=(value==="double"&&((used&1)||sunk(1)))||(value==="sonar"&&((used&2)||sunk(4)));mode.append(o);});
+      controls.append(mode);
+      const moves=node("select","field");
+      shipNames.forEach((name,i)=>{const o=node("option","",`${name}${i===2?" · free move":""}`);o.value=i;moves.append(o);});
+      const direction=node("select","field"); [[0,"up"],[1,"down"],[2,"left"],[3,"right"]].forEach(([v,label])=>{const o=node("option","",label);o.value=v;direction.append(o);});
+      const move=node("button","button secondary","Move vessel"); move.type="button"; const supply=view.moves?.[seaSeat]||0;
+      const updateMove=()=>{const id=Number(moves.value);move.disabled=sunk(id)||(id===2?Boolean(used&4):supply<=0);};
+      updateMove(); moves.addEventListener("change",updateMove); move.title=`Supplies: ${supply}; cruiser moves once for free`;
+      move.addEventListener("click",()=>submitAction([200+Number(moves.value)*4+Number(direction.value)]));
+      controls.append(moves,direction,move); wrapper.append(controls);
+      seaMode=mode.value;
+      const scan=node("div","bs-sonar-rows");
+      scan.hidden=seaMode!=="sonar";
+      for(let row=0;row<10;row++){const b=node("button","button secondary",`Scan row ${row+1}`);b.type="button";b.addEventListener("click",()=>submitAction([190+row]));scan.append(b);}
+      wrapper.append(scan);
+      mode.addEventListener("change",()=>{seaMode=mode.value;scan.hidden=seaMode!=="sonar";seaGridButtons.forEach((b,i)=>{const col=i%10;b.disabled=view.shots[i]!==0||seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[i+1]!==0));});});
+      if(view.sonar?.some(x=>x!==255)){const sonar=node("p","turn-meta",`Last sonar: ${view.sonar.map((x,i)=>x===255?null:`row ${i+1}: ${["clear","faint","strong"][x]}`).filter(Boolean).join(" · ")}`);wrapper.append(sonar);}
+    }
     const grid=node("div","battleship-grid");
-    view.shots.forEach((value,index)=>{const b=node("button",`battleship-cell bs-${value}`,value===1?"·":value===2?"✕":value>=3?`S${value-3}`:"");b.type="button";b.disabled=!canAct(session)||value!==0;b.addEventListener("click",()=>submitAction([index]));grid.append(b);});
+    view.shots.forEach((value,index)=>{const row=Math.floor(index/10),col=index%10; const b=node("button",`battleship-cell bs-${value}`,value===1?"·":value===2?"✕":value>=3?`S${value-3}`:"");b.type="button";b.disabled=!canAct(session)||value!==0||(sea&&(seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[index+1]!==0))));b.addEventListener("click",()=>submitAction([sea&&seaMode==="double"?100+row*9+col:index]));grid.append(b);if(sea)seaGridButtons.push(b);});
     wrapper.append(grid);
   }
   host.append(wrapper);
@@ -1383,7 +1461,7 @@ function renderGame(session) {
     case "signal-siege": renderSignalSiege(session, view, block); break;
     case "hexxagon": renderHexxagon(session, view, block); break;
     case "grid": renderGrid(session, view, block); break;
-    case "battleship": renderBattleship(session, view, block); break;
+    case "battleship": case "sea-warfare": renderBattleship(session, view, block); break;
     case "scorched-earth": renderScorchedEarth(session, view, block); break;
     case "piles": renderNim(session, view, block); break;
     case "word-tiles": renderWordTiles(session, view, block); break;

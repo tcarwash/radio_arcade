@@ -1274,6 +1274,8 @@ class ArcadeWindow(QMainWindow):
                     grid.addWidget(button,i//10,i%10)
                 box.addWidget(QLabel("Enemy waters · called coordinates"));box.addWidget(board)
             self.board_layout.addWidget(host)
+        elif view["kind"] == "sea-warfare":
+            self._render_sea_warfare(session, view)
         elif view["kind"] == "signal-siege":
             from .games.signal_siege import pack_play, pack_draft
             host = QWidget(); box = QVBoxLayout(host); box.setSpacing(14)
@@ -1397,6 +1399,196 @@ class ArcadeWindow(QMainWindow):
             send.setEnabled(not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or session["current_player"] == self.settings.callsign) and session["status"] == "active")
             send.clicked.connect(lambda: self._submit_hex_action(raw.text()))
             box.addWidget(raw); box.addWidget(send); self.board_layout.addWidget(panel)
+
+    def _render_sea_warfare(self, session: dict, view: dict):
+        host = QWidget(); box = QVBoxLayout(host); box.setSpacing(7)
+        active = (not self.settings.observer_mode and session["status"] == "active"
+                  and not session["pending_action"]
+                  and (self.settings.transport == "practice" or
+                       (self.settings.tx_enabled and session["current_player"] == self.settings.callsign)))
+        rules = QLabel("Carrier fighter: one 50% block roll · Battleship: one adjacent double shot · "
+                       "Cruiser: one free move · Destroyer: disarms one mine · "
+                       "Submarine: one sonar row · Patrol boat: optional hidden mine")
+        rules.setWordWrap(True); box.addWidget(rules)
+        box.addWidget(QLabel(f"{session['current_player']} · {view['phase']}"))
+
+        def refresh_board():
+            self._board_signature = None
+            self._show_session(session["id"])
+
+        def grid_widget(cells, enabled=False, handler=None, marks=None, fleet=None):
+            board = QWidget(); grid = QGridLayout(board); grid.setSpacing(2); grid.setContentsMargins(0, 0, 0, 0)
+            for index in range(100):
+                mark = (marks or {}).get(index)
+                button = QPushButton("■" if index in cells else "□"); button.setFixedSize(27, 27)
+                button.setEnabled(enabled and handler is not None)
+                if handler is not None:
+                    button.clicked.connect(lambda _=False, cell=index: handler(cell))
+                grid.addWidget(button, index // 10, index % 10)
+            assets = Path(__file__).with_name("web_assets")
+            sprites = ("battleship-carrier.png", "battleship-hull.png", "battleship-cruiser.png",
+                       "battleship-destroyer.png", "battleship-submarine.png", "battleship-patrol.png")
+            for ship_id, ship in enumerate(fleet or []):
+                if not ship: continue
+                first = min(ship); row, col = divmod(first, 10)
+                vertical_ship = len(ship) > 1 and ship[1] - ship[0] == 10
+                name = sprites[ship_id] + ("" if vertical_ship else "")
+                if not vertical_ship: name = name.replace(".png", "-horizontal.png")
+                sprite = QPixmap(str(assets / name))
+                if sprite.isNull(): continue
+                length = len(ship)
+                width, height = (27, length*27+2*(length-1)) if vertical_ship else (length*27+2*(length-1), 27)
+                image = QLabel(); image.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                image.setPixmap(sprite.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                              Qt.TransformationMode.SmoothTransformation))
+                grid.addWidget(image, row, col, length if vertical_ship else 1,
+                               1 if vertical_ship else length)
+            for index, mark in (marks or {}).items():
+                token=QLabel(mark);token.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                token.setStyleSheet("color:#ffd080;font-size:17px;font-weight:800;background:transparent")
+                token.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                grid.addWidget(token,index//10,index%10)
+            return board
+
+        if view["phase"] == "setup" and not session.get("private_fleet"):
+            fleet_sizes = (5, 4, 3, 3, 3, 2)
+            draft = self._battleship_drafts.setdefault(session["id"],
+                     {"ships": [], "mine": None, "mine_done": False, "decoy": None, "decoy_done": False})
+            if isinstance(draft, list):
+                draft = {"ships": draft, "mine": None, "mine_done": False, "decoy": None, "decoy_done": False}
+                self._battleship_drafts[session["id"]] = draft
+            ships = draft["ships"]
+            vertical = QCheckBox("Place vertically")
+
+            def finish_setup():
+                try:
+                    self.engine.place_battleship_fleet(session["id"], ships,
+                        [] if draft["mine"] is None else [draft["mine"]],
+                        [] if draft["decoy"] is None else [draft["decoy"]])
+                    self._battleship_drafts.pop(session["id"], None)
+                    refresh_board()
+                except ValueError as exc:
+                    QMessageBox.warning(self, "Fleet placement", str(exc))
+
+            if len(ships) < len(fleet_sizes):
+                index = len(ships); size = fleet_sizes[index]
+                box.addWidget(QLabel(f"Place vessel {index+1} of 6 · length {size}")); box.addWidget(vertical)
+                occupied = set(sum(ships, []))
+                def place_ship(cell):
+                    row, col = divmod(cell, 10); is_vertical = vertical.isChecked()
+                    cells = [(row+j)*10+col if is_vertical else row*10+col+j for j in range(size)]
+                    if ((is_vertical and row+size > 10) or (not is_vertical and col+size > 10)
+                            or occupied.intersection(cells)):
+                        return
+                    ships.append(cells)
+                    if len(ships) == len(fleet_sizes) and draft["mine_done"] and draft["decoy_done"]:
+                        finish_setup()
+                    else:
+                        refresh_board()
+                box.addWidget(grid_widget(occupied, active, place_ship, fleet=ships))
+            elif not draft["mine_done"]:
+                box.addWidget(QLabel("Optional: place one hidden mine on the patrol boat."))
+                skip = QPushButton("Skip mine"); skip.clicked.connect(lambda: (draft.update(mine_done=True), refresh_board())); box.addWidget(skip)
+                patrol = set(ships[5])
+                def place_mine(cell):
+                    if cell not in patrol: return
+                    draft.update(mine=cell, mine_done=True)
+                    if draft["decoy_done"]: finish_setup()
+                    else: refresh_board()
+                box.addWidget(grid_widget(patrol, active, place_mine,
+                    marks={} if draft["mine"] is None else {draft["mine"]:"✹"}, fleet=ships))
+            elif not draft["decoy_done"]:
+                box.addWidget(QLabel("Optional: place a one-cell inflatable decoy in open water."))
+                skip = QPushButton("Skip decoy")
+                def skip_decoy():
+                    draft.update(decoy_done=True)
+                    finish_setup()
+                skip.clicked.connect(skip_decoy); box.addWidget(skip)
+                occupied = set(sum(ships, []))
+                def place_decoy(cell):
+                    if cell in occupied or cell == draft["mine"]: return
+                    draft.update(decoy=cell, decoy_done=True)
+                    finish_setup()
+                setup_marks = {} if draft["mine"] is None else {draft["mine"]:"✹"}
+                if draft["decoy"] is not None: setup_marks[draft["decoy"]] = "◉"
+                box.addWidget(grid_widget(occupied, active, place_decoy, marks=setup_marks, fleet=ships))
+        elif view["phase"] == "setup":
+            box.addWidget(QLabel("Fleet and optional extras are saved privately · waiting for both stations."))
+        elif view["phase"] == "reply":
+            box.addWidget(QLabel("Resolving the call against your private fleet."))
+        else:
+            own = set(sum(session.get("private_fleet") or [], []))
+            own_marks = {cell: "×" for cell in session.get("private_hits", [])}
+            if session.get("private_deploy"):
+                for cell in session["private_deploy"].get("mines", []): own_marks[cell] = "✹"
+                for cell in session["private_deploy"].get("decoys", []): own_marks[cell] = "◉"
+            status = "Fighter roll spent" if session.get("fighter_used") else "Fighter roll ready (50%)"
+            plane = QLabel(status)
+            pixmap = QPixmap(str(Path(__file__).with_name("web_assets") / "battleship-fighter.png"))
+            if not pixmap.isNull(): plane.setPixmap(pixmap.scaled(32, 38, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            box.addWidget(plane)
+            box.addWidget(QLabel("Your fleet · private on this station"))
+            box.addWidget(grid_widget(own, marks=own_marks, fleet=session.get("private_fleet")))
+
+            mode = QComboBox(); mode.addItem("One shot", "shot")
+            seat = session["players"].index(self.settings.callsign) if self.settings.callsign in session["players"] else 0
+            used = view["used"][seat]
+            own_fleet = session.get("private_fleet") or []
+            private_hits = set(session.get("private_hits", []))
+            sunk = lambda n: len(own_fleet) > n and all(c in private_hits for c in own_fleet[n])
+            if not (used & 1) and not sunk(1): mode.addItem("Battleship double shot · once", "double")
+            if not (used & 2) and not sunk(4): mode.addItem("Submarine sonar · once", "sonar")
+            box.addWidget(mode)
+            scan_row = QHBoxLayout(); row_choice = QComboBox()
+            for row in range(10): row_choice.addItem(f"Scan row {row+1}", row)
+            scan = QPushButton("Run sonar"); scan.setEnabled(active); scan.clicked.connect(lambda: self._submit_action(bytes((190 + row_choice.currentData(),))))
+            scan_row.addWidget(row_choice); scan_row.addWidget(scan); box.addLayout(scan_row)
+            enemy_buttons = []
+            def update_mode(*_):
+                sonar_mode = mode.currentData() == "sonar"
+                scan.setVisible(sonar_mode); row_choice.setVisible(sonar_mode)
+                for index, item in enumerate(enemy_buttons):
+                    col = index % 10
+                    enabled = active and view["shots"][index] == 0 and not sonar_mode
+                    if mode.currentData() == "double":
+                        enabled = enabled and col < 9 and view["shots"][index+1] == 0
+                    item.setEnabled(enabled)
+            mode.currentIndexChanged.connect(update_mode); update_mode()
+            if any(value != 255 for value in view.get("sonar", [])):
+                sonar_text = " · ".join(f"Row {i+1}: {('clear','faint','strong')[value]}" for i, value in enumerate(view["sonar"]) if value != 255)
+                box.addWidget(QLabel("Sonar · " + sonar_text))
+
+            move_row = QHBoxLayout(); vessel = QComboBox()
+            for name in ("Carrier", "Battleship", "Cruiser", "Destroyer", "Submarine", "Patrol boat"): vessel.addItem(name)
+            direction = QComboBox()
+            for name in ("Up", "Down", "Left", "Right"): direction.addItem(name)
+            move = QPushButton("Move vessel"); seat = session["players"].index(self.settings.callsign)
+            supplies = view["moves"][seat]
+            def update_move(*_):
+                ship = vessel.currentIndex()
+                move.setEnabled(active and not sunk(ship) and (not (used & 4) if ship == 2 else supplies > 0))
+            vessel.currentIndexChanged.connect(update_move); update_move()
+            move.clicked.connect(lambda: self._submit_action(bytes((200 + vessel.currentIndex()*4 + direction.currentIndex(),))))
+            move_row.addWidget(vessel); move_row.addWidget(direction); move_row.addWidget(move); box.addLayout(move_row)
+
+            box.addWidget(QLabel("Enemy waters · hits do not identify sunk ships"))
+            enemy = QWidget(); grid = QGridLayout(enemy); grid.setSpacing(2)
+            for cell, value in enumerate(view["shots"]):
+                row, col = divmod(cell, 10)
+                button = QPushButton("·" if value == 1 else "×" if value == 2 else "□"); button.setFixedSize(27, 27)
+                def fire(_=False, cell=cell):
+                    action_mode = mode.currentData()
+                    if action_mode == "sonar": return
+                    if action_mode == "double":
+                        if cell % 10 > 8 or view["shots"][cell+1] != 0: return
+                        code = 100 + (cell//10)*9 + cell%10
+                    else: code = cell
+                    self._submit_action(bytes((code,)))
+                button.clicked.connect(fire); grid.addWidget(button, row, col); enemy_buttons.append(button)
+            update_mode()
+            box.addWidget(enemy)
+        self.board_layout.addWidget(host)
 
     def _render_scorched(self, session: dict, view: dict):
         """Native artillery controls; only two-byte moves enter the shared engine."""

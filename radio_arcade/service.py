@@ -164,9 +164,18 @@ class ArcadeService:
             state = game.decode_state(row["state"]) if row["state"] is not None else None
             result["view"] = game.view_model(state, tuple(row["players"])) if state is not None else None
             result["current_player"] = game.current_player(state, tuple(row["players"])) if state is not None else None
-            if row["game_id"] == 12:
+            if row["game_id"] in (12, 13):
                 private = self.store.load_private_game_data(sid)
                 result["private_fleet"] = private.get("ships")
+                if row["game_id"] == 13 and self.callsign in row["players"]:
+                    state = self.registry.by_id(13).decode_state(row["state"])
+                    seat = row["players"].index(self.callsign)
+                    result["private_deploy"] = {"mines": private.get("mines", []),
+                                                "decoys": private.get("decoys", [])}
+                    result["private_hits"] = private.get("hits", [])
+                    result["fighter_used"] = bool(private.get("fighter_used"))
+                    result["destroyer_sweep_used"] = bool(private.get("destroyer_sweep_used"))
+                    result["sea_abilities"] = {"used": state["used"][seat], "moves": state["moves"][seat]}
             result["last_move"] = ({"actor": row["last_actor"],
                                     "description": "forfeits the game" if row["last_action"] == FORFEIT_ACTION else game.describe_action(row["last_action"])}
                                    if row.get("last_actor") and row.get("last_action") is not None else None)
@@ -615,21 +624,25 @@ class ArcadeService:
                         self._reliable(row, player, Kind.START, payload=snapshot)
             self._emit("session_updated", sid, session=self.session(sid))
 
-    def place_battleship_fleet(self, session_id: str | int, ships: list[list[int]]) -> None:
+    def place_battleship_fleet(self, session_id: str | int, ships: list[list[int]],
+                               mines: list[int] | None = None, decoys: list[int] | None = None) -> None:
         """Save this station's fleet locally; the fleet never enters shared state."""
         sid = self._sid(session_id)
         self._require_player()
         with self._lock:
             row = self._sessions[sid]
-            if row["game_id"] != 12 or row["status"] != "active" or self.callsign not in row["players"]:
+            if row["game_id"] not in (12, 13) or row["status"] != "active" or self.callsign not in row["players"]:
                 raise ValueError("select an active Battleship table")
-            from .games.battleship import FLEET
-            if len(ships) != len(FLEET) or any(len(ship) != length for ship, length in zip(ships, FLEET)):
-                raise ValueError("place all five ships with lengths 5, 4, 3, 3, and 2")
+            if row["game_id"] == 13:
+                from .games.sea_warfare import FLEET as fleet
+            else:
+                from .games.battleship import FLEET as fleet
+            if len(ships) != len(fleet) or any(len(ship) != length for ship, length in zip(ships, fleet)):
+                raise ValueError("place every vessel in the fleet with its displayed length")
             cells = [cell for ship in ships for cell in ship]
             if any(type(cell) is not int or not 0 <= cell < 100 for cell in cells) or len(set(cells)) != len(cells):
                 raise ValueError("fleet cells must be unique board coordinates")
-            for ship, length in zip(ships, FLEET):
+            for ship, length in zip(ships, fleet):
                 rows, cols = [x//10 for x in ship], [x%10 for x in ship]
                 if len(set(rows)) == 1:
                     values = cols
@@ -639,15 +652,30 @@ class ArcadeService:
                     raise ValueError("each ship must be straight")
                 if sorted(values) != list(range(min(values), min(values)+length)):
                     raise ValueError("ship cells must be consecutive")
-            state = self.registry.by_id(12).decode_state(row["state"])
+            mines, decoys = list(mines or []), list(decoys or [])
+            if row["game_id"] == 12 and (mines or decoys):
+                raise ValueError("classic Battleship does not use mines or decoys")
+            if row["game_id"] == 13:
+                if (len(mines) > 1 or len(decoys) > 1
+                    or any(type(c) is not int or not 0 <= c < 100 for c in mines + decoys)
+                    or (mines and mines[0] not in ships[5])
+                    or (decoys and decoys[0] in cells)
+                    or (mines and decoys and mines[0] == decoys[0])):
+                    raise ValueError("place a mine on your fleet and a decoy in open water, or skip either")
+            state = self.registry.by_id(row["game_id"]).decode_state(row["state"])
             seat = row["players"].index(self.callsign)
             if state["phase"] != "setup" or state["ready"][seat]:
                 raise ValueError("your fleet is already deployed for this game")
-            self.store.save_private_game_data(sid, {"ships": ships, "hits": []})
+            self.store.save_private_game_data(sid, {"ships": ships, "hits": [], "mines": mines,
+                                                    "decoys": decoys, "fighter_used": False,
+                                                    "destroyer_sweep_used": False})
             if row["players"][state["turn"]] == self.callsign:
                 self.legal_action(sid, b"\x7f")
 
     def _resolve_battleship_pending(self, row: dict[str, Any]) -> None:
+        if row["game_id"] == 13 and row["status"] == "active":
+            self._resolve_sea_warfare_pending(row)
+            return
         if row["game_id"] != 12 or row["status"] != "active": return
         game = self.registry.by_id(12); state = game.decode_state(row["state"])
         if state["phase"] != "reply" or row["players"][state["turn"]] != self.callsign: return
@@ -663,6 +691,63 @@ class ArcadeService:
         data["hits"] = sorted(hits); self.store.save_private_game_data(row["id"], data)
         self.legal_action(row["id"], bytes((0x80 | result,)))
 
+    def _resolve_sea_warfare_pending(self, row: dict[str, Any]) -> None:
+        game = self.registry.by_id(13); state = game.decode_state(row["state"])
+        if state["phase"] != "reply" or row["players"][state["turn"]] != self.callsign: return
+        data = self.store.load_private_game_data(row["id"])
+        ships = data.get("ships", [])
+        if not ships: return
+        hits = set(data.get("hits", [])); mines = set(data.get("mines", [])); decoys = set(data.get("decoys", []))
+        kind = state["pending_kind"]
+        if kind == 2:
+            row_cells = [cell for ship in ships for cell in ship if cell // 10 == state["pending"] and cell not in hits]
+            answer = 0 if not row_cells else 1 if len(row_cells) <= 2 else 2
+            self.legal_action(row["id"], bytes((0x80 | answer,)))
+            return
+
+        targets = [state["pending"]]
+        if kind == 1:
+            targets.append(state["pending"] + 1)
+        results = []
+        for target in targets:
+            ship_id = next((i for i, ship in enumerate(ships) if target in ship), None)
+            hit = False
+            if target in decoys:
+                decoys.remove(target)
+                hit = True
+            elif target in mines:
+                mines.remove(target)
+                if ship_id is not None:
+                    destroyer_alive = not all(cell in hits for cell in ships[3])
+                    if destroyer_alive and not data.get("destroyer_sweep_used"):
+                        data["destroyer_sweep_used"] = True
+                        hits.add(target)
+                    else:
+                        hits.update(ships[ship_id])
+                hit = True
+            elif ship_id is not None and all(cell in hits for cell in ships[ship_id]):
+                hit = False
+            elif ship_id is not None:
+                # Carrier fighters get one local 50/50 intercept roll per game.
+                carrier_alive = not all(cell in hits for cell in ships[0])
+                if carrier_alive and not data.get("fighter_used"):
+                    data["fighter_used"] = True
+                    blocked = secrets.randbelow(2) == 0
+                    if not blocked:
+                        hits.add(target)
+                        hit = True
+                else:
+                    hits.add(target)
+                    hit = True
+            results.append(hit)
+        data["hits"], data["mines"], data["decoys"] = sorted(hits), sorted(mines), sorted(decoys)
+        self.store.save_private_game_data(row["id"], data)
+        fleet_cells = {cell for ship in ships for cell in ship}
+        defeated = fleet_cells <= hits
+        result = (int(results[0]) | (int(results[1]) << 1) if len(results) == 2 else int(results[0]))
+        if defeated: result |= 0x10 if kind == 1 else 0x04
+        self.legal_action(row["id"], bytes((0x80 | result,)))
+
     def legal_action(self, session_id: str | int, action: bytes) -> None:
         if action == FORFEIT_ACTION:
             raise ValueError("use forfeit_game for a forfeit")
@@ -670,7 +755,7 @@ class ArcadeService:
         sid = self._sid(session_id)
         with self._lock:
             row = self._sessions[sid]
-            if row["game_id"] == 12 and action == b"\x7f":
+            if row["game_id"] in (12, 13) and action == b"\x7f":
                 if not self.store.load_private_game_data(sid).get("ships"):
                     raise ValueError("place your fleet on this station before readying")
             game = self.registry.by_id(row["game_id"])
@@ -684,6 +769,14 @@ class ArcadeService:
             # Validate before sending. The committed transition is applied only
             # by the coordinator/COMMIT path.
             game.apply_action(state, tuple(row["players"]), self.callsign, action)
+            if row["game_id"] == 13 and state["phase"] == "call" and action[0] >= 200:
+                self._move_sea_warfare_ship(row, action[0] - 200)
+            if row["game_id"] == 13 and state["phase"] == "call" and 100 <= action[0] <= 199:
+                private = self.store.load_private_game_data(sid)
+                ship_id = 1 if action[0] <= 189 else 4
+                ships = private.get("ships", [])
+                if len(ships) != 6 or all(cell in private.get("hits", []) for cell in ships[ship_id]):
+                    raise ValueError("that vessel has been sunk and cannot use its ability")
             row["error"] = ""
             next_sequence = row["sequence"] + 1
             payload = encode_action(self.callsign, action)
@@ -699,6 +792,29 @@ class ArcadeService:
                     self._reliable(row, row["coordinator"], Kind.ACTION, next_sequence,
                                    row["revision"], payload)
                 self._emit("session_updated", sid, session=self.session(sid))
+
+    def _move_sea_warfare_ship(self, row: dict[str, Any], packed: int) -> None:
+        ship_id, direction = divmod(packed, 4)
+        data = self.store.load_private_game_data(row["id"])
+        ships = [list(ship) for ship in data.get("ships", [])]
+        if len(ships) != 6 or ship_id >= len(ships):
+            raise ValueError("your private fleet is unavailable")
+        if all(cell in data.get("hits", []) for cell in ships[ship_id]):
+            raise ValueError("a sunk ship cannot move")
+        delta = (-10, 10, -1, 1)[direction]
+        moved = [cell + delta for cell in ships[ship_id]]
+        if any(cell < 0 or cell >= 100 or (delta == -1 and cell % 10 == 9)
+               or (delta == 1 and cell % 10 == 0) for cell in moved):
+            raise ValueError("that move would push the ship off the board")
+        occupied = {cell for i, ship in enumerate(ships) if i != ship_id for cell in ship}
+        if occupied.intersection(moved) or set(moved).intersection(data.get("decoys", [])):
+            raise ValueError("that move collides with another vessel or decoy")
+        ships[ship_id] = moved
+        shift = {old: new for old, new in zip(data["ships"][ship_id], moved)}
+        data["hits"] = [shift.get(cell, cell) for cell in data.get("hits", [])]
+        data["mines"] = [shift.get(cell, cell) for cell in data.get("mines", [])]
+        data["ships"] = ships
+        self.store.save_private_game_data(row["id"], data)
 
     def resend_pending_action(self, session_id: str | int) -> None:
         """Manually retry a lost turn request in a hosted session."""

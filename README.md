@@ -12,7 +12,14 @@ stations that want to interoperate, not restrictions on private forks or code
 reuse. Some bundled third-party materials have separate terms listed in
 [Third-party notices](THIRD-PARTY-NOTICES.md).
 
-Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, and Signal Siege.
+Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games include tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, Signal Siege, Battleship Classic, and Battleship: Sea Warfare.
+
+**Battleship Classic** is available in the desktop and web clients; it keeps private fleets and reports the classic miss, hit,
+and sunk results. **Battleship: Sea Warfare** adds a carrier fighter roll, a
+one-use battleship double shot, submarine sonar, paid vessel moves, a destroyer
+mine sweep, and optional hidden patrol-boat mine and inflatable decoy. Fleet
+positions, mine placement, fighter rolls, and sinking ship IDs stay private.
+Sea Warfare is also available in desktop and web, and uses one-byte calls and replies and an 80-byte public game snapshot.
 
 **Signal Siege (prototype):** A 1–4-player cooperative deck-building game. In
 solo practice, fight three interference waves; after waves one and two choose

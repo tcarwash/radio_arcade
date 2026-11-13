@@ -252,7 +252,7 @@ class WebController:
             "resend_pending_action": lambda: engine.resend_pending_action(sid),
             "connect_peer": lambda: engine.connect_peer(str(data.get("peer", ""))),
             "place_battleship_fleet": lambda: engine.place_battleship_fleet(
-                sid, data.get("ships", [])),
+                sid, data.get("ships", []), data.get("mines", []), data.get("decoys", [])),
             "disconnect_peer": engine.disconnect,
             "forfeit_game": lambda: engine.forfeit_game(sid),
             "delete_game": lambda: engine.delete_game(sid),

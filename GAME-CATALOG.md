@@ -15,7 +15,8 @@ Game IDs identify rules and payload codecs for stations that want to interoperat
 | 9 | `pico8-cartridge` | PICO-8 Cartridge | 2–8 | Built in (web bridge; cartridge rules remain in Lua) |
 | 10 | `external-game` | External Engine Game | 2–8 | Built in (LÖVE2D / Godot; rules remain in game runtime) |
 | 11 | `signal-siege` | Signal Siege | 1–4 | Built in (co-op deck-builder prototype) |
-| 12 | `battleship` | Battleship | 2 | Built in (experimental hidden-fleet prototype) |
+| 12 | `battleship-classic` | Battleship Classic | 2 | Built in (desktop/web, private fleets) |
+| 13 | `sea-warfare` | Battleship: Sea Warfare | 2 | Built in (desktop/web, compact tactical variant) |
 
 Open Word Tiles is a Scrabble-style, open-rack variant using the bundled ENABLE1 lexicon. ENABLE1 is a public-domain alternative, not a current official tournament lexicon. Its racks and tile distribution are public; it is not the standard hidden-rack game. The tile seed and deterministic draw state travel in the ordinary game snapshot, not the opaque side channel.
 
@@ -28,12 +29,15 @@ shared by all clients, with draft rewards added after the first two waves.
 This version does not negotiate future card-balance changes; all participants
 must run the same game implementation. See [rules and codec](docs/SIGNAL-SIEGE.md).
 
-Battleship is experimental and currently available in the web client. Fleets
-are placed locally and saved in each station's private game database. Shared
-snapshots contain only public shot results and a pending target coordinate.
-The shooter sends a coordinate; the defender's client replies with miss, hit,
-or sunk plus the sunk ship ID (0–4). A sync snapshot can resume a pending reply
-without exposing either fleet.
+Battleship Classic and Sea Warfare are available in the desktop and web clients. Sea Warfare is a separate
+game ID because its rules and state codec differ. Both modes place fleets
+locally and save them in each station's private game database. Classic replies
+with miss, hit, or sunk plus the sunk ship ID. Sea Warfare hides individual
+sinks and sends only miss/hit or a sonar density category. Its fighter roll,
+mine, decoy, and fleet coordinates resolve on the defending station; public
+shots use two bits per cell. One-byte calls and replies keep routine radio
+actions compact, and its public snapshot is 80 bytes. Mixed-version stations
+must not play the new ID 13 mode because earlier builds do not know its rules.
 
 Do not infer protocol compatibility from a display name alone. A game that changes incompatible rules or payload shapes needs a new registered ID or an explicit game-specific schema negotiation before deployment.
 
