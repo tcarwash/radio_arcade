@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 from urllib.request import urlopen
 from unittest.mock import patch
 
@@ -15,6 +16,29 @@ from radio_arcade.games.scrabble import _lexicon
 
 
 class WebControllerScenarios(unittest.TestCase):
+    def test_web_cq_request_and_answer_create_direct_invitation(self):
+        from radio_arcade.service import ArcadeService
+        from radio_arcade.store import SessionStore
+        from tests.test_hosted import Air
+
+        air = Air()
+        caller = ArcadeService("N0AAA", air.station(), SessionStore(Path(self.directory.name) / "cq-caller.db"))
+        answerer = ArcadeService("N0BBB", air.station(), SessionStore(Path(self.directory.name) / "cq-answerer.db"))
+        web = WebController(Settings(callsign="N0BBB", transport="broadcast"),
+                            service_factory=lambda _settings: answerer)
+        try:
+            caller.call_cq(); air.pump()
+            status, state = web.dispatch("GET", "/api/state", b"")
+            self.assertEqual(status, 200)
+            self.assertEqual(state["cq_requests"][0]["game"], "Any game")
+            body = json.dumps({"command": "answer_cq", "callsign": "N0AAA", "game": "nim"}).encode()
+            status, result = web.dispatch("POST", "/api/command", body)
+            self.assertEqual(status, 200)
+            air.pump()
+            self.assertEqual(caller.session(result["session_id"])["status"], "invited")
+        finally:
+            web.close(); caller.close()
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.environment = patch.dict(os.environ, {"RADIO_ARCADE_HOME": self.directory.name})

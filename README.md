@@ -36,6 +36,14 @@ radio-arcade-web
 
 Set your callsign and Data2G connection in station settings. The browser client opens at `http://127.0.0.1:8765`. Its API has no authentication; keep it on localhost or a trusted network. Use `--callsign N0CALL --transport practice` with desktop or TUI for local play.
 
+At narrow desktop window sizes, the Games, Table, and Chat tabs replace the
+three-column layout; Station Settings scrolls inside its dialog. In broadcast
+mode, open **Games → Find a game · CQ** to call for a specific game or any game.
+Recent calls appear there for 15 minutes. Select a call and choose **Answer
+selected CQ** to create a direct table invitation; for an Any game call, choose
+the game first. The web client has the same controls under **Tables → Find a
+game · CQ**, and the terminal client has them in its lobby.
+
 All three clients provide TX enable/disable, a transmission reason indicator, and local game deletion. For Broadcast · KISS, **Broadcast modem mode** applies a Data2G mode to this station's port; leave it blank for Data2G's default. Games may optionally declare `ui_clients = ("web",)` when their frontend is only available in the browser; by default, games appear in all three clients.
 
 ## Radio use

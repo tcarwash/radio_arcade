@@ -73,6 +73,23 @@ class HostedScenarios(unittest.TestCase):
         self.air.pump()
         return sid
 
+    def test_specific_and_any_game_cq_can_be_answered(self):
+        caller, answerer = self.engines[:2]
+        caller.call_cq("nim")
+        self.air.pump()
+        self.assertEqual(answerer.cq_requests()[0]["game"], "Nim")
+        with self.assertRaisesRegex(ValueError, "matching recent CQ"):
+            answerer.answer_cq(caller.callsign, "tic-tac-toe")
+        sid = answerer.answer_cq(caller.callsign, "nim")
+        self.air.pump()
+        self.assertEqual(caller.session(sid)["status"], "invited")
+        caller.call_cq()
+        self.air.pump()
+        self.assertEqual(answerer.cq_requests()[0]["game"], "Any game")
+        other = answerer.answer_cq(caller.callsign, "tic-tac-toe")
+        self.air.pump()
+        self.assertEqual(caller.session(other)["game"], "Tic-tac-toe")
+
     def test_hexxagon_radio_moves_and_recovery(self):
         from radio_arcade.games.hexxagon import pack_move
         from radio_arcade.wire import decode_action

@@ -46,6 +46,7 @@ class Kind(IntEnum):
     HOST_ROSTER = 16
     HOST_CHAT = 17
     STATION_ID = 18
+    CQ_REQUEST = 19
 
 
 # Compact control's two-bit kind: ACTION, COMMIT, ACK of ACTION, ACK of COMMIT.

@@ -54,13 +54,15 @@ class WebController:
             self.last_error = str(exc)
 
     def _engine_event(self, event: Any) -> None:
-        if event.name == "invitation" or (event.name == "chat_message" and event.data.get("message", {}).get("sender") != self.settings.callsign):
+        if event.name in ("invitation", "cq_request") or (event.name == "chat_message" and event.data.get("message", {}).get("sender") != self.settings.callsign):
             with self._notification_lock:
                 self._notification_sequence += 1
                 self._notifications.append({"id": self._notification_sequence, "session_id": event.session,
-                    "title": "Game invitation" if event.name == "invitation" else "New message",
+                    "title": "Game invitation" if event.name == "invitation" else "Game CQ" if event.name == "cq_request" else "New message",
                     "body": (f"{event.data.get('sender')} invited you to {event.data.get('game')}"
                              if event.name == "invitation" else
+                             f"{event.data.get('callsign')} wants {event.data.get('game')}"
+                             if event.name == "cq_request" else
                              f"{event.data['message']['sender']}: {event.data['message']['body']}")})
         if event.name == "transmitting":
             self.transmitting = True
@@ -124,6 +126,7 @@ class WebController:
             "catalog": catalog,
             "sessions": [self._public_session(session) for session in engine.sessions()
                          if session["game_id"] in web_game_ids] if engine else [],
+            "cq_requests": engine.cq_requests() if engine else [],
         }
 
     def _configure(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -179,7 +182,7 @@ class WebController:
             raise ValueError(self.last_error or "save station settings before using the game room")
         engine = self.engine
         name = data.get("command")
-        transmit_commands = {"forfeit_game", "create_game", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer"}
+        transmit_commands = {"forfeit_game", "create_game", "call_cq", "answer_cq", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer"}
         if name in transmit_commands and self.settings.transport != "practice" and not self.settings.tx_enabled:
             raise ValueError("TX is disabled. Enable TX to send radio traffic.")
         sid = data.get("session_id")
@@ -219,6 +222,8 @@ class WebController:
                 str(data.get("game", "")),
                 str(data["peer"]) if data.get("peer") else None,
                 hosted=bool(data.get("hosted", False))),
+            "call_cq": lambda: engine.call_cq(str(data["game"]) if data.get("game") else None),
+            "answer_cq": lambda: engine.answer_cq(str(data.get("callsign", "")), str(data.get("game", ""))),
             "invite_player": lambda: engine.invite_player(sid, str(data.get("peer", ""))),
             "cancel_invitation": lambda: engine.cancel_invitation(sid, str(data.get("peer", ""))),
             "accept_invite": lambda: engine.accept_invite(sid),
@@ -240,7 +245,7 @@ class WebController:
         if name not in commands:
             raise ValueError("unknown game-room command")
         result = commands[name]()
-        selected_id = result if name == "create_game" else sid
+        selected_id = result if name in ("create_game", "answer_cq") else sid
         response: dict[str, Any] = {"ok": True}
         if name == "delete_game":
             response["deleted"] = True
@@ -482,6 +487,14 @@ class ArcadeRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/pico8/lobby.js":
             self._send(200, (ASSETS / "pico8_lobby.js").read_bytes(), "text/javascript; charset=utf-8")
+            return
+        if path == "/siege-crawl.js":
+            self._send(200, (ASSETS / "siege-crawl.js").read_bytes(),
+                       "text/javascript; charset=utf-8", "no-cache", exported_cart=True)
+            return
+        if path == "/siege-crawl.html":
+            self._send(200, (ASSETS / "siege-crawl.html").read_bytes(),
+                       "text/html; charset=utf-8", "no-cache", exported_cart=True)
             return
         if path.startswith("/pico8/carts/"):
             # Only explicitly configured local exports. Never resolve paths

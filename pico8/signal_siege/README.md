@@ -23,10 +23,9 @@ Iron brutes alternate a light probe with a heavy slam. Null jammers drain two
 focus after attacking. Hollow leeches heal from unshielded damage (up to three).
 The vault warden drains one focus. Combat shows the next attack before you play.
 
-Touch an enemy, or stand beside it and press Z, to enter a card battle.
+Every room beyond the entry starts with two pursuing minions. Face them with the arrows and press Z to slash; each takes two hits. Clear both to reveal the room boss. Touch the boss, or stand beside it and press Z, to enter a card battle. Enemy rooms remain locked until their boss is defeated. Minion positions and health are saved.
 Defeating it opens three card rewards plus a fourth option to leave salvage.
-You return to the cleared room afterward. Other rooms contain healing springs,
-caches, or elite enemies. Defeat the guardian in the southeast room, then stand
+You return to the cleared room afterward. Some cleared rooms contain healing springs or caches; elite rooms have stronger bosses. Defeat the guardian in the southeast room, then stand
 by its stairs and press Z to descend to the next floor. Enemies scale with depth.
 Guardians guarantee a legendary reward choice, heal you, and add attack power.
 
@@ -80,3 +79,26 @@ Distribute both exported HTML and JS files together. Players need no PICO-8
 purchase. The check script exercises movement, collisions, combat, guardian
 stairs, collection effects and save recovery using the installed PICO-8 runtime.
 It isolates its save data from your actual collection.
+
+Radio Arcade's **Offline dungeon · The Silent Vault** link uses the packaged
+export in `radio_arcade/web_assets/siege-crawl.html` and
+`radio_arcade/web_assets/siege-crawl.js`. After changing the cartridge, refresh
+that copy with:
+
+```sh
+cp exports/index.html ../../radio_arcade/web_assets/siege-crawl.html
+cp exports/index.js ../../radio_arcade/web_assets/siege-crawl.js
+```
+
+In the copied HTML, change `e.src = "index.js"` to
+`e.src = "siege-crawl.js"` so the packaged game loads its matching JavaScript.
+
+## Tactical encounters
+
+Enemy chambers seal their exits until the boss is defeated. Four obstacle
+layouts vary the rooms while preserving the central paths. In battle, arrows
+select one of three rotating cards, Guard (+5 shield and +1 focus), or Recover
+(+4 HP). Guard and Recover consume a turn and the enemy retaliates; they do
+not rotate the deck. The battlefield shows both combatants and the enemy intent.
+Defeat ends the expedition and loses half your salvage, rounded up. Your
+permanent card collection survives.

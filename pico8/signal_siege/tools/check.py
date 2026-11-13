@@ -28,12 +28,29 @@ function _init()
  -- walk through the east doorway using actual update input
  btnp=function(b) return b==1 end
  px=13 py=5 _update() assert(room==2 and px==1)
+ -- sealed room exits, tactical turns, and defeat penalty
+ room=3 floorseed=3 px=1 py=5
+ btnp=function(b) return b==0 end
+ _update() assert(room==3 and px==1)
+ enter(false) local size=#deck
+ play(4) assert(#deck==size and focus==1)
+ hp=20 play(5) assert(#deck==size and hp>20)
+ salvage=9 hp=1 shield=0 rounds=1 deck[1]=3
+ play(1) assert(phase==4 and salvage==4)
+ save() game_init() assert(phase==4 and salvage==4)
+ start() room=2
  -- wall collision
  px=1 py=1 btnp=function(b) return b==0 end
  _update() assert(px==1 and room==2)
- -- enter a visible enemy
- depth=1 floorseed=1 room=3 px=7 py=5
- btnp=function(b) return b==2 end
+ -- sword clears two minions before the room boss appears
+ depth=1 floorseed=1 room=3 px=7 py=5 mobroom=0
+ setup_mobs() mobs[1].x=7 mobs[1].y=4 mobs[1].hp=1
+ mobs[2].x=7 mobs[2].y=6 mobs[2].hp=1
+ face_x=0 face_y=-1 btnp=function(b) return b==4 end
+ _update() assert(mobs[1].hp==0 and phase==1)
+ face_y=1 _update() assert(hasbit(miniondone,3) and phase==1)
+ save() game_init() assert(hasbit(miniondone,3))
+ px=7 py=5 btnp=function(b) return b==2 end
  _update() assert(phase==2) _draw()
  enemy=1 deck[1]=1 play(1) assert(phase==3) _draw()
  take(offers[1]) assert(phase==1 and room==3 and hasbit(cleared,3))
@@ -50,7 +67,7 @@ function _init()
  end end
  -- caches cannot be harvested twice, and healing is capped
  start() room=4 floorseed=2 px=7 py=5
- assert(room_kind()=="cache")
+ assert(room_kind()=="cache") cleared=bor(cleared,shl(1,room-1))
  btnp=function(b) return b==4 end
  _update() local found=salvage _update() assert(salvage==found)
  -- duplicate collection finds become salvage, and decks stay capped

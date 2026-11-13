@@ -10,6 +10,32 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("textual"), "install the tui extra")
 class TuiScenarios(unittest.IsolatedAsyncioTestCase):
+    async def test_cq_request_can_be_answered_from_lobby(self):
+        from pathlib import Path
+        from textual.widgets import ListView
+        from radio_arcade.service import ArcadeService
+        from radio_arcade.settings import Settings
+        from radio_arcade.store import SessionStore
+        from radio_arcade.tui import ArcadeTUI
+        from tests.test_hosted import Air
+
+        with tempfile.TemporaryDirectory() as directory:
+            air = Air()
+            caller = ArcadeService("N0AAA", air.station(), SessionStore(Path(directory) / "caller.db"))
+            answerer = ArcadeService("N0BBB", air.station(), SessionStore(Path(directory) / "answerer.db"))
+            with patch("radio_arcade.tui.create_service", return_value=answerer):
+                app = ArcadeTUI(Settings(callsign="N0BBB", transport="broadcast"))
+                async with app.run_test(size=(100, 50)) as pilot:
+                    await pilot.pause(.2)
+                    caller.call_cq("nim"); air.pump(); await pilot.pause(.2)
+                    listing = app.query_one("#cq-list", ListView)
+                    self.assertEqual(len(listing.children), 1)
+                    listing.index = 0
+                    app.query_one("#answer-cq").press(); await pilot.pause(.3)
+                    air.pump()
+                    self.assertEqual(caller.sessions()[0]["status"], "invited")
+            caller.close()
+
     async def test_hexxagon_board_move(self):
         from radio_arcade.settings import Settings
         from radio_arcade.tui import ArcadeTUI

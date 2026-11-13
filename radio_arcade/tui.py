@@ -336,6 +336,8 @@ class ArcadeTUI(App):
     Button:hover { background:#2b3e54; }
     Button.-primary { background:#7764b7; color:#ffffff; text-style:bold; border:round #a28cdb; }
     #new-game { width:100%; }
+    #cq-list { height:6; background:#101827; border:none; }
+    #call-cq, #answer-cq { width:100%; }
     #session-actions { margin-top:1; border-top:solid #26334a; padding-top:1; }
     #session-actions Button { width:100%; }
     #arena-header { height:2; border-bottom:solid #28344a; margin-bottom:0; }
@@ -412,6 +414,7 @@ class ArcadeTUI(App):
         self.unsubscribe = None
         self.selected_id: str | None = None
         self.selected_game = "tic-tac-toe"
+        self._cq_rows = []
         self._word_direction = "H"
         self._word_cursor_visible = True
         self._word_board_view = None
@@ -447,6 +450,12 @@ class ArcadeTUI(App):
                                  value="direct", allow_blank=False, id="table-mode")
                     yield Input(placeholder="Opponent callsign", id="peer-input")
                     yield Button("＋  Create table", id="new-game", variant="primary")
+                    yield Label("FIND A GAME · CQ", id="cq-heading", classes="eyebrow")
+                    yield Select((("Any game", ""), ("Tic-tac-toe", "tic-tac-toe"), ("Nim", "nim")),
+                                 value="", allow_blank=False, id="cq-game")
+                    yield Button("Call CQ to all stations", id="call-cq")
+                    yield ListView(id="cq-list")
+                    yield Button("Answer selected CQ", id="answer-cq")
                     yield Button("Connect / resume peer", id="connect-peer")
                     yield Button("Disconnect radio link", id="disconnect-peer")
                     with Vertical(id="session-actions"):
@@ -560,6 +569,14 @@ class ArcadeTUI(App):
         game_select = self.query_one("#game-select", Select)
         game_select.set_options((f"{game.name} · {game.min_players}–{game.max_players}", game.key)
                                 for game in self.engine.catalog() if "tui" in game.clients)
+        cq_select = self.query_one("#cq-game", Select)
+        cq_select.set_options([("Any game", ""), *((game.name, game.key) for game in self.engine.catalog()
+                            if "tui" in game.clients and game.max_players >= 2)])
+        for selector in ("#cq-heading", "#cq-game", "#call-cq", "#cq-list", "#answer-cq"):
+            self.query_one(selector).display = self.settings.transport == "broadcast" and not self.settings.observer_mode
+        for selector in ("#cq-game", "#call-cq", "#answer-cq"):
+            self.query_one(selector).disabled = self.settings.observer_mode or not self.settings.tx_enabled
+        self.call_later(self._refresh_cq)
         self.call_later(self._refresh_sessions)
 
     def on_service_failed(self, message: ServiceFailed):
@@ -586,6 +603,9 @@ class ArcadeTUI(App):
             self.query_one("#tx-toggle", Button).label = "TX ENABLED" if event.data.get("enabled") else "TX DISABLED"
         if event.name == "invitation":
             self.notify(f"{event.data['sender']} invited you to {event.data['game']} · select it and accept")
+        if event.name == "cq_request":
+            self.notify(f"CQ from {event.data['callsign']} · {event.data['game']} · answer in the lobby")
+            self.call_later(self._refresh_cq)
         if event.name == "protocol_error":
             self.notify(f"Cannot read game packet: {event.data.get('error', '')}", severity="warning")
         if event.name == "unsupported_game":
@@ -889,6 +909,37 @@ class ArcadeTUI(App):
             except Exception as exc: self.post_message(ActionResult(error=str(exc)))
         threading.Thread(target=worker, daemon=True).start()
 
+    async def _refresh_cq(self):
+        if not self.engine or not self.is_mounted:
+            return
+        rows = self.engine.cq_requests()
+        listing = self.query_one("#cq-list", ListView)
+        await listing.clear()
+        self._cq_rows = rows
+        for row in rows:
+            await listing.append(ListItem(Label(f"{row['callsign']} · {row['game']}")))
+
+    @on(Button.Pressed, "#call-cq")
+    def _call_cq(self):
+        if self.engine:
+            game = self.query_one("#cq-game", Select).value or None
+            self._run_action(partial(self.engine.call_cq, game))
+
+    @on(Button.Pressed, "#answer-cq")
+    def _answer_cq(self):
+        if not self.engine:
+            return
+        index = self.query_one("#cq-list", ListView).index
+        if index is None or index >= len(self._cq_rows):
+            self.notify("Select a recent CQ call first", severity="warning")
+            return
+        row = self._cq_rows[index]
+        game = row["game_id"] if row["game_id"] != 255 else self.query_one("#cq-game", Select).value
+        if not game:
+            self.notify("Choose a game above to answer an Any game CQ", severity="warning")
+            return
+        self._run_action(partial(self.engine.answer_cq, row["callsign"], game), select_session=True)
+
     @on(Button.Pressed, "#tx-toggle")
     def _toggle_tx(self):
         if self.settings.transport == "practice":
@@ -899,7 +950,7 @@ class ArcadeTUI(App):
             self.engine.set_tx_enabled(self.settings.tx_enabled)
         self.query_one("#tx-toggle", Button).label = "TX ENABLED" if self.settings.tx_enabled else "TX DISABLED"
         can_transmit = self.settings.transport == "practice" or self.settings.tx_enabled
-        for control_id in ("#game-select", "#table-mode", "#peer-input", "#new-game", "#send-chat", "#chat-input", "#connect-peer", "#disconnect-peer"):
+        for control_id in ("#game-select", "#table-mode", "#peer-input", "#new-game", "#send-chat", "#chat-input", "#connect-peer", "#disconnect-peer", "#cq-game", "#call-cq", "#answer-cq"):
             self.query_one(control_id).disabled = self.settings.observer_mode or not can_transmit
         self._board_signature = None
         self.call_later(self._refresh_sessions)

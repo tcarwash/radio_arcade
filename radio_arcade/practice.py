@@ -6,6 +6,7 @@ from .wire import FORFEIT_ACTION
 
 
 class _LocalTransport:
+    supports_broadcast = False
     def send(self, frame):
         pass
 

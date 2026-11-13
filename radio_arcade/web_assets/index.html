@@ -53,6 +53,14 @@
           <input id="peer-input" class="field" autocomplete="off" placeholder="Opponent callsign" aria-label="Opponent callsign">
           <button id="create-game" class="button primary full" type="button"><span>＋</span> Create table</button>
           <p id="lobby-note" class="micro-copy" role="status">Choose your game and table type to begin.</p>
+          <details id="cq-panel" class="cq-panel" hidden>
+            <summary>Find a game · CQ</summary>
+            <label class="field-label" for="cq-game">Call for a game</label>
+            <select id="cq-game" class="field"><option value="">Any game</option></select>
+            <button id="cq-send" class="button full" type="button">Call CQ to all stations</button>
+            <p class="micro-copy">Recent calls from other stations:</p>
+            <div id="cq-list" class="cq-list" aria-live="polite"></div>
+          </details>
         </section>
         <div id="session-actions" class="session-actions"></div>
       </aside>

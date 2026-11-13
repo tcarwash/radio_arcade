@@ -59,7 +59,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .workspace { flex: 1; min-height: calc(100vh - 68px); padding: 22px clamp(14px, 2.1vw, 32px) 24px; display: grid; grid-template-columns: minmax(230px, 265px) minmax(480px, 1fr) minmax(250px, 302px); gap: 15px; max-width: 1920px; width: 100%; margin: 0 auto; }
 .panel { background: linear-gradient(158deg, rgba(18, 26, 39, .94), rgba(13, 20, 31, .94)); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 14px 42px rgba(0,0,0,.14), inset 0 1px 0 rgba(255,255,255,.025); min-width: 0; }
 .lobby-panel, .station-panel { min-height: min(800px, calc(100vh - 116px)); display: flex; flex-direction: column; overflow: hidden; }
-.lobby-panel { padding: 20px 16px 15px; }
+.lobby-panel { padding: 20px 16px 15px; overflow-y: auto; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 2px; }
 .eyebrow { margin: 0 0 6px; color: #8090a6; font: 700 9px 'Space Grotesk', sans-serif; letter-spacing: .15em; }
 .eyebrow-separator { color: #49566c; padding: 0 4px; }
@@ -81,6 +81,11 @@ h1, h2, h3, p { margin-top: 0; }
 .session-summary .bullet { color: #505d73; }
 .empty-list { padding: 15px 10px; border: 1px dashed rgba(183, 200, 232, .12); border-radius: 10px; color: #748198; font-size: 11px; line-height: 1.6; }
 .new-table { border-top: 1px solid var(--line); padding: 15px 1px 0; }
+.cq-panel { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.cq-panel summary { cursor: pointer; color: var(--mint); font-size: 11px; font-weight: 700; }
+.cq-list { display: grid; gap: 7px; margin-top: 8px; }
+.cq-request { display: flex; align-items: center; justify-content: space-between; gap: 7px; font-size: 11px; }
+.cq-request .button { flex: none; }
 .game-preview { display: flex; align-items: center; gap: 11px; margin: 10px 0 14px; padding: 11px; border: 1px solid rgba(143,226,194,.14); border-radius: 11px; background: radial-gradient(circle at 0 0, rgba(76,160,142,.13), transparent 70%), rgba(255,255,255,.018); }
 .game-preview-icon { display: grid; flex: 0 0 43px; height: 43px; place-items: center; border-radius: 11px; background: linear-gradient(135deg, #365d61, #393a69); color: #dcfff4; font-size: 25px; box-shadow: inset 0 1px 0 rgba(255,255,255,.14); }
 .game-preview strong { display: block; color: #e8f4f0; font-size: 12px; margin-bottom: 4px; }
@@ -162,7 +167,7 @@ select.field, .settings-card select { appearance: none; background-image: linear
 .chat-lock { font: 600 7px 'Space Grotesk', sans-serif; color: #69768c; letter-spacing: .05em; padding-bottom: 2px; }
 .chat-list { flex: 1; min-height: 115px; max-height: 38vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 14px 2px; }
 .chat-empty { margin: auto; max-width: 175px; text-align: center; color: #748198; font-size: 10px; line-height: 1.55; }
-.chat-message { align-self: flex-start; max-width: 95%; }
+.chat-message { align-self: flex-start; flex: none; min-width: 0; max-width: 95%; }
 .chat-message.mine { align-self: flex-end; }
 .chat-author { color: #9ce0c2; font: 700 9px 'Space Grotesk', sans-serif; margin: 0 0 4px 2px; }
 .chat-message.mine .chat-author { color: #c3b0f5; text-align: right; }

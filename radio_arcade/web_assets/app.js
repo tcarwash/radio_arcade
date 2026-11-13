@@ -49,6 +49,13 @@ const activitySeen = new Set();
 let activityInitialized = false;
 let activityInbox;
 function openActivityTable(id) {
+  if (!id) {
+    activityInbox.hidden = true;
+    $("#cq-panel").open = true;
+    switchPane("lobby");
+    $("#cq-panel").scrollIntoView({ block: "nearest" });
+    return;
+  }
   state.selectedId = id; state.sessionSignature = ""; state.chatSignature = "";
   activityInbox.hidden = true;
   switchPane("arena"); refresh();
@@ -186,7 +193,29 @@ function populateGames(catalog) {
   }
   select.dataset.keys = keys;
   if (catalog.some(game => game.key === selected)) select.value = selected;
+  const cq = $("#cq-game"), previousCq = cq.value;
+  cq.replaceChildren();
+  const any = node("option", "", "Any game"); any.value = ""; cq.append(any);
+  for (const game of catalog.filter(game => game.max_players >= 2)) {
+    const option = node("option", "", game.name); option.value = game.key; cq.append(option);
+  }
+  if (catalog.some(game => game.key === previousCq)) cq.value = previousCq;
   updateGamePreview();
+}
+
+function renderCq(requests) {
+  const list = $("#cq-list");
+  list.replaceChildren();
+  if (!requests.length) { list.append(node("p", "micro-copy", "No recent CQ calls heard.")); return; }
+  for (const request of requests) {
+    const row = node("div", "cq-request");
+    row.append(node("span", "", `${request.callsign} · ${request.game}`));
+    const answer = node("button", "button", "Answer");
+    answer.type = "button"; answer.dataset.cqCall = request.callsign;
+    answer.dataset.cqGame = String(request.game_id);
+    answer.disabled = !canTransmit();
+    row.append(answer); list.append(row);
+  }
 }
 
 function updateGamePreview() {
@@ -1373,6 +1402,9 @@ async function refresh() {
     renderActivity(snapshot.notifications || []);
     setConnection(snapshot);
     populateGames(snapshot.catalog || []);
+    $("#cq-panel").hidden = snapshot.transport !== "broadcast" || snapshot.observer_mode;
+    $("#cq-send").disabled = !canTransmit();
+    renderCq(snapshot.cq_requests || []);
     const tableMode = $("#table-mode");
     const hostedOption = tableMode.querySelector('option[value="hosted"]');
     hostedOption.disabled = snapshot.transport !== "broadcast" || snapshot.observer_mode;
@@ -1429,7 +1461,7 @@ function createWelcome() {
 async function sendCommand(command, extra = {}) {
   try {
     const result = await request("/api/command", { method: "POST", body: JSON.stringify({ command, ...extra }) });
-    if (command === "create_game" && result.session_id) {
+    if ((command === "create_game" || command === "answer_cq") && result.session_id) {
       state.selectedId = result.session_id; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
       switchPane("arena");
     }
@@ -1491,6 +1523,16 @@ $("#settings-form").addEventListener("submit", async event => {
 $("#create-game").addEventListener("click", () => {
   if (!state.snapshot?.ready) { openSettings(); return; }
   sendCommand("create_game", { game: $("#game-select").value, peer: $("#peer-input").value.trim(), hosted: $("#table-mode").value === "hosted" });
+});
+$("#cq-send").addEventListener("click", () => sendCommand("call_cq", { game: $("#cq-game").value }));
+$("#cq-list").addEventListener("click", event => {
+  const button = event.target.closest("[data-cq-call]");
+  if (!button) return;
+  const requested = Number(button.dataset.cqGame);
+  const game = requested === 255 ? $("#cq-game").value :
+    state.snapshot.catalog.find(entry => entry.game_id === requested)?.key;
+  if (!game) { notify("Choose a game above to answer this CQ."); return; }
+  sendCommand("answer_cq", { callsign: button.dataset.cqCall, game });
 });
 $("#table-mode").addEventListener("change", updateTableSetup);
 $("#game-select").addEventListener("change", updateGamePreview);

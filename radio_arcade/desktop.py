@@ -11,14 +11,14 @@ import sys
 import time
 from typing import Callable
 
-from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QSize, Qt, QThread, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QRadialGradient, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-    QSlider, QSplitter, QStackedWidget, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget)
+    QSlider, QSplitter, QStackedWidget, QStyle, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
-from .presentation import CompletionTracker
+from .presentation import CompletionTracker, scoreboard
 from .desktop_results import Scoreboard, ResultDialog
 from .scorched_navigation import BattleMapScroll, ScorchedMinimap
 from .service import ArcadeService, EngineEvent, station_name
@@ -28,6 +28,14 @@ from .transport_factory import create_service, group_name
 from .games.scrabble import make_exchange, make_placement
 from .dx_cluster import build_spot, post_spot
 from .games.scorched_earth import _trace_shot, _wind, pack_shot
+
+
+class ChatListWidget(QListWidget):
+    resized = Signal()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.resized.emit()
 
 
 class ScorchedBattlefield(QWidget):
@@ -236,7 +244,7 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Station settings · Radio Arcade")
-        self.setMinimumWidth(430)
+        self.setMinimumSize(300, 300)
         self.settings = settings
         outer = QVBoxLayout(self)
         title = QLabel("Connect your station")
@@ -244,8 +252,12 @@ class SettingsDialog(QDialog):
         outer.addWidget(title)
         subtitle = QLabel("Choose how Radio Arcade reaches your Data2G host.")
         subtitle.setObjectName("muted")
+        subtitle.setWordWrap(True)
         outer.addWidget(subtitle)
-        form = QFormLayout()
+        form_host = QWidget()
+        form = QFormLayout(form_host)
+        if parent and parent.width() < 500:
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.callsign = QLineEdit(settings.callsign)
         self.callsign.setPlaceholderText("N0CALL")
         self.host = QLineEdit(settings.host)
@@ -267,8 +279,9 @@ class SettingsDialog(QDialog):
         self.scheme = QComboBox(); self.scheme.addItem("Midnight", "midnight"); self.scheme.addItem("Daylight", "daylight")
         self.scheme.addItem("Monochrome", "monochrome")
         self.scheme.setCurrentIndex(max(0, self.scheme.findData(settings.color_scheme)))
-        self.sound = QCheckBox("Play invitation and turn sounds"); self.sound.setChecked(settings.sound_enabled)
-        self.observer = QCheckBox("Observer mode · receive-only (manual sync transmits)")
+        self.sound = QCheckBox("Play sounds"); self.sound.setChecked(settings.sound_enabled)
+        self.observer = QCheckBox("Receive-only observer")
+        self.observer.setToolTip("Manual snapshot requests still transmit")
         self.observer.setChecked(settings.observer_mode)
         self.dx_cluster_url = QLineEdit(settings.dx_cluster_url)
         self.dx_cluster_url.setPlaceholderText("https://cluster.example.org")
@@ -285,11 +298,18 @@ class SettingsDialog(QDialog):
         form.addRow("Sound", self.sound)
         form.addRow("Observer", self.observer)
         form.addRow("DX Cluster URL", self.dx_cluster_url)
-        outer.addLayout(form)
+        form_scroll = QScrollArea()
+        form_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setWidget(form_host)
+        outer.addWidget(form_scroll, 1)
         buttons = QHBoxLayout(); buttons.addStretch(1)
         cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
         save = QPushButton("Save settings"); save.setObjectName("primaryButton"); save.clicked.connect(self._save)
         buttons.addWidget(cancel); buttons.addWidget(save); outer.addLayout(buttons)
+        if parent:
+            self.resize(max(300, min(520, parent.width() - 16)),
+                        max(300, min(640, parent.height() - 16)))
 
     def _save(self):
         try:
@@ -368,18 +388,20 @@ class ArcadeWindow(QMainWindow):
         self._tasks: set[Task] = set()
         self.setWindowTitle("Radio Arcade")
         self.resize(1320, 820)
-        self.setMinimumSize(1024, 680)
+        self.setMinimumSize(360, 400)
         self._build_ui()
         self._apply_style()
         self._update_status("Starting up", False)
+        self._update_compact_layout()
 
     def _build_ui(self):
         root = QWidget(); root.setObjectName("root")
         self.setCentralWidget(root)
         layout = QVBoxLayout(root); layout.setContentsMargins(22, 20, 22, 18); layout.setSpacing(16)
+        self.root_layout = layout
         top = QHBoxLayout()
-        brand = QLabel("◈  RADIO ARCADE"); brand.setObjectName("brand")
-        top.addWidget(brand)
+        self.brand = QLabel("◈  RADIO ARCADE"); self.brand.setObjectName("brand")
+        top.addWidget(self.brand)
         self.transport_label = QLabel("DATA2G · RADIO GAMES"); self.transport_label.setObjectName("eyebrow")
         top.addWidget(self.transport_label); top.addStretch(1)
         self.link_dot = QLabel("●"); self.link_dot.setObjectName("statusDot")
@@ -393,20 +415,23 @@ class ArcadeWindow(QMainWindow):
         self.tx_toggle.toggled.connect(self._set_tx_enabled)
         self.tx_toggle.setEnabled(self.settings.transport != "practice")
         top.addWidget(self.tx_toggle)
-        settings_button = QPushButton("⚙  Settings"); settings_button.clicked.connect(self._edit_settings)
-        top.addWidget(settings_button)
+        self.settings_button = QPushButton("⚙  Settings"); self.settings_button.clicked.connect(self._edit_settings)
+        top.addWidget(self.settings_button)
         layout.addLayout(top)
 
         splitter = QSplitter(Qt.Orientation.Horizontal); splitter.setChildrenCollapsible(False)
+        self.desktop_splitter = splitter
         left = self._card("GAMES", "Your tables")
-        left.setMinimumWidth(280)
+        left.setMinimumWidth(245)
         left_layout = left.layout()
+        left_layout.setContentsMargins(14, 14, 14, 14)
+        left_layout.setSpacing(8)
         self.session_list = QListWidget(); self.session_list.setObjectName("sessionList")
         self.session_list.currentItemChanged.connect(self._select_item)
-        self.session_list.setMinimumHeight(150)
+        self.session_list.setMinimumHeight(70)
         self.session_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.session_list.setTextElideMode(Qt.TextElideMode.ElideRight)
-        left_layout.addWidget(self.session_list, 2)
+        left_layout.addWidget(self.session_list, 1)
         tools_scroll = QScrollArea(); tools_scroll.setWidgetResizable(True)
         tools_scroll.setObjectName("toolsScroll"); tools_scroll.setFrameShape(QFrame.Shape.NoFrame)
         tools_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -414,7 +439,7 @@ class ArcadeWindow(QMainWindow):
         tools_widget = QWidget(); tools_widget.setObjectName("toolsContent"); tools_layout = QVBoxLayout(tools_widget)
         tools_layout.setContentsMargins(0, 10, 2, 4); tools_layout.setSpacing(10)
         tools_scroll.setWidget(tools_widget)
-        left_layout.addWidget(tools_scroll, 1)
+        left_layout.addWidget(tools_scroll, 2)
         tools_layout.addWidget(QLabel("START A GAME"), 0)
         self.game_choice = QComboBox(); self.game_choice.setObjectName("field")
         self.game_choice.addItem("Tic-tac-toe", "tic-tac-toe")
@@ -437,6 +462,29 @@ class ArcadeWindow(QMainWindow):
         self.new_button = QPushButton("＋  New game"); self.new_button.setObjectName("primaryButton")
         self.new_button.clicked.connect(self._new_game)
         self.new_button.setMinimumHeight(42)
+        tools_layout.addWidget(self.new_button)
+        self.cq_heading = QLabel("FIND A GAME · CQ")
+        self.cq_heading.setObjectName("eyebrow")
+        tools_layout.addWidget(self.cq_heading)
+        self.cq_choice = QComboBox(); self.cq_choice.setObjectName("field")
+        self.cq_choice.addItem("Any game", None)
+        tools_layout.addWidget(self.cq_choice)
+        self.cq_send = QPushButton("Call CQ to all stations")
+        self.cq_send.clicked.connect(self._call_cq)
+        tools_layout.addWidget(self.cq_send)
+        self.cq_list = QListWidget(); self.cq_list.setMinimumHeight(85)
+        self.cq_list.setToolTip("CQ calls heard in the last 15 minutes")
+        tools_layout.addWidget(self.cq_list)
+        self.cq_answer = QPushButton("Answer selected CQ")
+        self.cq_answer.clicked.connect(self._answer_cq)
+        tools_layout.addWidget(self.cq_answer)
+        self.cq_widgets = (self.cq_heading, self.cq_choice, self.cq_send, self.cq_list, self.cq_answer)
+        for control in self.cq_widgets:
+            control.setVisible(self.settings.transport == "broadcast" and not self.settings.observer_mode)
+        self.cq_timer = QTimer(self)
+        self.cq_timer.setInterval(60_000)
+        self.cq_timer.timeout.connect(self._refresh_cq)
+        self.cq_timer.start()
         self.invite_button = QPushButton("Invite to selected lobby"); self.invite_button.clicked.connect(self._invite_player)
         tools_layout.addWidget(self.invite_button)
         self.join_button = QPushButton("Join broadcast table"); self.join_button.clicked.connect(self._join_game)
@@ -458,7 +506,6 @@ class ArcadeWindow(QMainWindow):
         self.start_button.setObjectName("primaryButton")
         self.start_button.setMinimumHeight(42)
         tools_layout.addStretch(1)
-        left_layout.addWidget(self.new_button)
         left_layout.addWidget(self.start_button)
         self.forfeit_button = QPushButton("Forfeit game…"); self.forfeit_button.setObjectName("forfeitGame")
         self.forfeit_button.clicked.connect(self._forfeit_game); self.forfeit_button.hide()
@@ -466,6 +513,7 @@ class ArcadeWindow(QMainWindow):
         self.delete_button = QPushButton("Delete selected game…")
         self.delete_button.clicked.connect(self._delete_game)
         self.delete_button.setEnabled(False)
+        self.delete_button.hide()
         left_layout.addWidget(self.delete_button)
         splitter.addWidget(left)
 
@@ -481,6 +529,10 @@ class ArcadeWindow(QMainWindow):
         self.sync_button.setVisible(False); center_layout.addWidget(self.sync_button, 0, Qt.AlignmentFlag.AlignLeft)
         self.scoreboard_host = QWidget(); self.scoreboard_layout = QVBoxLayout(self.scoreboard_host)
         self.scoreboard_layout.setContentsMargins(0, 0, 0, 0)
+        self.scoreboard_compact = QLabel(); self.scoreboard_compact.setObjectName("compactScoreboard")
+        self.scoreboard_compact.setWordWrap(True)
+        self.scoreboard_compact.hide()
+        center_layout.addWidget(self.scoreboard_compact)
         center_layout.addWidget(self.scoreboard_host)
         self.board_host = QWidget(); self.board_host.setObjectName("boardHost"); self.board_layout = QVBoxLayout(self.board_host); self.board_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.board_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -500,10 +552,11 @@ class ArcadeWindow(QMainWindow):
         self.players_label = QLabel("Stations appear here when a lobby opens."); self.players_label.setObjectName("players")
         self.players_label.setWordWrap(True); right_layout.addWidget(self.players_label)
         right_layout.addWidget(QLabel("SIDE CHAT"))
-        self.chat_list = QListWidget(); self.chat_list.setObjectName("chatList");
+        self.chat_list = ChatListWidget(); self.chat_list.setObjectName("chatList");
         self.chat_list.setWordWrap(True); self.chat_list.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.chat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.chat_list.setResizeMode(QListWidget.ResizeMode.Adjust); right_layout.addWidget(self.chat_list, 1)
+        self.chat_list.resized.connect(self._size_chat_rows)
         chat_row = QHBoxLayout(); self.chat_input = QLineEdit(); self.chat_input.setPlaceholderText("Message · up to 150 UTF-8 bytes")
         self.chat_input.returnPressed.connect(self._send_chat)
         self.chat_send = QPushButton("Send"); self.chat_send.clicked.connect(self._send_chat)
@@ -515,21 +568,81 @@ class ArcadeWindow(QMainWindow):
         # Prioritize the battlefield at desktop resolutions. The side panels
         # remain resizable, while Scorched Earth itself pans inside the arena.
         splitter.setSizes([280, 795, 245])
-        layout.addWidget(splitter, 1)
+        self.panes = (left, center, right)
+        self.card_headers = tuple(
+            (pane.layout().itemAt(0).widget(), pane.layout().itemAt(1).widget())
+            for pane in self.panes
+        )
+        self.compact_tabs = QTabWidget()
+        self.compact_tabs.setObjectName("compactTabs")
+        self.compact_tabs.tabBar().setExpanding(True)
+        self.compact_tabs.currentChanged.connect(lambda _index: self._size_chat_rows())
+        self.compact_tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.layout_stack = QStackedWidget()
+        self.layout_stack.addWidget(splitter)
+        self.layout_stack.addWidget(self.compact_tabs)
+        layout.addWidget(self.layout_stack, 1)
         foot = QHBoxLayout()
         self.footer_label = QLabel("Public radio · keep moves short, keep the good sport")
         self.footer_label.setObjectName("muted"); foot.addWidget(self.footer_label); foot.addStretch(1)
         self.mode_label = QLabel("Offline"); self.mode_label.setObjectName("modeLabel"); foot.addWidget(self.mode_label)
         layout.addLayout(foot)
         self.notification_button = QPushButton(); self.notification_button.hide()
+        self.notification_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.notification_button.clicked.connect(self._open_notification)
         layout.addWidget(self.notification_button)
         self._notification_session = None
+        self._notification_cq = False
         self._tray = QSystemTrayIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation), self)
         self._tray.setToolTip("Radio Arcade")
         self._tray.messageClicked.connect(self._open_notification)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self._tray.show()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "layout_stack"):
+            self._update_compact_layout()
+
+    def _update_compact_layout(self):
+        compact = self.width() < 950
+        if compact == (self.layout_stack.currentWidget() is self.compact_tabs):
+            return
+        if compact:
+            self._desktop_sizes = self.desktop_splitter.sizes()
+            for pane, title in zip(self.panes, ("Games", "Table", "Chat")):
+                self.compact_tabs.addTab(pane, title)
+            self.layout_stack.setCurrentWidget(self.compact_tabs)
+        else:
+            for pane in self.panes:
+                self.compact_tabs.removeTab(0)
+                self.desktop_splitter.addWidget(pane)
+            self.desktop_splitter.setSizes(getattr(self, "_desktop_sizes", [280, 795, 245]))
+            self.layout_stack.setCurrentWidget(self.desktop_splitter)
+            for pane in self.panes:
+                pane.show()
+        self.root_layout.setContentsMargins(*( (8, 8, 8, 8) if compact else (22, 20, 22, 18) ))
+        self.root_layout.setSpacing(8 if compact else 16)
+        self.brand.setText("◈  ARCADE" if compact else "◈  RADIO ARCADE")
+        self.transport_label.setVisible(not compact)
+        self.status_label.setVisible(not compact)
+        self.tx_activity.setVisible(not compact)
+        self.settings_button.setText("⚙" if compact else "⚙  Settings")
+        self.settings_button.setToolTip("Station settings")
+        self.footer_label.setVisible(not compact)
+        self.mode_label.setVisible(not compact)
+        for pane, headers in zip(self.panes, self.card_headers):
+            pane.layout().setContentsMargins(*( (10, 10, 10, 10) if compact else
+                                                (14, 14, 14, 14) if pane is self.panes[0] else
+                                                (18, 18, 18, 18) ))
+            pane.layout().setSpacing(6 if compact else 8 if pane is self.panes[0] else 13)
+            for header in headers:
+                header.setVisible(not compact)
+        self.session_list.setMinimumHeight(50 if compact else 70)
+        self.session_list.setVisible(not compact or self.session_list.count() > 0)
+        has_score = bool(self.scoreboard_compact.text())
+        self.scoreboard_compact.setVisible(compact and has_score)
+        self.scoreboard_host.setVisible(not compact and has_score)
 
     @staticmethod
     def _card(kicker: str, title: str) -> QFrame:
@@ -567,6 +680,7 @@ class ArcadeWindow(QMainWindow):
             QLabel#statusDot { color:#607086; font-size:17px; }
             QLabel#turnBadge { background:#1b2b36; color:#7be3cf; border:1px solid #2a514d; border-radius:9px; padding:10px; font-weight:750; }
             QLabel#players { background:#0d141f; color:#bdc8d8; border-radius:10px; padding:12px; }
+            QLabel#compactScoreboard { background:#14251f; color:#b8f4d7; border-radius:7px; padding:6px; font-size:11px; }
             QLabel { color:#d7dfeb; }
             QPushButton { background:#202c3c; color:#e7edf7; border:1px solid #34445a; border-radius:9px; padding:9px 12px; }
             QPushButton:hover { background:#2b3b50; border-color:#4b6b81; }
@@ -586,6 +700,9 @@ class ArcadeWindow(QMainWindow):
             QListWidget::item:selected { background:#1c3438; color:#a2f1df; }
             QListWidget::item:hover { background:#1a2533; }
             QListWidget#chatList::item { padding:8px 10px; margin:3px 0; background:#182331; color:#e3edf7; border-radius:8px; }
+            QTabWidget#compactTabs::pane { border:0; }
+            QTabWidget#compactTabs QTabBar::tab { background:#202c3c; color:#bfcbdc; padding:9px 12px; min-height:20px; border:1px solid #34445a; }
+            QTabWidget#compactTabs QTabBar::tab:selected { background:#254b47; color:#effff8; border-color:#66d9c2; }
             QScrollBar:vertical { background:transparent; width:8px; margin:2px; }
             QScrollBar::handle:vertical { background:#34445a; border-radius:4px; min-height:25px; }
             QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical { height:0; }
@@ -623,6 +740,7 @@ class ArcadeWindow(QMainWindow):
 
     def _update_status(self, text: str, connected: bool):
         self.status_label.setText(text)
+        self.link_dot.setToolTip(text)
         color = "#eeeeee" if self.settings.color_scheme == "monochrome" else "#61dfb8" if connected else "#e9ae65"
         self.link_dot.setStyleSheet(f"color: {color}; font-size:17px")
 
@@ -654,12 +772,17 @@ class ArcadeWindow(QMainWindow):
         self.mode_label.setText(f"{self.settings.callsign}  ·  {'OBSERVER · RX' if self.settings.observer_mode else self.settings.transport.title()}")
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
         for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,
+                        self.cq_choice, self.cq_send, self.cq_answer,
                         self.invite_button, self.cancel_invite_button, self.start_button, self.chat_input,
                         self.chat_send, self.join_button, self.announce_button, self.order_input,
                         self.order_button, self.retry_button, self.connect_button,
                         self.disconnect_button):
             control.setEnabled(can_transmit)
         self.hosted_checkbox.setEnabled(can_transmit and self.settings.transport == "broadcast")
+        for control in self.cq_widgets:
+            control.setVisible(self.settings.transport == "broadcast" and not self.settings.observer_mode)
+        for control in (self.cq_choice, self.cq_send, self.cq_answer):
+            control.setEnabled(can_transmit and self.settings.transport == "broadcast")
         if self.settings.transport != "broadcast":
             self.hosted_checkbox.setChecked(False)
         self._update_new_game_mode()
@@ -668,6 +791,7 @@ class ArcadeWindow(QMainWindow):
         self.connect_button.setVisible(self.settings.transport == "connected")
         self.disconnect_button.setVisible(self.settings.transport == "connected")
         self._populate_games()
+        self._refresh_cq()
         self.tx_toggle.setEnabled(self.settings.transport != "practice")
         self._refresh_sessions()
 
@@ -680,6 +804,7 @@ class ArcadeWindow(QMainWindow):
         self.tx_toggle.setText("TX ENABLED" if enabled else "TX DISABLED")
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or enabled)
         for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,
+                        self.cq_choice, self.cq_send, self.cq_answer,
                         self.invite_button, self.cancel_invite_button, self.start_button, self.chat_input,
                         self.chat_send, self.join_button, self.announce_button, self.order_input,
                         self.order_button, self.retry_button, self.connect_button, self.disconnect_button):
@@ -720,6 +845,43 @@ class ArcadeWindow(QMainWindow):
             self.game_choice.addItem(f"{game.name} · {game.min_players}–{game.max_players}", game.key)
         index = self.game_choice.findData(current)
         if index >= 0: self.game_choice.setCurrentIndex(index)
+        selected_cq_game = self.cq_choice.currentData()
+        self.cq_choice.clear()
+        self.cq_choice.addItem("Any game", None)
+        for game in self.engine.catalog():
+            if "desktop" in game.clients and game.max_players >= 2:
+                self.cq_choice.addItem(game.name, game.key)
+        index = self.cq_choice.findData(selected_cq_game)
+        if index >= 0: self.cq_choice.setCurrentIndex(index)
+
+    def _refresh_cq(self):
+        if not self.engine:
+            return
+        selected = self.cq_list.currentItem()
+        selected_key = selected.data(Qt.ItemDataRole.UserRole) if selected else None
+        self.cq_list.clear()
+        for request in self.engine.cq_requests():
+            item = QListWidgetItem(f"{request['callsign']} · {request['game']}")
+            item.setData(Qt.ItemDataRole.UserRole, (request["callsign"], request["game_id"]))
+            self.cq_list.addItem(item)
+            if item.data(Qt.ItemDataRole.UserRole) == selected_key:
+                self.cq_list.setCurrentItem(item)
+
+    def _call_cq(self):
+        if self.engine:
+            self._run(partial(self.engine.call_cq, self.cq_choice.currentData()))
+
+    def _answer_cq(self):
+        if not self.engine or not self.cq_list.currentItem():
+            return
+        callsign, requested_id = self.cq_list.currentItem().data(Qt.ItemDataRole.UserRole)
+        game = self.cq_choice.currentData()
+        if requested_id != 255:
+            game = requested_id
+        elif game is None:
+            QMessageBox.information(self, "Choose a game", "Choose a specific game above to answer this CQ.")
+            return
+        self._run(partial(self.engine.answer_cq, callsign, game), self._created_game)
 
     @Slot(str)
     def _connection_failed(self, error: str):
@@ -727,6 +889,14 @@ class ArcadeWindow(QMainWindow):
         self.mode_label.setText(error)
 
     def _open_notification(self):
+        if self._notification_cq:
+            self._notification_cq = False
+            self._refresh_cq()
+            self.showNormal(); self.raise_(); self.activateWindow()
+            if self.layout_stack.currentWidget() is self.compact_tabs:
+                self.compact_tabs.setCurrentIndex(0)
+            self.notification_button.hide()
+            return
         if self._notification_session:
             self.selected_id = self._notification_session
             self._refresh_sessions()
@@ -734,6 +904,7 @@ class ArcadeWindow(QMainWindow):
             self.notification_button.hide()
 
     def _notify_activity(self, title, body, sid):
+        self._notification_cq = False
         self._notification_session = sid
         self.notification_button.setText(f"{title} · {body} · Open table")
         self.notification_button.show()
@@ -742,7 +913,16 @@ class ArcadeWindow(QMainWindow):
             self._tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 6000)
 
     def _on_event(self, event: EngineEvent):
-        if event.name == "invitation":
+        if event.name == "cq_request":
+            self._refresh_cq()
+            self._notification_cq = True
+            self.notification_button.setText(f"CQ · {event.data['callsign']} · {event.data['game']} · View requests")
+            self.notification_button.show()
+            QApplication.alert(self, 5000)
+            if self._tray.isVisible():
+                self._tray.showMessage("Game CQ", f"{event.data['callsign']} · {event.data['game']}",
+                                       QSystemTrayIcon.MessageIcon.Information, 6000)
+        elif event.name == "invitation":
             self._notify_activity("Game invitation", f"{event.data.get('sender')} · {event.data.get('game')}", event.session)
         elif event.name == "chat_message" and event.data.get("message", {}).get("sender") != self.settings.callsign:
             message = event.data["message"]
@@ -810,6 +990,8 @@ class ArcadeWindow(QMainWindow):
         else:
             self.selected_id = None
         self.session_list.verticalScrollBar().setValue(scroll_position)
+        self.session_list.setVisible(self.layout_stack.currentWidget() is not self.compact_tabs or
+                                     self.session_list.count() > 0)
         self._show_session(self.selected_id)
 
     def _select_item(self, current, _previous):
@@ -817,6 +999,8 @@ class ArcadeWindow(QMainWindow):
             self._preserve_empty_selection = False
         self.selected_id = current.data(Qt.ItemDataRole.UserRole) if current else None
         self._show_session(self.selected_id)
+        if current and self.layout_stack.currentWidget() is self.compact_tabs:
+            self.compact_tabs.setCurrentIndex(1)
 
     def _show_session(self, sid: str | None):
         session = None
@@ -833,7 +1017,16 @@ class ArcadeWindow(QMainWindow):
             self._board_signature = None
         while self.scoreboard_layout.count():
             self.scoreboard_layout.takeAt(0).widget().deleteLater()
-        self.scoreboard_host.setVisible(bool(session and session.get("view")))
+        score_visible = bool(session and session.get("view"))
+        compact = self.layout_stack.currentWidget() is self.compact_tabs
+        self.scoreboard_host.setVisible(score_visible and not compact)
+        self.scoreboard_compact.setVisible(score_visible and compact)
+        if score_visible:
+            data = scoreboard(session)
+            self.scoreboard_compact.setText("  ·  ".join(
+                f"{entry['player']}: {entry['value']} {entry['unit']}" for entry in data["entries"]))
+        else:
+            self.scoreboard_compact.clear()
         self.result_button.setVisible(bool(session and session["status"] == "finished"))
         if session and session.get("view"):
             self.scoreboard_layout.addWidget(Scoreboard(session))
@@ -843,6 +1036,7 @@ class ArcadeWindow(QMainWindow):
         self.forfeit_button.setEnabled(bool(session and session["pending_action"] is None and
             (self.settings.transport == "practice" or self.settings.tx_enabled)))
         self.delete_button.setEnabled(bool(session))
+        self.delete_button.setVisible(bool(session))
         self.accept_button.setVisible(False); self.start_button.setVisible(False); self.invite_button.setVisible(False); self.cancel_invite_button.setVisible(False)
         self.join_button.setVisible(False); self.announce_button.setVisible(False); self.retry_button.setVisible(False)
         self.spot_button.setVisible(False)
@@ -1317,15 +1511,33 @@ class ArcadeWindow(QMainWindow):
             row = QWidget(); row_layout = QHBoxLayout(row); row_layout.setContentsMargins(2, 4, 2, 4)
             bubble = QLabel(f"{message['sender']} · {message['delivery']}\n{message['body']}")
             bubble.setTextFormat(Qt.TextFormat.PlainText); bubble.setWordWrap(True)
-            bubble.setMaximumWidth(max(130, self.chat_list.viewport().width() - 42))
             bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             bubble.setStyleSheet("padding:10px; border-radius:14px; color:#eef7ff; background:" + ("#425391;" if mine else "#254b47;"))
+            natural_width = max(bubble.fontMetrics().horizontalAdvance(line) for line in bubble.text().splitlines()) + 24
+            bubble.setProperty("natural_width", natural_width)
             if mine: row_layout.addStretch(1)
             row_layout.addWidget(bubble)
             if not mine: row_layout.addStretch(1)
-            item.setSizeHint(row.sizeHint())
             self.chat_list.setItemWidget(item, row)
+        self._size_chat_rows()
         self.chat_list.scrollToBottom()
+
+    def _size_chat_rows(self):
+        # The list item's style adds 10 px on each side; leave room for the
+        # row layout margins too, so the bubble never spills into its neighbor.
+        available = max(1, self.chat_list.viewport().width() - 28)
+        for index in range(self.chat_list.count()):
+            item = self.chat_list.item(index)
+            row = self.chat_list.itemWidget(item)
+            if row is None:
+                continue
+            bubble = row.findChild(QLabel)
+            width = min(available, max(130, bubble.property("natural_width")))
+            bubble.setFixedWidth(width)
+            height = bubble.heightForWidth(width)
+            bubble.setFixedHeight(height)
+            # QSS item padding/margin takes 22 px before the row is laid out.
+            item.setSizeHint(QSize(available, height + 30))
 
     def _run(self, fn: Callable, on_done: Callable | None = None):
         task = Task(fn)
@@ -1335,7 +1547,12 @@ class ArcadeWindow(QMainWindow):
             if on_done: on_done(value)
             self._refresh_sessions()
         task.signals.done.connect(done)
-        task.signals.failed.connect(lambda err: (self._tasks.discard(task), self.footer_label.setText(err)))
+        def failed(err):
+            self._tasks.discard(task)
+            self.footer_label.setText(err)
+            if self.layout_stack.currentWidget() is self.compact_tabs:
+                QMessageBox.warning(self, "Action failed", err)
+        task.signals.failed.connect(failed)
         self._pool.start(task)
 
     def _new_game(self):
@@ -1390,6 +1607,8 @@ class ArcadeWindow(QMainWindow):
     def _created_game(self, sid: str):
         self._preserve_empty_selection = False
         self.selected_id = sid
+        if self.layout_stack.currentWidget() is self.compact_tabs:
+            self.compact_tabs.setCurrentIndex(1)
 
     def _invite_player(self):
         if not self.engine or not self.selected_id: return

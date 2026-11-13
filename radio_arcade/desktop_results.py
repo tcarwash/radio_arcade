@@ -35,7 +35,9 @@ class ResultDialog(QDialog):
         self.setWindowTitle('Match complete')
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setMinimumWidth(430)
+        self.setMinimumWidth(300)
+        if parent:
+            self.resize(max(300, min(430, parent.width() - 16)), 320)
         layout = QVBoxLayout(self); layout.setContentsMargins(28, 24, 28, 24); layout.setSpacing(18)
         title = QLabel(result_title(session, settings.callsign, practice=settings.transport == 'practice', observer=settings.observer_mode))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)

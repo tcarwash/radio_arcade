@@ -16,6 +16,8 @@ from .wire import (Kind, Packet, CompactFrame, decode, decode_action, decode_ros
                    encode_compact, FLAG_OPAQUE, FORFEIT_ACTION)
 
 ID_INTERVAL_SECONDS = 9 * 60  # One-minute margin before the ten-minute limit.
+CQ_LIFETIME_SECONDS = 15 * 60
+CQ_ANY_GAME = 255
 
 
 def station_name(value: str) -> str:
@@ -78,6 +80,7 @@ class ArcadeService:
             self._sessions[saved["id"]] = saved
         self._id_finished = {sid for sid, row in self._sessions.items() if row["status"] == "finished"}
         self._reported_failed: set[tuple[str, str, int, int]] = set()
+        self._cq_requests: dict[tuple[str, int], float] = {}
         if not observer_mode:
             self.store.upgrade_v3_outbox()
         self._stop = threading.Event()
@@ -394,6 +397,7 @@ class ArcadeService:
                 Kind.HOST_ANNOUNCE: "announcing an open table", Kind.JOIN_REQUEST: "requesting to join a table",
                 Kind.HOST_ROSTER: "updating the hosted table roster", Kind.HOST_CHAT: "relaying table chat",
                 Kind.STATION_ID: "identifying this station on the air",
+                Kind.CQ_REQUEST: "calling CQ for a game",
             }
             details = {"kind": packet.kind.name, "destination": packet.destination,
                        "reason": reasons.get(packet.kind, "sending a game packet")}
@@ -467,6 +471,39 @@ class ArcadeService:
                 raise ValueError("only the dealer may advertise an open hosted lobby")
             self._transmit(self._make(row, "*", Kind.HOST_ANNOUNCE,
                                       payload=encode_roster(tuple(row["players"]))))
+
+    def call_cq(self, game: str | int | None = None) -> None:
+        """Ask listeners to open a direct table, without creating one yet."""
+        self._require_player()
+        if hasattr(self.transport, "connect_peer") or not getattr(self.transport, "supports_broadcast", True):
+            raise ValueError("CQ requires broadcast radio mode")
+        if not self.tx_enabled:
+            raise ValueError("TX is disabled. Enable TX to call CQ.")
+        definition = (self.registry.by_id(game) if isinstance(game, int) else self.registry.by_key(game)) if game is not None else None
+        if definition is not None and definition.max_players < 2:
+            raise ValueError("CQ requires a multiplayer game")
+        self._transmit(encode(Packet(definition.game_id if definition else CQ_ANY_GAME,
+                                     Kind.CQ_REQUEST, 0, 0, 0, self.callsign, "*")))
+
+    def cq_requests(self) -> list[dict[str, Any]]:
+        """Recently heard CQ calls; these expire and create no game on receipt."""
+        with self._lock:
+            now = time.monotonic()
+            self._cq_requests = {key: heard for key, heard in self._cq_requests.items()
+                                 if now - heard < CQ_LIFETIME_SECONDS}
+            return [dict(callsign=call, game_id=game_id,
+                         game="Any game" if game_id == CQ_ANY_GAME else self.registry.by_id(game_id).name)
+                    for (call, game_id), _heard in sorted(self._cq_requests.items(),
+                                                           key=lambda item: item[1], reverse=True)]
+
+    def answer_cq(self, callsign: str, game: str | int) -> str:
+        """Answer a recent CQ with a directed invitation."""
+        peer = station_name(callsign)
+        definition = self.registry.by_id(game) if isinstance(game, int) else self.registry.by_key(game)
+        if not any(row["callsign"] == peer and row["game_id"] in (CQ_ANY_GAME, definition.game_id)
+                   for row in self.cq_requests()):
+            raise ValueError("no matching recent CQ from that station")
+        return self.create_game(definition.game_id, peer)
 
     def set_reply_order(self, session_id: str | int, order: list[str] | tuple[str, ...] | str) -> None:
         """Dealer chooses the roster/turn order before the first roll."""
@@ -866,6 +903,19 @@ class ArcadeService:
         if packet.source == self.callsign or packet.destination not in (self.callsign, "*"):
             return
         with self._lock:
+            if packet.kind == Kind.CQ_REQUEST:
+                if (packet.destination != "*" or packet.session != 0 or packet.sequence != 0
+                        or packet.revision != 0 or packet.payload):
+                    return
+                try:
+                    caller = station_name(packet.source)
+                    game = ("Any game" if packet.game == CQ_ANY_GAME else
+                            self.registry.by_id(packet.game).name)
+                except ValueError:
+                    return
+                self._cq_requests[(caller, packet.game)] = time.monotonic()
+                self._emit("cq_request", callsign=caller, game_id=packet.game, game=game)
+                return
             sid = f"{packet.session:016X}"
             if packet.kind in (Kind.HOST_ANNOUNCE, Kind.HOST_ROSTER):
                 self._receive_host_roster(packet, sid)

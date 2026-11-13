@@ -38,6 +38,19 @@ Callsign fields are 1–15 ASCII bytes; the full header uses **one byte total fo
 | HOST_ROSTER | 16 | roster; dealer's authoritative order and seated stations |
 | HOST_CHAT | 17 | actor and UTF-8 text; dealer broadcast of participant chat |
 | STATION_ID | 18 | ASCII `ID ` followed by the station's full callsign; always full envelope |
+| CQ_REQUEST | 19 | empty; broadcast game request, game ID 255 means any game |
+
+## CQ game requests
+
+In broadcast mode, `call_cq(game)` sends one `CQ_REQUEST` to `*` with session,
+sequence, and revision all zero. A specific request carries that game's ID;
+ID 255 requests any multiplayer game. Receivers keep valid calls for 15 minutes
+in memory and show the caller and requested game. Answering a call explicitly
+creates a direct table and sends the existing reliable invitation to the caller.
+For an any-game call, the answerer chooses the game. A CQ does not create a
+table, reserve a seat, or automatically transmit a response. It has no ACK or
+retry; the caller may send another CQ. Older v6 clients that do not know kind
+19 ignore the request as an unknown packet.
 
 ## Compact established-session turns (v6)
 

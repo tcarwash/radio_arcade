@@ -10,9 +10,90 @@ from unittest.mock import patch
 
 @unittest.skipUnless(importlib.util.find_spec("PySide6"), "install the desktop extra")
 class DesktopScenarios(unittest.TestCase):
+    def test_compact_cq_request_can_be_answered(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from pathlib import Path
+        from PySide6.QtWidgets import QApplication
+        from radio_arcade.desktop import ArcadeWindow
+        from radio_arcade.service import ArcadeService
+        from radio_arcade.settings import Settings
+        from radio_arcade.store import SessionStore
+        from tests.test_hosted import Air
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory:
+            air = Air()
+            caller = ArcadeService("N0AAA", air.station(), SessionStore(Path(directory) / "caller.db"))
+            answerer = ArcadeService("N0BBB", air.station(), SessionStore(Path(directory) / "answerer.db"))
+            window = ArcadeWindow(Settings(callsign="N0BBB", transport="broadcast"))
+            window._service_ready(answerer); window.show(); window.resize(360, 400)
+            try:
+                caller.call_cq("nim"); air.pump(); app.processEvents()
+                self.assertTrue(window.notification_button.isVisible())
+                window.compact_tabs.setCurrentIndex(2)
+                window.notification_button.click(); app.processEvents()
+                self.assertEqual(window.compact_tabs.currentIndex(), 0)
+                window.compact_tabs.setCurrentIndex(0); app.processEvents()
+                self.assertEqual(window.cq_list.count(), 1)
+                self.assertIn("N0AAA · Nim", window.cq_list.item(0).text())
+                window.cq_list.setCurrentRow(0)
+                window.cq_answer.click()
+                deadline = time.monotonic() + 3
+                while window._tasks and time.monotonic() < deadline:
+                    app.processEvents(); time.sleep(.01)
+                air.pump()
+                self.assertEqual(len(caller.sessions()), 1)
+                self.assertEqual(caller.sessions()[0]["status"], "invited")
+                self.assertEqual(window.compact_tabs.currentIndex(), 1)
+            finally:
+                window.close(); caller.close(); answerer.close(); app.processEvents()
+
+    def test_settings_fit_compact_window(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication, QScrollArea
+        from radio_arcade.desktop import ArcadeWindow, SettingsDialog
+        from radio_arcade.settings import Settings
+
+        app = QApplication.instance() or QApplication([])
+        window = ArcadeWindow(Settings(callsign="N0CALL", transport="broadcast"))
+        window.show(); window.resize(360, 400)
+        dialog = SettingsDialog(window.settings, window)
+        dialog.show(); app.processEvents()
+        try:
+            form = dialog.findChild(QScrollArea)
+            self.assertLessEqual(dialog.width(), window.width())
+            self.assertLessEqual(dialog.height(), window.height())
+            self.assertEqual(form.horizontalScrollBar().maximum(), 0)
+            self.assertGreater(form.verticalScrollBar().maximum(), 0)
+        finally:
+            dialog.close(); window.close(); app.processEvents()
+
+    def test_compact_scorched_table_keeps_board_usable(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from radio_arcade.desktop import ArcadeWindow
+        from radio_arcade.practice import PracticeService
+        from radio_arcade.settings import Settings
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"RADIO_ARCADE_HOME": directory}):
+            engine = PracticeService("N0CALL")
+            window = ArcadeWindow(Settings(callsign="N0CALL", transport="practice"))
+            window._service_ready(engine)
+            sid = engine.create_game("scorched-earth")
+            window.selected_id = sid; window._show_session(sid)
+            window.show(); window.resize(360, 400)
+            window.compact_tabs.setCurrentIndex(1); app.processEvents()
+            try:
+                self.assertTrue(window.scoreboard_compact.isVisible())
+                self.assertFalse(window.scoreboard_host.isVisible())
+                self.assertGreaterEqual(window.board_scroll.viewport().height(), 150)
+            finally:
+                window.close(); engine.close(); app.processEvents()
+
     def test_games_panel_create_delete_and_reselect(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication, QMessageBox
+        from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea
         from radio_arcade.desktop import ArcadeWindow
         from radio_arcade.practice import PracticeService
         from radio_arcade.settings import Settings
@@ -50,17 +131,31 @@ class DesktopScenarios(unittest.TestCase):
                 window.session_list.setCurrentRow(0)
                 self.assertEqual(window.selected_id, first)
                 self.assertTrue(window.delete_button.isEnabled())
-                for width, height in ((1024, 680), (2048, 1152)):
+                for width, height in ((360, 400), (500, 450), (800, 560), (1024, 680), (2048, 1152)):
                     window.resize(width, height); app.processEvents()
+                    self.assertEqual(window.size().width(), width)
+                    self.assertEqual(window.size().height(), height)
+                    if width < 950:
+                        self.assertEqual(window.compact_tabs.count(), 3)
+                        window.compact_tabs.setCurrentIndex(0); app.processEvents()
+                    else:
+                        self.assertEqual(window.compact_tabs.count(), 0)
+                    tools = window.centralWidget().findChild(QScrollArea, "toolsScroll")
+                    self.assertLessEqual(tools.widget().width(), tools.viewport().width())
+                    self.assertGreaterEqual(tools.viewport().height(), 90)
                     self.assertTrue(window.new_button.isVisible())
                     self.assertGreaterEqual(window.new_button.height(), 42)
-                    self.assertLess(window.new_button.geometry().bottom(), window.delete_button.geometry().top())
+                    if width < 950:
+                        window.compact_tabs.setCurrentIndex(1); app.processEvents()
+                        self.assertTrue(window.board_scroll.isVisible())
+                        window.compact_tabs.setCurrentIndex(2); app.processEvents()
+                        self.assertTrue(window.chat_input.isVisible())
             finally:
                 window.close(); app.processEvents()
 
     def test_chat_rows_remain_visible_and_forfeit_ends_game(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication, QMessageBox
+        from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
         from radio_arcade.desktop import ArcadeWindow
         from radio_arcade.practice import PracticeService
         from radio_arcade.settings import Settings
@@ -81,6 +176,19 @@ class DesktopScenarios(unittest.TestCase):
                 self.assertGreater(window.chat_list.visualItemRect(window.chat_list.item(0)).height(), 30)
                 engine.legal_action(sid, b"\x00"); window._show_session(sid)
                 self.assertEqual(window.chat_list.count(), 1)
+                engine.send_chat(sid, "A message that wraps across the chat bubble " * 3)
+                window._refresh_chat(sid)
+                for width, height in ((800, 560), (1320, 820)):
+                    window.resize(width, height); app.processEvents()
+                    if window.compact_tabs.count():
+                        window.compact_tabs.setCurrentIndex(2); app.processEvents()
+                    for index in range(window.chat_list.count()):
+                        item = window.chat_list.item(index)
+                        row = window.chat_list.itemWidget(item)
+                        bubble = row.findChild(QLabel)
+                        self.assertLessEqual(bubble.geometry().right(), row.width())
+                        self.assertLessEqual(bubble.geometry().bottom(), row.height())
+                        self.assertGreaterEqual(bubble.height(), bubble.heightForWidth(bubble.width()))
                 self.assertTrue(window.forfeit_button.isVisible())
                 with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
                     window.forfeit_button.click()
