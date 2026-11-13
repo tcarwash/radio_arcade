@@ -280,6 +280,9 @@ class SettingsDialog(QDialog):
         self.scheme.addItem("Monochrome", "monochrome")
         self.scheme.setCurrentIndex(max(0, self.scheme.findData(settings.color_scheme)))
         self.sound = QCheckBox("Play sounds"); self.sound.setChecked(settings.sound_enabled)
+        self.experimental_games = QCheckBox("Experimental games")
+        self.experimental_games.setToolTip("Show prototypes when creating a table or calling CQ")
+        self.experimental_games.setChecked(settings.experimental_games)
         self.observer = QCheckBox("Receive-only observer")
         self.observer.setToolTip("Manual snapshot requests still transmit")
         self.observer.setChecked(settings.observer_mode)
@@ -296,6 +299,7 @@ class SettingsDialog(QDialog):
         form.addRow("KISS port", self.kiss_port)
         form.addRow("Color scheme", self.scheme)
         form.addRow("Sound", self.sound)
+        form.addRow("Games", self.experimental_games)
         form.addRow("Observer", self.observer)
         form.addRow("DX Cluster URL", self.dx_cluster_url)
         form_scroll = QScrollArea()
@@ -333,6 +337,7 @@ class SettingsDialog(QDialog):
         self.settings.kiss_port = self.kiss_port.value()
         self.settings.color_scheme = self.scheme.currentData()
         self.settings.sound_enabled = self.sound.isChecked()
+        self.settings.experimental_games = self.experimental_games.isChecked()
         self.settings.dx_cluster_url = self.dx_cluster_url.text().strip()
         self.settings.save()
         self.accept()
@@ -840,7 +845,7 @@ class ArcadeWindow(QMainWindow):
         current = self.game_choice.currentData()
         self.game_choice.clear()
         for game in self.engine.catalog():
-            if "desktop" not in game.clients:
+            if "desktop" not in game.clients or not self.settings.can_offer_game(game.key):
                 continue
             self.game_choice.addItem(f"{game.name} · {game.min_players}–{game.max_players}", game.key)
         index = self.game_choice.findData(current)
@@ -849,7 +854,7 @@ class ArcadeWindow(QMainWindow):
         self.cq_choice.clear()
         self.cq_choice.addItem("Any game", None)
         for game in self.engine.catalog():
-            if "desktop" in game.clients and game.max_players >= 2:
+            if "desktop" in game.clients and game.max_players >= 2 and self.settings.can_offer_game(game.key):
                 self.cq_choice.addItem(game.name, game.key)
         index = self.cq_choice.findData(selected_cq_game)
         if index >= 0: self.cq_choice.setCurrentIndex(index)
@@ -880,6 +885,10 @@ class ArcadeWindow(QMainWindow):
             game = requested_id
         elif game is None:
             QMessageBox.information(self, "Choose a game", "Choose a specific game above to answer this CQ.")
+            return
+        game_key = self.engine.registry.by_id(game).key if isinstance(game, int) else game
+        if not self.settings.can_offer_game(game_key):
+            QMessageBox.information(self, "Experimental games", "Enable Experimental games in settings to answer this CQ.")
             return
         self._run(partial(self.engine.answer_cq, callsign, game), self._created_game)
 
@@ -1612,6 +1621,10 @@ class ArcadeWindow(QMainWindow):
 
     def _invite_player(self):
         if not self.engine or not self.selected_id: return
+        game = self.engine.registry.by_id(self.engine.session(self.selected_id)["game_id"])
+        if not self.settings.can_offer_game(game.key):
+            self.footer_label.setText(f"Enable Experimental games in settings to invite players to {game.name}.")
+            return
         peer = self.peer_input.text().strip().upper()
         if not peer:
             self.footer_label.setText("Enter a callsign to invite to this lobby."); return

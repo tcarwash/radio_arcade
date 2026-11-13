@@ -21,11 +21,16 @@ class Settings:
     broadcast_mode: str = ""
     color_scheme: str = "midnight"
     sound_enabled: bool = False
+    experimental_games: bool = False
     observer_mode: bool = False
     tx_enabled: bool = True
     dx_cluster_url: str = ""
     station_id_mode: str = "auto"  # auto: Data2G CWID, with application packet fallback
     cw_wpm: int = 20
+
+    def can_offer_game(self, key: str) -> bool:
+        """Limit outgoing game choices without affecting received invitations."""
+        return self.experimental_games or key != "signal-siege"
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Settings":

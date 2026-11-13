@@ -16,6 +16,31 @@ from radio_arcade.games.scrabble import _lexicon
 
 
 class WebControllerScenarios(unittest.TestCase):
+    def test_experimental_invitation_can_be_accepted_when_opted_out(self):
+        from radio_arcade.service import ArcadeService
+        from radio_arcade.store import SessionStore
+        from tests.test_hosted import Air
+
+        air = Air()
+        host = ArcadeService("N0AAA", air.station(), SessionStore(Path(self.directory.name) / "siege-host.db"))
+        guest = ArcadeService("N0BBB", air.station(), SessionStore(Path(self.directory.name) / "siege-guest.db"))
+        web = WebController(Settings(callsign="N0BBB", transport="broadcast", experimental_games=False),
+                            service_factory=lambda _settings: guest)
+        try:
+            sid = host.create_game("signal-siege", "N0BBB")
+            air.pump()
+            status, state = web.dispatch("GET", "/api/state", b"")
+            self.assertEqual(status, 200)
+            self.assertEqual(next(row for row in state["sessions"] if row["id"] == sid)["status"], "invited")
+            status, accepted = web.dispatch("POST", "/api/command", json.dumps({
+                "command": "accept_invite", "session_id": sid}).encode())
+            self.assertEqual(status, 200)
+            air.pump()
+            self.assertEqual(host.session(sid)["status"], "lobby")
+        finally:
+            web.close()
+            host.close()
+
     def test_web_cq_request_and_answer_create_direct_invitation(self):
         from radio_arcade.service import ArcadeService
         from radio_arcade.store import SessionStore
@@ -139,6 +164,33 @@ class WebControllerScenarios(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertFalse(state["sound_enabled"])
         self.assertEqual(state["dx_cluster_url"], "https://other.example.org")
+
+    def test_experimental_games_only_gate_outgoing_choices(self):
+        _, state = self.request("GET", "/api/state")
+        self.assertFalse(state["experimental_games"])
+        self.assertIn("signal-siege", {game["key"] for game in state["catalog"]})
+        status, rejected = self.request("POST", "/api/command", {
+            "command": "create_game", "game": "signal-siege"})
+        self.assertEqual(status, 400)
+        self.assertIn("Experimental games", rejected["error"])
+        status, rejected = self.request("POST", "/api/command", {
+            "command": "call_cq", "game": "signal-siege"})
+        self.assertEqual(status, 400)
+        status, state = self.request("POST", "/api/settings", {"experimental_games": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(state["experimental_games"])
+        self.assertTrue(Settings.load(self.controller.settings_path).experimental_games)
+        status, created = self.request("POST", "/api/command", {
+            "command": "create_game", "game": "signal-siege"})
+        self.assertEqual(status, 200)
+        sid = created["session_id"]
+        status, state = self.request("POST", "/api/settings", {"experimental_games": False})
+        self.assertEqual(status, 200)
+        self.assertIn(sid, {session["id"] for session in state["sessions"]})
+        status, rejected = self.request("POST", "/api/command", {
+            "command": "invite_player", "session_id": sid, "peer": "N0PEER"})
+        self.assertEqual(status, 400)
+        self.assertIn("Experimental games", rejected["error"])
 
     def test_web_cwid_preferences_and_validation(self):
         status, state = self.request("POST", "/api/settings", {

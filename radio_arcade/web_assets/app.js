@@ -180,7 +180,8 @@ function setConnection(snapshot) {
 }
 
 function populateGames(catalog) {
-  catalog = catalog.filter(game => !game.clients || game.clients.includes("web"));
+  catalog = catalog.filter(game => (!game.clients || game.clients.includes("web")) &&
+    (state.snapshot?.experimental_games || game.key !== "signal-siege"));
   const select = $("#game-select");
   const keys = catalog.map(game => game.key).join("|");
   if (select.dataset.keys === keys) return;
@@ -213,7 +214,8 @@ function renderCq(requests) {
     const answer = node("button", "button", "Answer");
     answer.type = "button"; answer.dataset.cqCall = request.callsign;
     answer.dataset.cqGame = String(request.game_id);
-    answer.disabled = !canTransmit();
+    const requestedGame = state.snapshot?.catalog.find(game => game.game_id === request.game_id);
+    answer.disabled = !canTransmit() || (requestedGame?.key === "signal-siege" && !state.snapshot?.experimental_games);
     row.append(answer); list.append(row);
   }
 }
@@ -1486,6 +1488,7 @@ function openSettings() {
     }
     form.elements.observer_mode.checked = Boolean(state.snapshot.observer_mode);
     form.elements.sound_enabled.checked = Boolean(state.snapshot.sound_enabled);
+    form.elements.experimental_games.checked = Boolean(state.snapshot.experimental_games);
   }
   $("#settings-error").hidden = true;
   $("#settings-dialog").showModal();
@@ -1510,6 +1513,7 @@ $("#settings-form").addEventListener("submit", async event => {
   data.cw_wpm = Number(data.cw_wpm);
   data.observer_mode = form.elements.observer_mode.checked;
   data.sound_enabled = form.elements.sound_enabled.checked;
+  data.experimental_games = form.elements.experimental_games.checked;
   try {
     const snapshot = await request("/api/settings", { method: "POST", body: JSON.stringify(data) });
     state.snapshot = snapshot; state.sessionSignature = ""; state.chatSignature = "";

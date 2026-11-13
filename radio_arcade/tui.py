@@ -166,6 +166,8 @@ class SettingsScreen(ModalScreen[Settings | None]):
                          value=self.settings.color_scheme, allow_blank=False, id="color-scheme")
             yield Label("INVITATION AND TURN SOUNDS", classes="setting-label")
             yield Switch(value=self.settings.sound_enabled, id="sound-enabled")
+            yield Label("EXPERIMENTAL GAMES · show prototypes in new game and CQ choices", classes="setting-label")
+            yield Switch(value=self.settings.experimental_games, id="experimental-games")
             yield Label("OBSERVER MODE · broadcast only, manual sync transmits", classes="setting-label")
             yield Switch(value=self.settings.observer_mode, id="observer-mode")
             with Horizontal(id="settings-actions"):
@@ -205,6 +207,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
         self.settings.command_port, self.settings.kiss_port = command_port, kiss_port
         self.settings.color_scheme = str(self.query_one("#color-scheme", Select).value)
         self.settings.sound_enabled = self.query_one("#sound-enabled", Switch).value
+        self.settings.experimental_games = self.query_one("#experimental-games", Switch).value
         self.settings.dx_cluster_url = self.query_one("#dx-cluster-url", Input).value.strip()
         self.settings.save()
         self.dismiss(self.settings)
@@ -568,10 +571,10 @@ class ArcadeTUI(App):
         self.query_one("#tx-toggle", Button).label = "TX ENABLED" if self.settings.tx_enabled else "TX DISABLED"
         game_select = self.query_one("#game-select", Select)
         game_select.set_options((f"{game.name} · {game.min_players}–{game.max_players}", game.key)
-                                for game in self.engine.catalog() if "tui" in game.clients)
+                                for game in self.engine.catalog() if "tui" in game.clients and self.settings.can_offer_game(game.key))
         cq_select = self.query_one("#cq-game", Select)
         cq_select.set_options([("Any game", ""), *((game.name, game.key) for game in self.engine.catalog()
-                            if "tui" in game.clients and game.max_players >= 2)])
+                            if "tui" in game.clients and game.max_players >= 2 and self.settings.can_offer_game(game.key))])
         for selector in ("#cq-heading", "#cq-game", "#call-cq", "#cq-list", "#answer-cq"):
             self.query_one(selector).display = self.settings.transport == "broadcast" and not self.settings.observer_mode
         for selector in ("#cq-game", "#call-cq", "#answer-cq"):
@@ -938,6 +941,10 @@ class ArcadeTUI(App):
         if not game:
             self.notify("Choose a game above to answer an Any game CQ", severity="warning")
             return
+        game_key = self.engine.registry.by_id(game).key if isinstance(game, int) else str(game)
+        if not self.settings.can_offer_game(game_key):
+            self.notify("Enable Experimental games in settings to answer this CQ", severity="warning")
+            return
         self._run_action(partial(self.engine.answer_cq, row["callsign"], game), select_session=True)
 
     @on(Button.Pressed, "#tx-toggle")
@@ -1074,6 +1081,10 @@ class ArcadeTUI(App):
     @on(Button.Pressed, "#invite-player")
     def _invite(self):
         if not self.engine or not self.selected_id: return
+        game = self.engine.registry.by_id(self.engine.session(self.selected_id)["game_id"])
+        if not self.settings.can_offer_game(game.key):
+            self.notify(f"Enable Experimental games in settings to invite players to {game.name}", severity="warning")
+            return
         peer = self.query_one("#peer-input", Input).value.strip().upper()
         self._run_action(partial(self.engine.invite_player, self.selected_id, peer))
 

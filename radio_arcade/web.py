@@ -108,6 +108,7 @@ class WebController:
             "kiss_port": self.settings.kiss_port,
             "color_scheme": self.settings.color_scheme,
             "sound_enabled": self.settings.sound_enabled,
+            "experimental_games": self.settings.experimental_games,
             "dx_cluster_url": self.settings.dx_cluster_url,
             "observer_mode": self.settings.observer_mode,
             "tx_enabled": self.settings.tx_enabled,
@@ -153,6 +154,9 @@ class WebController:
         cw_wpm = data.get("cw_wpm", self.settings.cw_wpm)
         if type(cw_wpm) is not int or not 15 <= cw_wpm <= 40:
             raise ValueError("CWID speed must be 15–40 WPM")
+        experimental_games = data.get("experimental_games", self.settings.experimental_games)
+        if not isinstance(experimental_games, bool):
+            raise ValueError("experimental games must be true or false")
         candidate = Settings(
             callsign=station_name(str(data.get("callsign", self.settings.callsign))),
             host=str(data.get("host", self.settings.host)).strip() or "127.0.0.1",
@@ -163,6 +167,7 @@ class WebController:
             kiss_port=integer("kiss_port"),
             color_scheme=scheme,
             sound_enabled=bool(data.get("sound_enabled", self.settings.sound_enabled)),
+            experimental_games=experimental_games,
             dx_cluster_url=str(data.get("dx_cluster_url", self.settings.dx_cluster_url)).strip(),
             observer_mode=observer,
             tx_enabled=self.settings.tx_enabled,
@@ -186,6 +191,14 @@ class WebController:
         if name in transmit_commands and self.settings.transport != "practice" and not self.settings.tx_enabled:
             raise ValueError("TX is disabled. Enable TX to send radio traffic.")
         sid = data.get("session_id")
+        if name in ("create_game", "call_cq", "answer_cq") and data.get("game"):
+            game = engine.registry.by_key(str(data["game"]))
+            if not self.settings.can_offer_game(game.key):
+                raise ValueError(f"Enable Experimental games in settings to offer {game.name}.")
+        if name == "invite_player":
+            game = engine.registry.by_id(engine.session(sid)["game_id"])
+            if not self.settings.can_offer_game(game.key):
+                raise ValueError(f"Enable Experimental games in settings to invite players to {game.name}.")
         if name == "preview_shot":
             row = engine.session(sid)
             game = engine.registry.by_id(row["game_id"])
