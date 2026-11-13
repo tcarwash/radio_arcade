@@ -79,4 +79,6 @@ Best first prototype: **Signal Rescue campaign**. It builds on an existing radio
 - Start with fixed setups. If randomness is added, commit the resulting public setup/events once and replay them during recovery rather than rerolling locally.
 - Avoid reaction timers and mandatory clocks initially; link latency and reconnect time should not decide the winner.
 - Treat transmitted state as public. Addressing does not conceal hands, answers, or simultaneous choices.
-- Use puzzle text, artwork, and other distributed assets with suitable reuse permission.
+- For third-party puzzle text, artwork, and other distributed assets, confirm
+  that their separate terms allow the intended use. This concerns those assets
+  only; it does not limit copying, modifying, or reusing Radio Arcade code.

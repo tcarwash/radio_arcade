@@ -60,10 +60,10 @@ Game rules must be deterministic and independent of sockets, Data2G, Qt, Textual
 
 - Every game declares a stable one-byte game type ID, human-readable name, minimum/maximum player count, payload schema version, and whether it needs private or simultaneous information.
 - A game supplies initialization, legal-action validation, state transition, end condition, and a compact action/snapshot codec. It may also supply UI metadata but cannot depend on a specific UI toolkit.
-- Start with built-in games, then load installed games through the Python entry-point plugin mechanism. Validate plugin IDs and API versions before loading. A plugin must not be able to redefine an assigned wire ID.
+- Start with built-in games, then load installed games through the Python entry-point plugin mechanism. Validate plugin IDs and API versions before loading. A plugin must not redefine an assigned wire ID within the shared catalog; forks and private registries may define their own mappings.
 - Keep the common binary envelope small. It should identify game type, envelope version, game-instance ID, sender, recipient or broadcast scope, event sequence, and packet kind. Each game then defines its own payload bytes.
 - Use a 64-bit session identity for persistent, resumable sessions. The envelope carries an explicit protocol version; incompatible stations reject unsupported versions rather than reinterpreting fields.
-- Assign game IDs from a maintained registry. Never reuse a retired ID for different rules.
+- Assign game IDs from a maintained registry for interoperating clients. Retired IDs are reserved in that shared catalog; independent forks can reuse IDs when they control every participating client's mapping.
 
 ### Headless engine API
 

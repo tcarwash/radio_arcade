@@ -1,6 +1,6 @@
 # Radio Arcade game ID registry
 
-Game IDs identify rules and payload codecs. IDs are permanent and must never be reassigned to a different game. A plugin must choose an unused value from 1–255. The engine rejects duplicate IDs and duplicate game keys at startup.
+Game IDs identify rules and payload codecs for stations that want to interoperate. Within a shared Radio Arcade catalog, IDs must remain stable and unique so peers interpret packets consistently; independent forks may change the catalog, IDs, rules, or codecs freely. This is an interoperability constraint, not a restriction on modifying or reusing code. A plugin for the shared catalog should choose an unused value from 1–255. The engine rejects duplicate IDs and duplicate game keys at startup.
 
 | ID | Key | Display name | Players | Status |
 | ---: | --- | --- | ---: | --- |
@@ -15,10 +15,11 @@ Game IDs identify rules and payload codecs. IDs are permanent and must never be 
 | 9 | `pico8-cartridge` | PICO-8 Cartridge | 2–8 | Built in (web bridge; cartridge rules remain in Lua) |
 | 10 | `external-game` | External Engine Game | 2–8 | Built in (LÖVE2D / Godot; rules remain in game runtime) |
 | 11 | `signal-siege` | Signal Siege | 1–4 | Built in (co-op deck-builder prototype) |
+| 12 | `battleship` | Battleship | 2 | Built in (experimental hidden-fleet prototype) |
 
 Open Word Tiles is a Scrabble-style, open-rack variant using the bundled ENABLE1 lexicon. ENABLE1 is a public-domain alternative, not a current official tournament lexicon. Its racks and tile distribution are public; it is not the standard hidden-rack game. The tile seed and deterministic draw state travel in the ordinary game snapshot, not the opaque side channel.
 
-Game ID 4 is retired and intentionally reserved. Existing on-disk sessions are preserved but are hidden because the game rules have been removed; the engine never retries their pending transmissions. Do not assign ID 4 to a different game.
+Game ID 4 is retired in the shared catalog. Existing on-disk sessions are preserved but are hidden because the game rules have been removed; the engine never retries their pending transmissions. A fork can assign it different rules, but clients with conflicting catalogs cannot safely play together.
 
 Signal Siege is an open-state, presentation-masked cooperative prototype. The
 three visible hand slots are selected with one byte, along with a two-bit
@@ -26,6 +27,13 @@ support target. The fixed card catalog and deterministic card rotation are
 shared by all clients, with draft rewards added after the first two waves.
 This version does not negotiate future card-balance changes; all participants
 must run the same game implementation. See [rules and codec](docs/SIGNAL-SIEGE.md).
+
+Battleship is experimental and currently available in the web client. Fleets
+are placed locally and saved in each station's private game database. Shared
+snapshots contain only public shot results and a pending target coordinate.
+The shooter sends a coordinate; the defender's client replies with miss, hit,
+or sunk plus the sunk ship ID (0–4). A sync snapshot can resume a pending reply
+without exposing either fleet.
 
 Do not infer protocol compatibility from a display name alone. A game that changes incompatible rules or payload shapes needs a new registered ID or an explicit game-specific schema negotiation before deployment.
 

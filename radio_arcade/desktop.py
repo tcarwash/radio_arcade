@@ -387,6 +387,7 @@ class ArcadeWindow(QMainWindow):
         self._board_signature = None
         self._last_scorched_animation_key = None
         self._scorched_weapons = {}
+        self._battleship_drafts = {}
         self._event_bridge = EventBridge(self)
         self._event_bridge.received.connect(self._on_event, Qt.ConnectionType.QueuedConnection)
         self._pool = QThreadPool.globalInstance()
@@ -1235,6 +1236,43 @@ class ArcadeWindow(QMainWindow):
                     grid.addWidget(disc, row + 1, col)
             box.addWidget(board)
             box.addWidget(QLabel("Select a column to drop a disc. Four in a row wins."))
+            self.board_layout.addWidget(host)
+        elif view["kind"] == "battleship":
+            from .games.battleship import FLEET
+            host = QWidget(); box = QVBoxLayout(host)
+            active = not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"] and (self.settings.transport == "practice" or (self.settings.tx_enabled and session["current_player"] == self.settings.callsign))
+            box.addWidget(QLabel(f"{session['current_player']} · {view['phase']}"))
+            if view["phase"] == "setup" and not session.get("private_fleet"):
+                draft = self._battleship_drafts.setdefault(session["id"], [])
+                vertical = QCheckBox("Place vertically")
+                box.addWidget(QLabel(f"Place ship {len(draft)+1} of 5 · length {FLEET[len(draft)]}")); box.addWidget(vertical)
+                board = QWidget(); grid = QGridLayout(board); grid.setSpacing(2)
+                for i in range(100):
+                    button = QPushButton("■" if i in sum(draft, []) else "□"); button.setFixedSize(28, 28)
+                    def place(_checked=False, cell=i):
+                        size=FLEET[len(draft)]; row,col=divmod(cell,10); vert=vertical.isChecked()
+                        cells=[(row+j)*10+col if vert else row*10+col+j for j in range(size)]
+                        if (vert and row+size>10) or (not vert and col+size>10) or set(cells)&set(sum(draft, [])): return
+                        draft.append(cells)
+                        if len(draft)==5:
+                            self.engine.place_battleship_fleet(session["id"], draft); self._battleship_drafts.pop(session["id"], None)
+                        self._board_signature = None
+                        self._refresh_sessions()
+                    button.clicked.connect(place); grid.addWidget(button,i//10,i%10)
+                box.addWidget(board)
+            elif view["phase"] == "setup": box.addWidget(QLabel("Fleet saved privately · waiting for both stations"))
+            elif view["phase"] == "reply": box.addWidget(QLabel("Sending the result from your private fleet."))
+            else:
+                if session.get("private_fleet"):
+                    own=QWidget(); own_grid=QGridLayout(own); own_cells=set(sum(session["private_fleet"], []))
+                    for i in range(100): own_grid.addWidget(QLabel("■" if i in own_cells else "□"),i//10,i%10)
+                    box.addWidget(QLabel("Your fleet · private on this station")); box.addWidget(own)
+                board=QWidget(); grid=QGridLayout(board); grid.setSpacing(2)
+                for i,value in enumerate(view["shots"]):
+                    button=QPushButton("·" if value==1 else "✕" if value==2 else f"S{value-3}" if value>=3 else "□");button.setFixedSize(28,28)
+                    button.setEnabled(active and value==0);button.clicked.connect(lambda _=False,cell=i:self._submit_action(bytes((cell,))))
+                    grid.addWidget(button,i//10,i%10)
+                box.addWidget(QLabel("Enemy waters · called coordinates"));box.addWidget(board)
             self.board_layout.addWidget(host)
         elif view["kind"] == "signal-siege":
             from .games.signal_siege import pack_play, pack_draft

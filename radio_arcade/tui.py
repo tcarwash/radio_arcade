@@ -297,6 +297,7 @@ class ArcadeTUI(App):
     .hex-button:focus { background:#263c50; }
     .cell { width:13; height:5; margin:0 1; border:round #395066; background:#172536; color:#77dfc9; text-style:bold; }
     .connect-column { width:7; height:3; margin:0; background:#153e50; color:#80efd5; border:round #3b8290; }
+    .bship-cell,.bship-target { width:4; min-width:4; height:3; min-height:3; margin:0; padding:0; border:round #39566b; background:#15293a; color:#b9dcea; }
     .connect-row { width:auto; height:1; text-align:center; }
     #turn-line { color:#76dfc9; text-style:bold; margin:1 0; }
     #players { color:#adbdce; height:auto; margin-bottom:1; }
@@ -424,6 +425,8 @@ class ArcadeTUI(App):
         self._word_score_hint_key = None
         self._word_score_hint = ""
         self._forfeit_confirm_id = None
+        self._battleship_drafts = {}
+        self._battleship_vertical = False
         self._delete_confirm_id: str | None = None
         self._action_lock = threading.Lock()
         # Textual list mutations yield; never interleave two rebuilds.
@@ -803,6 +806,26 @@ class ArcadeTUI(App):
                             "bold #71e5d3" if mark == "X" else "bold #f4bd76" if mark == "O" else "#4b6579"))
                     await board.mount(Static(line, classes="connect-row"))
                 await board.mount(Static("Click a column above to drop a disc. Four in a row wins.", classes="muted"))
+            elif state["kind"] == "battleship":
+                from .games.battleship import FLEET
+                active = not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"] and (self.settings.transport == "practice" or (self.settings.tx_enabled and turn == self.settings.callsign))
+                await board.mount(Static(f"{turn} · {state['phase']}", classes="word-meta"))
+                if state["phase"] == "setup" and not session.get("private_fleet"):
+                    draft=self._battleship_drafts.setdefault(session["id"],[])
+                    await board.mount(Static(f"Place ship {len(draft)+1} of 5 · length {FLEET[len(draft)]}",classes="muted"))
+                    await board.mount(Button("Rotate ship",id="bship-rotate"))
+                    for r in range(10):
+                        await board.mount(Horizontal(*(Button("■" if r*10+c in sum(draft,[]) else "□",id=f"bship-cell-{r*10+c}",classes="bship-cell") for c in range(10))))
+                elif state["phase"] == "setup":
+                    await board.mount(Static("Fleet saved privately · waiting for both stations",classes="muted"))
+                elif state["phase"] == "reply":
+                    await board.mount(Static("Sending the result from your private fleet.",classes="muted"))
+                else:
+                    if session.get("private_fleet"):
+                        await board.mount(Static("Your fleet is stored privately on this station.",classes="muted"))
+                    await board.mount(Static("Enemy waters · called coordinates",classes="muted"))
+                    for r in range(10):
+                        await board.mount(Horizontal(*(Button("·" if state["shots"][r*10+c]==1 else "✕" if state["shots"][r*10+c]==2 else f"S{state['shots'][r*10+c]-3}" if state["shots"][r*10+c]>=3 else "□",id=f"bship-target-{r*10+c}",classes="bship-target",disabled=not active or state["shots"][r*10+c]!=0) for c in range(10))))
             elif state["kind"] == "signal-siege":
                 active = (not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"]
                           and (self.settings.transport == "practice" or (self.settings.tx_enabled and turn == self.settings.callsign)))
@@ -1164,6 +1187,33 @@ class ArcadeTUI(App):
         if self.engine and self.selected_id:
             col = int(event.button.id.rsplit("-", 1)[1])
             self._run_action(partial(self.engine.legal_action, self.selected_id, bytes((col,))))
+
+    @on(Button.Pressed, "#bship-rotate")
+    def _battleship_rotate(self):
+        self._battleship_vertical = not self._battleship_vertical
+        self.call_later(self._refresh_sessions)
+
+    @on(Button.Pressed, ".bship-cell")
+    def _battleship_place(self, event: Button.Pressed):
+        if not self.engine or not self.selected_id: return
+        from .games.battleship import FLEET
+        sid=self.selected_id; session=self.engine.session(sid); view=session["view"]
+        draft=self._battleship_drafts.setdefault(sid,[]); cell=int(event.button.id.rsplit("-",1)[1])
+        size=FLEET[len(draft)]; row,col=divmod(cell,10); vert=self._battleship_vertical
+        cells=[(row+j)*10+col if vert else row*10+col+j for j in range(size)]
+        if (vert and row+size>10) or (not vert and col+size>10) or set(cells)&set(sum(draft,[])):
+            self.notify("That ship does not fit there.",severity="warning");return
+        draft.append(cells)
+        if len(draft)==5:
+            self._battleship_drafts.pop(sid,None)
+            self._run_action(partial(self.engine.place_battleship_fleet,sid,draft))
+        self._board_signature=None;self.call_later(self._refresh_sessions)
+
+    @on(Button.Pressed, ".bship-target")
+    def _battleship_target(self,event:Button.Pressed):
+        if self.engine and self.selected_id:
+            cell=int(event.button.id.rsplit("-",1)[1])
+            self._run_action(partial(self.engine.legal_action,self.selected_id,bytes((cell,))))
 
     @on(Button.Pressed, ".siege-play")
     def _siege_play(self, event: Button.Pressed):

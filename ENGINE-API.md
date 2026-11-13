@@ -146,7 +146,7 @@ Games whose state depends on the roster can optionally implement `validate_roste
 my-game = "my_radio_game:MyGame"
 ```
 
-IDs 1–3 are assigned to tic-tac-toe, Nim, and Open Word Tiles. ID 4 is retired and cannot be reassigned. IDs are permanent; a plugin using a duplicate or retired ID or the wrong API version is rejected. Plugin payloads must keep a full packet within the 240-byte on-air limit. All game messages are public radio traffic, including addressed messages.
+IDs 1–3 are assigned to tic-tac-toe, Nim, and Open Word Tiles. ID 4 is retired in the shared Radio Arcade catalog. These are interoperability rules for stations using the same catalog: IDs must be unique and stable among participants so each station decodes the same rules. Forks and independently distributed games may change IDs, rules, or codecs freely; they simply may not interoperate with stations using conflicting assignments. This technical registry does not restrict copying, modifying, removing, or reusing any source code. Plugin payloads must keep a full packet within the 240-byte on-air limit. All game messages are public radio traffic, including addressed messages.
 
 Open Word Tiles (ID 3) uses a fixed, bundled ENABLE1 lexicon and open racks so every station can validate words and deterministically reproduce tile draws.
 

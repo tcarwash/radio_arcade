@@ -70,6 +70,9 @@ class SessionStore:
                     actor TEXT NOT NULL, body BLOB NOT NULL,
                     PRIMARY KEY(session, revision)
                 );
+                CREATE TABLE IF NOT EXISTS private_game_data(
+                    session TEXT PRIMARY KEY, data TEXT NOT NULL
+                );
             """)
             columns = {row["name"] for row in self.db.execute("PRAGMA table_info(sessions)")}
             if "opaque_sequence" not in columns:
@@ -115,6 +118,16 @@ class SessionStore:
         with self._lock:
             rows = self.db.execute("SELECT * FROM sessions ORDER BY updated DESC").fetchall()
         return [self._session(row) for row in rows]
+
+    def save_private_game_data(self, session: str, data: dict[str, Any]) -> None:
+        with self._lock, self.db:
+            self.db.execute("INSERT OR REPLACE INTO private_game_data VALUES(?,?)",
+                            (session, json.dumps(data, separators=(",", ":"))))
+
+    def load_private_game_data(self, session: str) -> dict[str, Any]:
+        with self._lock:
+            row = self.db.execute("SELECT data FROM private_game_data WHERE session=?", (session,)).fetchone()
+        return json.loads(row["data"]) if row else {}
 
     def save_outgoing(self, session: str, target: str, kind: int, sequence: int, frame: bytes) -> None:
         with self._lock, self.db:
@@ -191,7 +204,7 @@ class SessionStore:
         """Remove one local game's saved state and related queued data."""
         with self._lock, self.db:
             self.db.execute("DELETE FROM sessions WHERE id=?", (session,))
-            for table in ("outbox", "chat", "opaque_states", "cancelled_invites", "pico8_actions"):
+            for table in ("outbox", "chat", "opaque_states", "cancelled_invites", "pico8_actions", "private_game_data"):
                 self.db.execute(f"DELETE FROM {table} WHERE session=?", (session,))
 
     def record_pico8_action(self, session: str, revision: int, actor: str, body: bytes) -> None:

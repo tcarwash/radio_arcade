@@ -63,7 +63,7 @@ class GameRegistry:
             raise ValueError("game IDs must fit in one byte; zero is reserved")
         if game.game_id == 4:
             raise ValueError("game ID 4 is retired and must not be reused")
-        if game.game_id in (1, 2, 3, 6, 7, 8, 9, 10, 11):
+        if game.game_id in (1, 2, 3, 6, 7, 8, 9, 10, 11, 12):
             from .tictactoe import TicTacToeGame
             from .nim import NimGame
             from .scrabble import OpenWordTilesGame
@@ -73,9 +73,11 @@ class GameRegistry:
             from .pico8 import Pico8CartridgeGame
             from .external import ExternalGame
             from .signal_siege import SignalSiegeGame
+            from .battleship import BattleshipGame
             assigned = {1: TicTacToeGame, 2: NimGame, 3: OpenWordTilesGame,
                         6: ConnectFourGame, 7: ScorchedEarthGame, 8: HexxagonGame,
-                        9: Pico8CartridgeGame, 10: ExternalGame, 11: SignalSiegeGame}
+                        9: Pico8CartridgeGame, 10: ExternalGame, 11: SignalSiegeGame,
+                        12: BattleshipGame}
             if type(game) is not assigned[game.game_id]:
                 raise ValueError(f"game ID {game.game_id} is permanently assigned to a built-in game")
         if not 1 <= game.min_players <= game.max_players <= 255:
@@ -141,6 +143,8 @@ def builtin_registry(load_plugins: bool = True) -> GameRegistry:
     registry.register(ExternalGame())
     from .signal_siege import SignalSiegeGame
     registry.register(SignalSiegeGame())
+    from .battleship import BattleshipGame
+    registry.register(BattleshipGame())
     if load_plugins:
         registry.load_plugins()
     return registry

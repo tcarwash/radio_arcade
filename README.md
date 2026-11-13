@@ -1,5 +1,17 @@
 # Radio Arcade
 
+## License
+
+Radio Arcade's original source code, documentation, and assets are available
+under the permissive [MIT License](LICENSE). You may use, copy, modify,
+redistribute, sublicense, and sell copies, subject to the license notice.
+Adding, removing, modifying, or reusing games and plugins is allowed; no
+contribution agreement or permission request is required. Game ID and protocol
+rules in the developer documentation are technical compatibility guidance for
+stations that want to interoperate, not restrictions on private forks or code
+reuse. Some bundled third-party materials have separate terms listed in
+[Third-party notices](THIRD-PARTY-NOTICES.md).
+
 Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games: tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, and Signal Siege.
 
 **Signal Siege (prototype):** A 1–4-player cooperative deck-building game. In

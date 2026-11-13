@@ -147,7 +147,7 @@ class WebControllerScenarios(unittest.TestCase):
         self.assertEqual(value["callsign"], "N0CALL")
         self.assertEqual(value["transport"], "practice")
         self.assertEqual({game["key"] for game in value["catalog"]},
-                         {"tic-tac-toe", "nim", "open-word-tiles", "connect-four", "scorched-earth", "hexxagon", "pico8-cartridge", "external-game", "signal-siege"})
+                         {"tic-tac-toe", "nim", "open-word-tiles", "connect-four", "scorched-earth", "hexxagon", "pico8-cartridge", "external-game", "signal-siege", "battleship"})
 
     def test_web_settings_preserve_shared_client_preferences(self):
         self.controller.settings.sound_enabled = True

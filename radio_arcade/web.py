@@ -187,7 +187,7 @@ class WebController:
             raise ValueError(self.last_error or "save station settings before using the game room")
         engine = self.engine
         name = data.get("command")
-        transmit_commands = {"forfeit_game", "create_game", "call_cq", "answer_cq", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer"}
+        transmit_commands = {"forfeit_game", "create_game", "call_cq", "answer_cq", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer", "place_battleship_fleet"}
         if name in transmit_commands and self.settings.transport != "practice" and not self.settings.tx_enabled:
             raise ValueError("TX is disabled. Enable TX to send radio traffic.")
         sid = data.get("session_id")
@@ -251,6 +251,8 @@ class WebController:
             "request_sync": lambda: engine.request_sync(sid),
             "resend_pending_action": lambda: engine.resend_pending_action(sid),
             "connect_peer": lambda: engine.connect_peer(str(data.get("peer", ""))),
+            "place_battleship_fleet": lambda: engine.place_battleship_fleet(
+                sid, data.get("ships", [])),
             "disconnect_peer": engine.disconnect,
             "forfeit_game": lambda: engine.forfeit_game(sid),
             "delete_game": lambda: engine.delete_game(sid),

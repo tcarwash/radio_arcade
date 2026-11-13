@@ -164,6 +164,9 @@ class ArcadeService:
             state = game.decode_state(row["state"]) if row["state"] is not None else None
             result["view"] = game.view_model(state, tuple(row["players"])) if state is not None else None
             result["current_player"] = game.current_player(state, tuple(row["players"])) if state is not None else None
+            if row["game_id"] == 12:
+                private = self.store.load_private_game_data(sid)
+                result["private_fleet"] = private.get("ships")
             result["last_move"] = ({"actor": row["last_actor"],
                                     "description": "forfeits the game" if row["last_action"] == FORFEIT_ACTION else game.describe_action(row["last_action"])}
                                    if row.get("last_actor") and row.get("last_action") is not None else None)
@@ -612,6 +615,54 @@ class ArcadeService:
                         self._reliable(row, player, Kind.START, payload=snapshot)
             self._emit("session_updated", sid, session=self.session(sid))
 
+    def place_battleship_fleet(self, session_id: str | int, ships: list[list[int]]) -> None:
+        """Save this station's fleet locally; the fleet never enters shared state."""
+        sid = self._sid(session_id)
+        self._require_player()
+        with self._lock:
+            row = self._sessions[sid]
+            if row["game_id"] != 12 or row["status"] != "active" or self.callsign not in row["players"]:
+                raise ValueError("select an active Battleship table")
+            from .games.battleship import FLEET
+            if len(ships) != len(FLEET) or any(len(ship) != length for ship, length in zip(ships, FLEET)):
+                raise ValueError("place all five ships with lengths 5, 4, 3, 3, and 2")
+            cells = [cell for ship in ships for cell in ship]
+            if any(type(cell) is not int or not 0 <= cell < 100 for cell in cells) or len(set(cells)) != len(cells):
+                raise ValueError("fleet cells must be unique board coordinates")
+            for ship, length in zip(ships, FLEET):
+                rows, cols = [x//10 for x in ship], [x%10 for x in ship]
+                if len(set(rows)) == 1:
+                    values = cols
+                elif len(set(cols)) == 1:
+                    values = rows
+                else:
+                    raise ValueError("each ship must be straight")
+                if sorted(values) != list(range(min(values), min(values)+length)):
+                    raise ValueError("ship cells must be consecutive")
+            state = self.registry.by_id(12).decode_state(row["state"])
+            seat = row["players"].index(self.callsign)
+            if state["phase"] != "setup" or state["ready"][seat]:
+                raise ValueError("your fleet is already deployed for this game")
+            self.store.save_private_game_data(sid, {"ships": ships, "hits": []})
+            if row["players"][state["turn"]] == self.callsign:
+                self.legal_action(sid, b"\x7f")
+
+    def _resolve_battleship_pending(self, row: dict[str, Any]) -> None:
+        if row["game_id"] != 12 or row["status"] != "active": return
+        game = self.registry.by_id(12); state = game.decode_state(row["state"])
+        if state["phase"] != "reply" or row["players"][state["turn"]] != self.callsign: return
+        data = self.store.load_private_game_data(row["id"])
+        ships, hits = data.get("ships"), set(data.get("hits", []))
+        if not ships: return
+        target = state["pending"]
+        ship_id = next((i for i, ship in enumerate(ships) if target in ship), None)
+        if ship_id is None: result = 0
+        else:
+            hits.add(target)
+            result = 2 + ship_id if all(cell in hits for cell in ships[ship_id]) else 1
+        data["hits"] = sorted(hits); self.store.save_private_game_data(row["id"], data)
+        self.legal_action(row["id"], bytes((0x80 | result,)))
+
     def legal_action(self, session_id: str | int, action: bytes) -> None:
         if action == FORFEIT_ACTION:
             raise ValueError("use forfeit_game for a forfeit")
@@ -619,6 +670,9 @@ class ArcadeService:
         sid = self._sid(session_id)
         with self._lock:
             row = self._sessions[sid]
+            if row["game_id"] == 12 and action == b"\x7f":
+                if not self.store.load_private_game_data(sid).get("ships"):
+                    raise ValueError("place your fleet on this station before readying")
             game = self.registry.by_id(row["game_id"])
             if row["status"] != "active" or row["state"] is None:
                 raise ValueError("game is not active")
@@ -706,6 +760,7 @@ class ArcadeService:
                     self._reliable(row, player, Kind.COMMIT, row["sequence"], row["revision"], payload)
         self._emit("session_updated", row["id"], session=self.session(row["id"]),
                    action=payload, committed=True)
+        self._resolve_battleship_pending(row)
 
     @staticmethod
     def _can_act(game, state, players, actor):
@@ -1287,6 +1342,7 @@ class ArcadeService:
             self.store.record_engine_action(row["id"], row["revision"], actor, action)
         self._emit("session_updated", row["id"], session=self.session(row["id"]),
                    action=packet.payload, committed=True)
+        self._resolve_battleship_pending(row)
 
     def _send_reject(self, row: dict[str, Any], peer: str, packet: Packet, reason: str) -> None:
         payload = reason.encode("utf-8")[:120]
@@ -1358,6 +1414,7 @@ class ArcadeService:
         row["pending_action"], row["error"] = pending, ""
         self._save(row)
         self._emit("session_updated", row["id"], session=self.session(row["id"]), synchronized=True)
+        self._resolve_battleship_pending(row)
         return True
 
     def _receive_chat(self, row: dict[str, Any], packet: Packet) -> bool:

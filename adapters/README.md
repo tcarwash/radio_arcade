@@ -27,8 +27,10 @@ All actions have the same on-air representation, regardless of game engine:
 
 The backend stores up to 65,535 committed actions per session. The API streams
 up to 256 at a time and adapters request subsequent pages in revision order.
-Actions are plaintext RF traffic; don't transmit secrets or copyrighted game
-assets. Models/graphics are installed locally and never sent over RF.
+Actions are plaintext RF traffic. Do not transmit secrets or assets unless you
+have the rights to distribute them that way. Models/graphics are installed
+locally and never sent over RF. Radio Arcade's MIT code license does not alter
+the separate terms of third-party assets.
 
 ### Session setup
 

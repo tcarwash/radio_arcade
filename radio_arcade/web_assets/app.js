@@ -9,6 +9,7 @@ const PLAYER_COLORS = ["#8edbfa", "#ffb777", "#d6a8ff", "#a2e4a5"];
 const RESOURCE_COLORS = ["#365f4e", "#77503e", "#5b4b76", "#78633e", "#415e73", "#365f4e"];
 const GAME_PREVIEWS = {
   "signal-siege": ["✦", "A 1–4 station co-op deck-builder. Earn a card after each wave."],
+  "battleship": ["▦", "Hide a fleet of five ships, then hunt your opponent's fleet."],
   "scorched-earth": ["◈", "Artillery duels · Aim, fire, and reshape the terrain."],
   "open-word-tiles": ["▦", "Build words on a shared board and chase the high score."],
   "hexxagon": ["⬢", "Clone, jump, and capture your opponent’s stones."],
@@ -522,6 +523,53 @@ function renderGrid(session, view, host) {
     board.append(cell);
   }
   host.append(board, node("p", "turn-meta", active ? "Choose a square to play. Your move is committed only when selected." : "Follow the active station's turn. The board updates as commits arrive."));
+}
+
+function renderBattleship(session, view, host) {
+  const wrapper = node("div", "battleship-view"), draftKey = `ra-bs-draft-${session.id}`;
+  const ownCells = new Set((session.private_fleet || []).flat());
+  const ownGrid = () => {
+    wrapper.append(node("h3", "", "Your fleet · stored on this station"));
+    const grid=node("div","battleship-grid");
+    for(let i=0;i<100;i++){const b=node("span",`battleship-cell ${ownCells.has(i)?"bs-ship":""}`,ownCells.has(i)?"■":"");grid.append(b);}
+    wrapper.append(grid);
+  };
+  wrapper.append(node("p", "turn-meta", view.phase === "setup" ? "Place your full fleet locally. Ship positions never go over the air." : view.phase === "reply" ? `Called row ${Math.floor(view.pending/10)+1}, column ${view.pending%10+1}. Your station is preparing its private result.` : `${session.current_player}: call a coordinate on the enemy grid.`));
+  if (view.phase === "setup" && !session.private_fleet) {
+    let ships; try { ships = JSON.parse(localStorage.getItem(draftKey) || "[]"); } catch { ships = []; }
+    let vertical = false;
+    const size = [5,4,3,3,2][ships.length];
+    const rotate = node("button", "button secondary", "Orientation: horizontal · rotate"); rotate.type = "button";
+    rotate.addEventListener("click", () => { vertical = !vertical; rotate.textContent = `Orientation: ${vertical ? "vertical" : "horizontal"} · rotate`; });
+    wrapper.append(node("p", "", `Place ship ${ships.length+1} of 5 · length ${size}`), rotate);
+    const grid = node("div", "battleship-grid");
+    for (let i=0;i<100;i++) {
+      const button = node("button", "battleship-cell", ships.flat().includes(i) ? "■" : ""); button.type="button";
+      button.addEventListener("click", async () => {
+        const row=Math.floor(i/10), col=i%10;
+        const cells=Array.from({length:size},(_,j)=>vertical?(row+j)*10+col:row*10+col+j);
+        if ((vertical&&row+size>10)||(!vertical&&col+size>10)||cells.some(x=>ships.flat().includes(x))) { notify("That ship does not fit there."); return; }
+        ships.push(cells); localStorage.setItem(draftKey,JSON.stringify(ships));
+        if(ships.length===5) {
+          try { await request("/api/command",{method:"POST",body:JSON.stringify({command:"place_battleship_fleet",session_id:session.id,ships})}); localStorage.removeItem(draftKey); await refresh(); }
+          catch(error){notify(error.message);}
+        } else renderGame(session);
+      }); grid.append(button);
+    }
+    wrapper.append(grid);
+  } else if (view.phase === "setup") {
+    wrapper.append(node("p", "", "Fleet saved privately. Waiting for both stations to finish placement."));
+    ownGrid();
+  } else if (view.phase === "reply") {
+    wrapper.append(node("p", "", "Your fleet is saved on this station. The result will be sent automatically."));
+  } else {
+    ownGrid();
+    wrapper.append(node("h3", "", "Enemy waters · called coordinates"));
+    const grid=node("div","battleship-grid");
+    view.shots.forEach((value,index)=>{const b=node("button",`battleship-cell bs-${value}`,value===1?"·":value===2?"✕":value>=3?`S${value-3}`:"");b.type="button";b.disabled=!canAct(session)||value!==0;b.addEventListener("click",()=>submitAction([index]));grid.append(b);});
+    wrapper.append(grid);
+  }
+  host.append(wrapper);
 }
 
 function renderNim(session, view, host) {
@@ -1335,6 +1383,7 @@ function renderGame(session) {
     case "signal-siege": renderSignalSiege(session, view, block); break;
     case "hexxagon": renderHexxagon(session, view, block); break;
     case "grid": renderGrid(session, view, block); break;
+    case "battleship": renderBattleship(session, view, block); break;
     case "scorched-earth": renderScorchedEarth(session, view, block); break;
     case "piles": renderNim(session, view, block); break;
     case "word-tiles": renderWordTiles(session, view, block); break;
