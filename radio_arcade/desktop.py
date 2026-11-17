@@ -252,7 +252,7 @@ class HeroWelcomeWidget(QWidget):
         title.setStyleSheet("font-size: 26px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;")
         layout.addWidget(title)
 
-        sub = QLabel("Select an active table from dispatch, launch a hot-seat practice duel,\nor broadcast an open invitation across the spectrum.")
+        sub = QLabel("Select an active table from dispatch, play a local match against the computer,\nor broadcast an open invitation across the spectrum.")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setWordWrap(True)
         sub.setStyleSheet("font-size: 13px; color: #94a3b8; max-width: 480px; line-height: 1.5;")
@@ -524,7 +524,7 @@ class SettingsDialog(QDialog):
         self.transport = QComboBox()
         self.transport.addItem("Broadcast · KISS", "broadcast")
         self.transport.addItem("Connected · VARA-like", "connected")
-        self.transport.addItem("Local practice · play both sides", "practice")
+        self.transport.addItem("Local practice · vs computer", "practice")
         self.transport.setCurrentIndex(max(0, self.transport.findData(settings.transport)))
         self.group = QLineEdit(settings.group)
         self.broadcast_mode = QLineEdit(settings.broadcast_mode)

@@ -187,7 +187,7 @@ function updateTableSetup() {
   $("#lobby-note").textContent = !state.snapshot?.ready
     ? "Connect your station in settings to start playing."
     : isObserver() ? "Receive-only station: observe existing tables or disable observer mode in settings."
-    : practice ? "Practice mode · Two or more players share this device. No radio transmission needed."
+    : practice ? "Practice mode · Play against the computer. No radio transmission needed."
     : hosted ? "Host as dealer · Stations can discover and request to join your open table."
     : "Direct table · Enter a callsign for an invitation, or invite a station after creating the table.";
 }

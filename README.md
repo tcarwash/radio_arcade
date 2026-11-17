@@ -12,7 +12,7 @@ stations that want to interoperate, not restrictions on private forks or code
 reuse. Some bundled third-party materials have separate terms listed in
 [Third-party notices](THIRD-PARTY-NOTICES.md).
 
-Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games include tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, Signal Siege, Battleship Classic, and Battleship: Sea Warfare.
+Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local practice against a simple computer opponent works without Data2G. Built-in games include tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, Signal Siege, Battleship Classic, and Battleship: Sea Warfare.
 
 **Battleship Classic** is available in the desktop and web clients; it keeps private fleets and reports the classic miss, hit,
 and sunk results. **Battleship: Sea Warfare** adds a carrier fighter roll, a
@@ -53,7 +53,7 @@ radio-arcade-tui
 radio-arcade-web
 ```
 
-Set your callsign and Data2G connection in station settings. The browser client opens at `http://127.0.0.1:8765`. Its API has no authentication; keep it on localhost or a trusted network. Use `--callsign N0CALL --transport practice` with desktop or TUI for local play.
+Set your callsign and Data2G connection in station settings. The browser client opens at `http://127.0.0.1:8765`. Its API has no authentication; keep it on localhost or a trusted network. Choose **Local practice · vs computer** in settings, or use `--callsign N0CALL --transport practice` with desktop or TUI.
 
 At narrow desktop window sizes, the Games, Table, and Chat tabs replace the
 three-column layout; Station Settings scrolls inside its dialog. In broadcast
