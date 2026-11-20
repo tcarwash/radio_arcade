@@ -96,7 +96,7 @@ class BattleshipRadio(unittest.TestCase):
 
 class BattleshipDesktop(unittest.TestCase):
     @unittest.skipUnless(__import__("importlib").util.find_spec("PySide6"), "desktop extra")
-    def test_two_boards_and_hit_markers(self):
+    def test_two_boards_miss_hit_markers_and_ship_sprites(self):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication, QLabel, QPushButton
         from radio_arcade.desktop import ArcadeWindow
@@ -110,7 +110,11 @@ class BattleshipDesktop(unittest.TestCase):
                 window._service_ready(engine)
                 sid = engine.create_game("battleship-classic")
                 engine.place_battleship_fleet(sid, FLEET_A)
-                engine.legal_action(sid, bytes([50]))
+                with patch("radio_arcade.practice.choose_ai", side_effect=[bytes([99]), bytes([0])]):
+                    engine.legal_action(sid, bytes([50]))
+                    engine.legal_action(sid, bytes([55]))
+                self.assertEqual(engine.session(sid)["view"]["incoming_shots"][99], 1)
+                self.assertEqual(engine.session(sid)["view"]["incoming_shots"][0], 2)
                 window.selected_id = sid
                 window._show_session(sid)
                 window.show()
@@ -122,6 +126,20 @@ class BattleshipDesktop(unittest.TestCase):
                 buttons = [button for button in window.board_scroll.findChildren(QPushButton) if button.toolTip().startswith("A6:")]
                 self.assertEqual(len(buttons), 2)
                 self.assertTrue(any(b.text() == "✕" and not b.isEnabled() for b in buttons))
+                sprites = window.board_scroll.findChildren(QLabel, "navalShipSprite")
+                self.assertEqual(len(sprites), 5)
+                self.assertEqual({label.property("spriteName") for label in sprites}, {
+                    "battleship-carrier-horizontal.png", "battleship-hull-horizontal.png",
+                    "battleship-cruiser-horizontal.png", "battleship-destroyer-horizontal.png",
+                    "battleship-patrol-horizontal.png"})
+                self.assertTrue(all(not label.pixmap().isNull() for label in sprites))
+                incoming_board = sprites[0].parentWidget()
+                miss = next(b for b in incoming_board.findChildren(QPushButton) if b.toolTip() == "J10: miss")
+                self.assertEqual(miss.text(), "○")
+                self.assertFalse(miss.isEnabled())
+                hit = next(label for label in incoming_board.findChildren(QLabel, "navalShotMarker")
+                           if label.property("shotCell") == 0)
+                self.assertEqual(hit.text(), "✕")
             finally:
                 window.close()
                 engine.close()

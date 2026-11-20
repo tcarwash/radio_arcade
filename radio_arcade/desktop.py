@@ -89,12 +89,12 @@ def _style_naval_button(button: QPushButton, value: int | str, enabled: bool = T
                 font-weight: 900;
             }
         """)
-    elif val in ("·", "1"):
+    elif val in ("·", "○", "1"):
         button.setStyleSheet("""
             QPushButton {
                 background: #07121d;
-                color: #5a7495;
-                border: 1px solid rgba(100, 160, 240, 0.14);
+                color: #a5e8ff;
+                border: 1px solid #39758b;
                 border-radius: 4px;
                 font-size: 18px;
                 font-weight: 900;
@@ -141,6 +141,52 @@ def _style_naval_button(button: QPushButton, value: int | str, enabled: bool = T
                 font-size: 11px;
             }
         """)
+
+
+_NAVAL_SPRITES = ("carrier", "hull", "cruiser", "destroyer", "submarine", "patrol")
+
+
+def _draw_naval_fleet(grid, fleet, cell_size, spacing, *, classic=False):
+    """Layer the existing naval artwork above cells, below shot markers."""
+    assets = Path(__file__).with_name("web_assets")
+    for index, ship in enumerate(fleet or []):
+        if not ship:
+            continue
+        ship = sorted(ship)
+        row, col = divmod(ship[0], 10)
+        vertical = len(ship) > 1 and ship[1] - ship[0] == 10
+        sprite_id = 5 if classic and index == 4 else index
+        name = f"battleship-{_NAVAL_SPRITES[sprite_id]}" + ("" if vertical else "-horizontal") + ".png"
+        sprite = QPixmap(str(assets / name))
+        if sprite.isNull():
+            continue
+        length = len(ship)
+        span = length * cell_size + (length - 1) * spacing
+        width, height = (cell_size, span) if vertical else (span, cell_size)
+        image = QLabel()
+        image.setObjectName("navalShipSprite")
+        image.setProperty("spriteName", name)
+        image.setFixedSize(width, height)
+        image.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        image.setStyleSheet("background:transparent;border:none")
+        image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image.setPixmap(sprite.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation))
+        grid.addWidget(image, row + 1, col + 1, length if vertical else 1,
+                       1 if vertical else length)
+        image.raise_()
+
+
+def _naval_shot_overlay(grid, cell, mark, *, color):
+    label = QLabel(mark)
+    label.setObjectName("navalShotMarker")
+    label.setProperty("shotCell", cell)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    label.setStyleSheet(f"color:{color};font-size:17px;font-weight:900;"
+                        "background:rgba(5,15,25,150);border:none;border-radius:4px")
+    grid.addWidget(label, cell // 10 + 1, cell % 10 + 1)
+    label.raise_()
 
 
 def _add_radar_coordinates(grid: QGridLayout, cell_size: int = 28, responsive: bool = False):
@@ -2194,6 +2240,7 @@ class ArcadeWindow(QMainWindow):
                         self._board_signature = None
                         self._refresh_sessions()
                     button.clicked.connect(place); grid.addWidget(button, (i//10) + 1, (i%10) + 1)
+                _draw_naval_fleet(grid, draft, 28, 2, classic=True)
                 box.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
             elif view["phase"] == "setup":
                 msg = QLabel("Fleet saved privately · waiting for both stations")
@@ -2228,7 +2275,7 @@ class ArcadeWindow(QMainWindow):
                     for i, value in enumerate(cells):
                         if i in sunk_cells:
                             value = 3
-                        text = "·" if value == 1 else "✕" if value == 2 else ("S" if fleet else f"S{value-2}") if value >= 3 else "■" if i in occupied else "□"
+                        text = "○" if value == 1 else "✕" if value == 2 else ("S" if fleet else f"S{value-2}") if value >= 3 else "■" if i in occupied else "□"
                         enabled = firing and active and view["phase"] == "call" and value == 0
                         button = QPushButton(text)
                         _style_naval_button(button, value if value else text, enabled=enabled, cell_size=cell_size)
@@ -2238,12 +2285,19 @@ class ArcadeWindow(QMainWindow):
                         if firing:
                             button.clicked.connect(lambda _=False, cell=i: self._submit_action(bytes((cell,))))
                         grid.addWidget(button, i//10 + 1, i%10 + 1)
+                    _draw_naval_fleet(grid, fleet, cell_size, 2, classic=True)
+                    # Marks above the ship artwork must remain visible, too.
+                    for i in occupied:
+                        value = 3 if i in sunk_cells else cells[i]
+                        if value:
+                            _naval_shot_overlay(grid, i, "S" if value >= 3 else "✕" if value == 2 else "○",
+                                                color="#fbbf24" if value >= 3 else "#ff6475" if value == 2 else "#a5e8ff")
                     panel_layout.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
                     boards.addWidget(panel)
                 if session.get("private_fleet"):
                     make_board("YOUR FLEET · INCOMING FIRE", view["incoming_shots"], session["private_fleet"])
                 make_board("ENEMY WATERS · YOUR SHOTS" if view.get("shot_owner") == self.settings.callsign else f"{view.get('shot_owner', '')} · CALLED COORDINATES", view["shots"], firing=True)
-                legend = QLabel("■ Ship    · Miss    ✕ Hit    S Sunk")
+                legend = QLabel("Ship artwork    ○ Miss    ✕ Hit    S Sunk")
                 legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 box.addWidget(legend)
             self.board_layout.addWidget(host)
@@ -2491,7 +2545,7 @@ class ArcadeWindow(QMainWindow):
                                1 if vertical_ship else length)
             for index, mark in (marks or {}).items():
                 token = QLabel(mark); token.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                token.setStyleSheet("color:#ffd080;font-size:17px;font-weight:800;background:transparent")
+                token.setStyleSheet(f"color:{'#a5e8ff' if mark == '○' else '#ff6475' if mark == '×' else '#ffd080'};font-size:17px;font-weight:800;background:transparent")
                 token.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 grid.addWidget(token, (index // 10) + 1, (index % 10) + 1)
             return board
@@ -2570,7 +2624,8 @@ class ArcadeWindow(QMainWindow):
             box.addWidget(QLabel("Resolving the call against your private fleet."))
         else:
             own = set(sum(session.get("private_fleet") or [], []))
-            own_marks = {cell: "×" for cell in session.get("private_hits", [])}
+            own_marks = {cell: "○" for cell, value in enumerate(view.get("incoming_shots", [])) if value == 1}
+            own_marks.update({cell: "×" for cell in session.get("private_hits", [])})
             if session.get("private_deploy"):
                 for cell in session["private_deploy"].get("mines", []): own_marks[cell] = "✹"
                 for cell in session["private_deploy"].get("decoys", []): own_marks[cell] = "◉"

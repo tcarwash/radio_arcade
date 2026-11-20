@@ -179,6 +179,7 @@ class ArcadeService:
                 if row["game_id"] == 13 and state is not None and self.callsign in row["players"] and not self.observer_mode:
                     state = self.registry.by_id(13).decode_state(row["state"])
                     seat = row["players"].index(self.callsign)
+                    result["view"]["incoming_shots"] = state["shots"][1-seat]
                     result["private_deploy"] = {"mines": private.get("mines", []),
                                                 "decoys": private.get("decoys", [])}
                     result["private_hits"] = private.get("hits", [])

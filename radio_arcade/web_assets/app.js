@@ -653,10 +653,12 @@ function renderBattleship(session, view, host) {
     if (!sea) {
       for (const [cell, value] of (view.incoming_shots || []).entries()) {
         if (!value) continue;
-        const token=node("span","bs-token "+(value === 1 ? "bs-own-miss" : "bs-own-hit"),value===1?"·":value>=3?"S":"×");token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`;grid.append(token);
+        const token=node("span","bs-token "+(value === 1 ? "bs-own-miss" : "bs-own-hit"),value===1?"○":value>=3?"S":"×");token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`;grid.append(token);
       }
     }
     if (sea) {
+      const misses = (view.incoming_shots || []).flatMap((value, cell) => value === 1 ? [cell] : []);
+      for (const cell of misses) { const token=node("span","bs-token bs-own-miss","○"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
       for (const cell of session.private_deploy?.mines || []) { const token=node("span","bs-token bs-mine","✹"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
       for (const cell of session.private_deploy?.decoys || []) { const token=node("span","bs-token bs-decoy","◉"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
       for (const cell of session.private_hits || []) { const token=node("span","bs-token bs-own-hit","×"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
@@ -740,9 +742,9 @@ function renderBattleship(session, view, host) {
       if(view.sonar?.some(x=>x!==255)){const sonar=node("p","turn-meta",`Last sonar: ${view.sonar.map((x,i)=>x===255?null:`row ${i+1}: ${["clear","faint","strong"][x]}`).filter(Boolean).join(" · ")}`);wrapper.append(sonar);}
     }
     const grid=node("div","battleship-grid");
-    view.shots.forEach((value,index)=>{const row=Math.floor(index/10),col=index%10; const b=node("button",`battleship-cell bs-${value}`,value===1?"·":value===2?"✕":value>=3?`S${value-2}`:"");b.type="button";b.title=`${String.fromCharCode(65+col)}${row+1}: ${value===1?"miss":value===2?"hit":value>=3?"sunk":"uncalled"}`;b.setAttribute("aria-label",b.title);b.disabled=!canAct(session)||(!sea&&(view.phase!=="call"||session.current_player!==state.snapshot?.callsign))||value!==0||(sea&&(seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[index+1]!==0))));b.addEventListener("click",()=>submitAction([sea&&seaMode==="double"?100+row*9+col:index]));grid.append(b);if(sea)seaGridButtons.push(b);});
+    view.shots.forEach((value,index)=>{const row=Math.floor(index/10),col=index%10; const b=node("button",`battleship-cell bs-${value}`,value===1?"○":value===2?"✕":value>=3?`S${value-2}`:"");b.type="button";b.title=`${String.fromCharCode(65+col)}${row+1}: ${value===1?"miss":value===2?"hit":value>=3?"sunk":"uncalled"}`;b.setAttribute("aria-label",b.title);b.disabled=!canAct(session)||(!sea&&(view.phase!=="call"||session.current_player!==state.snapshot?.callsign))||value!==0||(sea&&(seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[index+1]!==0))));b.addEventListener("click",()=>submitAction([sea&&seaMode==="double"?100+row*9+col:index]));grid.append(b);if(sea)seaGridButtons.push(b);});
     wrapper.append(grid);
-    if (!sea) wrapper.append(node("p","turn-meta","· Miss · × Hit · S Sunk ship"));
+    if (!sea) wrapper.append(node("p","turn-meta","○ Miss · × Hit · S Sunk ship"));
   }
   host.append(wrapper);
 }
