@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QScrollArea, QWidget
 
 class BattleMapScroll(QScrollArea):
     manual_pan = Signal()
+    aim_adjust = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,6 +39,13 @@ class BattleMapScroll(QScrollArea):
                       Qt.Key.Key_W: (0, -1), Qt.Key.Key_S: (0, 1),
                       Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
                       Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1)}
+        if event.modifiers() == Qt.KeyboardModifier.ShiftModifier:
+            aim_keys = {Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
+                        Qt.Key.Key_Down: (0, -1), Qt.Key.Key_Up: (0, 1)}
+            if event.key() in aim_keys:
+                self.aim_adjust.emit(*aim_keys[event.key()])
+                event.accept()
+                return
         if event.key() in directions and not event.modifiers():
             dx, dy = directions[event.key()]
             self.manual_pan.emit()

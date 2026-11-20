@@ -122,7 +122,7 @@ def create_service(settings: Settings) -> ArcadeService:
         raise ValueError("observer mode requires KISS broadcast transport")
     if settings.transport == "practice":
         from .practice import PracticeService
-        return PracticeService(call)
+        return PracticeService(call, ai_difficulty=settings.ai_difficulty)
     # Do not enable autonomous modem transmissions for receive-only observers
     # or initially TX-disabled clients; explicit later TX uses the app fallback.
     modem_id_mode = (settings.station_id_mode if settings.tx_enabled and not settings.observer_mode

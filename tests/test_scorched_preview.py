@@ -20,6 +20,7 @@ const element = {};
 const $ = () => element;
 const observeCompletion = () => {}, setTurnBanner = () => {}, renderRoster = () => {};
 const renderSessionActions = () => {}, updateChatCount = () => {}, renderChat = () => {};
+const syncReplayMoveButton = () => {}, animateLastOpponentMove = () => {};
 const canTransmit = () => true;
 let renders = 0;
 const renderGame = () => renders++;

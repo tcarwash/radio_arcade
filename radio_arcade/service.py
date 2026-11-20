@@ -136,9 +136,11 @@ class ArcadeService:
     def sessions(self) -> list[dict[str, Any]]:
         with self._lock:
             result = []
+            archived = self.store.archived_ids()
             for row in self._sessions.values():
                 view = {k: v for k, v in row.items() if k not in ("state", "pending_action")}
                 view["game"] = self.registry.by_id(row["game_id"]).name
+                view["archived"] = row["id"] in archived
                 if row["state"] is not None:
                     game = self.registry.by_id(row["game_id"])
                     state = game.decode_state(row["state"])
@@ -154,6 +156,9 @@ class ArcadeService:
                 result.append(view)
             return sorted(result, key=lambda item: item.get("updated", 0), reverse=True)
 
+    def _private_game_view_data(self, sid):
+        return self.store.load_private_game_data(sid)
+
     def session(self, session_id: str | int) -> dict[str, Any]:
         sid = self._sid(session_id)
         with self._lock:
@@ -161,21 +166,49 @@ class ArcadeService:
             result = dict(row)
             game = self.registry.by_id(row["game_id"])
             result["game"] = game.name
+            result["archived"] = self.store.is_archived(sid)
+            from .move_cues import cue_for
+            history = self.store.move_history(sid,limit=20)
+            min_revision=max(0,history[0]["revision"]-1) if history else row["revision"]
+            snapshots = {frame["revision"]:frame["state"] for frame in self.store.state_history(sid,since=min_revision)}
+            result["last_opponent_cue"] = cue_for(game,row,history,snapshots,self.callsign)
+            if game.key == "open-word-tiles":
+                own_word = next((move for move in reversed(history)
+                                 if move["actor"] == self.callsign and move["body"]
+                                 and (move["body"][0] == 0 or 0x40 <= move["body"][0] <= 0x5e)), None)
+                result["last_confirmed_word"] = (
+                    {"revision": own_word["revision"], "description": game.describe_action(own_word["body"])}
+                    if own_word else None)
             state = game.decode_state(row["state"]) if row["state"] is not None else None
             result["view"] = game.view_model(state, tuple(row["players"])) if state is not None else None
             result["current_player"] = game.current_player(state, tuple(row["players"])) if state is not None else None
             if row["game_id"] in (12, 13):
-                private = self.store.load_private_game_data(sid)
-                result["private_fleet"] = private.get("ships")
-                if row["game_id"] == 13 and self.callsign in row["players"]:
+                private = self._private_game_view_data(sid)
+                if self.callsign in row["players"] and not self.observer_mode:
+                    result["private_fleet"] = private.get("ships")
+                    result["private_hits"] = private.get("hits", [])
+                    if row["game_id"] == 12 and state is not None:
+                        seat = row["players"].index(self.callsign)
+                        result["view"].update(shots=state["shots"][seat], shot_owner=self.callsign,
+                                              incoming_shots=state["shots"][1-seat])
+                if row["game_id"] == 13 and state is not None and self.callsign in row["players"] and not self.observer_mode:
                     state = self.registry.by_id(13).decode_state(row["state"])
                     seat = row["players"].index(self.callsign)
+                    result["view"].update(shots=state["shots"][seat], sonar=state["sonar"][seat],
+                                          incoming_shots=state["shots"][1-seat])
                     result["private_deploy"] = {"mines": private.get("mines", []),
                                                 "decoys": private.get("decoys", [])}
                     result["private_hits"] = private.get("hits", [])
                     result["fighter_used"] = bool(private.get("fighter_used"))
                     result["destroyer_sweep_used"] = bool(private.get("destroyer_sweep_used"))
                     result["sea_abilities"] = {"used": state["used"][seat], "moves": state["moves"][seat]}
+            if row["game_id"] in (12, 13) and state is not None and self.callsign in row["players"]:
+                from .naval_reveals import revealed_enemy_ships
+                seat = row["players"].index(self.callsign)
+                public_shots = state["shots"][seat]
+                result["revealed_enemy_ships"] = revealed_enemy_ships(
+                    row["game_id"], self.store.load_opaque_states(sid),
+                    row["players"], self.callsign, row["revision"], public_shots)
             result["last_move"] = ({"actor": row["last_actor"],
                                     "description": "forfeits the game" if row["last_action"] == FORFEIT_ACTION else game.describe_action(row["last_action"])}
                                    if row.get("last_actor") and row.get("last_action") is not None else None)
@@ -188,6 +221,41 @@ class ArcadeService:
                 result["animation_revision"] = row["revision"] + 1
             self._present_forfeit(result)
             return result
+
+    def replay_frames(self, session_id):
+        """Public board snapshots only, never locally private fleets or cards."""
+        with self._lock:
+            sid=self._sid(session_id)
+            row=self._sessions[sid]
+            game=self.registry.by_id(row["game_id"])
+            players=tuple(row["players"])
+            moves={m["revision"]:m for m in self.move_history(sid)}
+            states={r["revision"]:r["state"] for r in self.store.state_history(sid)
+                    if r["revision"]<=row["revision"]}
+            if row["state"] is not None:
+                states.setdefault(row["revision"],row["state"])
+            result=[]
+            for revision,body in sorted(states.items()):
+                decoded=game.decode_state(body)
+                view=game.view_model(decoded,players)
+                move=moves.get(revision)
+                result.append(dict(revision=revision, view=view,
+                                   actor=move["actor"] if move else None,
+                                   description=move["description"] if move else "Initial / synchronized state"))
+            return result
+
+    def move_history(self, session_id):
+        """Known committed actions only; gaps from late joins and old saves remain explicit."""
+        with self._lock:
+            sid=self._sid(session_id)
+            row=self._sessions[sid]
+            game=self.registry.by_id(row["game_id"])
+            moves={m["revision"]:m for m in self.store.move_history(sid) if m["revision"]<=row["revision"]}
+            if row.get("last_actor") and row.get("last_action") is not None and row["revision"]>0:
+                moves[row["revision"]]=dict(revision=row["revision"],actor=row["last_actor"],body=row["last_action"])
+            return [dict(revision=m["revision"],actor=m["actor"],
+                         description="forfeits the game" if m["body"]==FORFEIT_ACTION else game.describe_action(m["body"]))
+                    for _,m in sorted(moves.items())]
 
     @staticmethod
     def _present_forfeit(session):
@@ -248,6 +316,20 @@ class ArcadeService:
             for peer in row["players"]:
                 if peer != self.callsign:
                     self._reliable(row, peer, Kind.COMMIT, sequence, revision, payload)
+
+    def archive_game(self, session_id: str | int, archived: bool = True) -> None:
+        """Hide or restore a completed local table without changing RF or match data."""
+        if type(archived) is not bool:
+            raise ValueError("archive flag must be true or false")
+        sid = self._sid(session_id)
+        with self._lock:
+            row = self._sessions.get(sid)
+            if row is None:
+                raise ValueError("game no longer exists")
+            if archived and row["status"] not in ("finished", "cancelled"):
+                raise ValueError("Only finished or cancelled games can be archived")
+            self.store.set_archived(sid, archived)
+            self._emit("session_updated", sid, session=self.session(sid), archived=archived)
 
     def delete_game(self, session_id: str | int) -> None:
         """Delete a game from this station without sending radio traffic."""
@@ -674,14 +756,42 @@ class ArcadeService:
             if row["players"][state["turn"]] == self.callsign:
                 self.legal_action(sid, b"\x7f")
 
+    def _announce_sunk_ships(self, row, defender, data, *, practice=False):
+        if row["game_id"] not in (12, 13) or not data.get("ships"):
+            return
+        if not practice and defender != self.callsign:
+            return
+        from .naval_reveals import encode_reveal
+        hits = set(data.get("hits", []))
+        sent = set(data.get("announced_sunk", []))
+        enemy = next((p for p in row["players"] if p != defender), None)
+        for ship_id, ship in enumerate(data["ships"]):
+            if ship_id in sent or not ship or not set(ship) <= hits:
+                continue
+            payload = encode_reveal(row["game_id"], ship_id, ship, row["revision"])
+            if practice:
+                # In practice, the computer is not a radio transmitter.
+                row["opaque_sequence"] = (row.get("opaque_sequence", 0) + 1) & 0xffff
+                self.store.add_opaque_state(row["id"], defender,
+                                            row["opaque_sequence"], payload.encode(), "local")
+                self._save(row)
+            else:
+                self.send_opaque_state(row["id"], enemy, payload)
+            sent.add(ship_id)
+        data["announced_sunk"] = sorted(sent)
+
     def _resolve_battleship_pending(self, row: dict[str, Any]) -> None:
         if row["game_id"] == 13 and row["status"] == "active":
             self._resolve_sea_warfare_pending(row)
             return
         if row["game_id"] != 12 or row["status"] != "active": return
         game = self.registry.by_id(12); state = game.decode_state(row["state"])
-        if state["phase"] != "reply" or row["players"][state["turn"]] != self.callsign: return
+        if row["players"][state["turn"]] != self.callsign or row["pending_action"] is not None: return
         data = self.store.load_private_game_data(row["id"])
+        if state["phase"] == "setup" and data.get("ships") and not state["ready"][state["turn"]]:
+            self.legal_action(row["id"], b"\x7f")
+            return
+        if state["phase"] != "reply": return
         ships, hits = data.get("ships"), set(data.get("hits", []))
         if not ships: return
         target = state["pending"]
@@ -692,6 +802,8 @@ class ArcadeService:
             result = 2 + ship_id if all(cell in hits for cell in ships[ship_id]) else 1
         data["hits"] = sorted(hits); self.store.save_private_game_data(row["id"], data)
         self.legal_action(row["id"], bytes((0x80 | result,)))
+        self._announce_sunk_ships(row, self.callsign, data)
+        self.store.save_private_game_data(row["id"], data)
 
     def _resolve_sea_warfare_pending(self, row: dict[str, Any]) -> None:
         game = self.registry.by_id(13); state = game.decode_state(row["state"])
@@ -749,6 +861,9 @@ class ArcadeService:
         result = (int(results[0]) | (int(results[1]) << 1) if len(results) == 2 else int(results[0]))
         if defeated: result |= 0x10 if kind == 1 else 0x04
         self.legal_action(row["id"], bytes((0x80 | result,)))
+        if not getattr(self, "_resolving_private", False):
+            self._announce_sunk_ships(row, self.callsign, data)
+            self.store.save_private_game_data(row["id"], data)
 
     def legal_action(self, session_id: str | int, action: bytes) -> None:
         if action == FORFEIT_ACTION:

@@ -1,0 +1,37 @@
+name: radio-arcade-desktop-test
+services:
+  arcade:
+    build:
+      context: .
+      dockerfile: Dockerfile.desktop-test
+      args:
+        RADIO_STREAM_BASE: "${RADIO_STREAM_BASE:-ghcr.io/tcarwash/radio-stream:novnc-dev}"
+    image: radio-arcade:desktop-test
+    init: true
+    shm_size: 256m
+    ports:
+      - "${NOVNC_BIND:-0.0.0.0}:${NOVNC_PORT:-6082}:6080"
+    environment:
+      DESKTOP_ONLY: "1"
+      NOVNC_ENABLED: "1"
+      VNC_PASSWORD_FILE: /config/vnc.pass
+      WIDTH: "${DESKTOP_WIDTH:-1366}"
+      HEIGHT: "${DESKTOP_HEIGHT:-768}"
+      APP_COMMAND: "/opt/arcade-venv/bin/radio-arcade --callsign ${ARCADE_CALLSIGN:-N0TEST} --transport practice"
+      RADIO_ARCADE_HOME: /state/arcade
+    volumes:
+      - type: bind
+        source: "${VNC_PASSWORD_PATH:-./.desktop-test/vnc.pass}"
+        target: /config/vnc.pass
+        read_only: true
+        bind:
+          create_host_path: false
+      - arcade-state:/state/arcade
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:6080/vnc.html', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+volumes:
+  arcade-state:

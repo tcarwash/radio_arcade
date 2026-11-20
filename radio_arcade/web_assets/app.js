@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (selector, root = document) => root.querySelector(selector);
-const state = { snapshot: null, selectedId: null, selectedInitialized: false, session: null, listSignature: "", sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, islandSelection: null, lastTankAnimation: null, lastTankMotion: null, tankZoom: 1, tankWeapons: new Map(), unreadBySession: {} };
+const state = { snapshot: null, selectedId: null, selectedInitialized: false, session: null, listSignature: "", sessionSignature: "", actionSignature: "", chatSignature: "", busy: false, toastTimer: null, setupShown: false, creating:false, chatVisible:null, focusMode:false, librarySignature:"", submitting:new Set(), islandSelection: null, lastTankAnimation: null, lastTankMotion: null, tankZoom: 1, tankWeapons: new Map(), tankAim: new Map(), tankCameras: new Map(), wordDrafts: new Map(), moveCueSeen:new Map(), moveCueTimer:null, unreadBySession: {} };
 const UNREAD_KEY = "radio-arcade-unread-v1";
 try { state.unreadBySession = JSON.parse(localStorage.getItem(UNREAD_KEY) || "{}"); } catch { state.unreadBySession = {}; }
 if (!state.unreadBySession || typeof state.unreadBySession !== "object" || Array.isArray(state.unreadBySession)) state.unreadBySession = {};
@@ -147,7 +147,7 @@ function isObserver() { return Boolean(state.snapshot?.observer_mode); }
 function canAct(session = state.session) {
   return Boolean(session && !isObserver() && session.status === "active" && !session.has_pending_action && !recoveryNeeded(session) &&
     (isPractice() || state.snapshot?.tx_enabled) &&
-    (isPractice() || session.current_player === state.snapshot?.callsign));
+    session.current_player === state.snapshot?.callsign);
 }
 function canTransmit() {
   return Boolean(state.snapshot?.ready && !isObserver() && (isPractice() || state.snapshot?.tx_enabled));
@@ -165,14 +165,20 @@ function switchPane(pane) {
 }
 
 function placeSessionActions() {
-  const actions = $("#session-actions");
-  if (window.matchMedia("(max-width: 800px)").matches) {
-    const banner = $("#turn-banner");
-    if (actions.previousElementSibling !== banner) banner.after(actions);
-  } else if (actions.parentElement !== $(".lobby-panel")) {
-    $(".lobby-panel").append(actions);
-  }
+  // Table actions live with the board on all screen sizes.
+  const actions=$("#session-actions"),banner=$("#turn-banner");
+  if(actions.previousElementSibling!==banner)banner.after(actions);
 }
+
+function applyWorkspace(){
+  const w=$(".workspace");
+  w.classList.toggle("focus-mode",state.focusMode);
+  w.classList.toggle("chat-collapsed",!state.chatVisible);
+  $("#focus-toggle").setAttribute("aria-pressed",String(state.focusMode));
+  $("#chat-toggle").setAttribute("aria-pressed",String(Boolean(state.chatVisible)));
+}
+$("#chat-toggle").addEventListener("click",()=>{state.chatVisible=!state.chatVisible;applyWorkspace();});
+$("#focus-toggle").addEventListener("click",()=>{state.focusMode=!state.focusMode;applyWorkspace();});
 
 function updateTableSetup() {
   const practice = isPractice();
@@ -187,7 +193,7 @@ function updateTableSetup() {
   $("#lobby-note").textContent = !state.snapshot?.ready
     ? "Connect your station in settings to start playing."
     : isObserver() ? "Receive-only station: observe existing tables or disable observer mode in settings."
-    : practice ? "Practice mode · Two or more players share this device. No radio transmission needed."
+    : practice ? "Practice mode · Play against the computer. No radio transmission needed."
     : hosted ? "Host as dealer · Stations can discover and request to join your open table."
     : "Direct table · Enter a callsign for an invitation, or invite a station after creating the table.";
 }
@@ -197,14 +203,19 @@ function setConnection(snapshot) {
   status.classList.toggle("offline", !snapshot.ready || !snapshot.connected);
   const label = status.lastElementChild;
   if (!snapshot.ready) label.textContent = snapshot.callsign ? "Engine offline" : "Set up station";
-  else if (isPractice()) label.textContent = `Local practice · ${snapshot.callsign}`;
+  else if (isPractice()) label.textContent = `Local practice · No RF`;
   else if (!snapshot.connected) label.textContent = "Data2G offline";
   else label.textContent = `${snapshot.transport === "broadcast" ? "Broadcast" : "Connected"} · ${snapshot.callsign}${snapshot.identification_method === "Data2G CW" ? " · CWID" : " · app ID"}`;
+  $("#brand-mode").textContent=isPractice()?"LOCAL ARCADE · NO RADIO":"DATA2G · GAME ROOM";
   status.title = snapshot.identification_warning || snapshot.identification_method || "";
-  $("#transport-label").textContent = !snapshot.ready ? "STATION OFFLINE" : isPractice() ? "LOCAL PRACTICE · HOT-SEAT" : `${snapshot.transport.toUpperCase()} · ${snapshot.group}`;
+  $("#transport-label").textContent = !snapshot.ready ? "STATION OFFLINE" : isPractice() ? "LOCAL PRACTICE · NO RF" : `${snapshot.transport.toUpperCase()} · ${snapshot.group}`;
   document.documentElement.dataset.scheme = snapshot.color_scheme || "midnight";
   const tx = $("#tx-toggle");
-  tx.textContent = snapshot.tx_enabled ? "TX ENABLED" : "TX DISABLED";
+  tx.textContent = isPractice() ? "NO RF" : snapshot.tx_enabled ? "TX ENABLED" : "TX DISABLED";
+  tx.hidden=isPractice();
+  $(".arena-foot").firstElementChild.textContent=isPractice()?"LOCAL PRACTICE · NO RADIO TRANSMISSION":"RADIO TRAFFIC IS PUBLIC · ACKS AND RETRIES MAY TRANSMIT";
+  $(".chat-lock").textContent=isPractice()?"LOCAL CHAT":"PUBLIC RF · TABLE CHAT";
+  if(state.chatVisible===null||state.lastTransport!==snapshot.transport){state.chatVisible=!isPractice();state.lastTransport=snapshot.transport;applyWorkspace();}
   tx.setAttribute("aria-pressed", String(Boolean(snapshot.tx_enabled)));
   tx.classList.toggle("tx-off", !snapshot.tx_enabled);
   tx.disabled = isPractice();
@@ -294,20 +305,21 @@ function renderSessionList(sessions) {
   const scroll = list.scrollTop;
   list.replaceChildren();
   if (!sessions.length) {
-    const empty = node("div", "empty-list", "No open tables yet. Start a game or wait for an invitation to come over the air.");
+    const empty = node("div", "empty-list", isPractice() ?
+      "No games yet. Choose a card in the library to play against the computer." :
+      "No open tables yet. Start a game or wait for an invitation over the air.");
     list.append(empty);
     return;
   }
   const priority = session => session.status === "invited" ? 0 :
-    session.status === "active" && (isPractice() || session.current_player === state.snapshot.callsign || session.error || syncPending(session)) ? 1 :
+    session.status === "active" && (session.current_player === state.snapshot.callsign || session.error || syncPending(session)) ? 1 :
     session.status === "active" && session.has_pending_action ? 2 : session.status === "active" ? 3 :
     ["lobby", "joining"].includes(session.status) ? 4 : 5;
   const ordered = sessions.map((session, index) => ({ session, index }))
     .sort((a, b) => priority(a.session) - priority(b.session) || a.index - b.index);
   let shown = 0;
   for (const { session } of ordered) {
-    const practiceTurn = isPractice() && session.status === "active";
-    const ownTurn = practiceTurn || session.current_player === state.snapshot.callsign;
+    const ownTurn = session.current_player === state.snapshot.callsign;
     const needsSync = recoveryNeeded(session);
     const unread = state.unreadBySession[session.id] || 0;
     const other = isObserver() ? (session.players.join(" / ") || session.coordinator) :
@@ -318,13 +330,14 @@ function renderSessionList(sessions) {
     if (filter === "waiting" && !(session.status === "active" && !ownTurn && !needsSync && !session.has_pending_action)) continue;
     if (filter === "resync" && !needsSync) continue;
     if (filter === "unread" && !unread) continue;
+    if (["finished","invited"].includes(filter)&&session.status!==filter)continue;
     const card = node("button", `session-card${session.id === state.selectedId ? " selected" : ""}`);
     card.type = "button";
     card.dataset.session = session.id;
     const top = node("div", "session-card-top");
     top.append(node("span", "session-name", session.game));
     const label = syncPending(session) ? "Resync pending" : needsSync ? "Needs resync" :
-      session.has_pending_action ? "Move awaiting commit" : ownTurn ? "Your move" : session.status === "active" ? "Waiting" : session.status;
+      session.has_pending_action ? "Move awaiting commit" : ownTurn && session.status==="active" ? "Your move" : session.status === "active" ? "Waiting" : session.status;
     const status = node("span", "session-state", label);
     if (needsSync) status.classList.add("sync-needed");
     else if (session.has_pending_action) status.classList.add("waiting");
@@ -332,7 +345,7 @@ function renderSessionList(sessions) {
     top.append(status);
     const summary = node("div", "session-summary");
     summary.append(node("span", "", other), node("span", "bullet", "·"),
-      node("span", "", `${session.players.length} station${session.players.length === 1 ? "" : "s"}`),
+      node("span", "", isPractice() ? "vs computer" : `${session.players.length} station${session.players.length === 1 ? "" : "s"}`),
       node("span", "bullet", "·"), node("span", "", session.id.slice(-6)));
     const activity = session.last_move ? `${session.last_move.actor}: ${session.last_move.description}` : session.status;
     summary.append(node("span", "session-activity", activity));
@@ -346,27 +359,12 @@ function renderSessionList(sessions) {
 }
 
 function setTurnBanner(session) {
-  const banner = $("#turn-banner");
-  let text = "", tone = "";
-  if (syncPending(session)) { text = `RESYNC REQUESTED · WAITING FOR ${session.coordinator} TO SEND THE LATEST TABLE`; tone = "waiting"; }
-  else if (recoveryNeeded(session)) { text = `TABLE MAY BE OUT OF DATE · RESYNC BEFORE MAKING A MOVE · ${session.error || "Your turn is paused until the latest snapshot arrives."}`; tone = "warning"; }
-  else if (isObserver()) { text = session.view ? "OBSERVING · RECEIVE ONLY" : "AWAITING GAME SNAPSHOT · RECEIVE ONLY"; tone = "warning"; }
-  else if (session.status === "invited") { text = `INVITATION FROM ${session.coordinator} · ACCEPT TO JOIN`; tone = "warning"; }
-  else if (session.status === "lobby") { text = session.hosted ? (session.coordinator === state.snapshot.callsign ? "DEALER · OPEN TO JOIN REQUESTS" : "PUBLIC TABLE · JOIN TO PLAY") : "LOBBY · INVITE STATIONS, THEN START"; tone = "waiting"; }
-  else if (session.status === "joining") { text = session.hosted ? "JOIN REQUEST SENT · WAITING FOR DEALER" : "WAITING FOR THE HOST TO START"; tone = "waiting"; }
-  else if (session.status === "finished") { text = session.forfeited_by ? `${session.forfeited_by} FORFEITED` : session.view?.kind === "signal-siege" ? `SIGNAL SIEGE · ${session.view.result.toUpperCase()}` : session.view?.winner ? `GAME WON BY ${session.view.winner}` : "GAME OVER · DRAW"; tone = "warning"; }
-  else if (session.has_pending_action) { text = "MOVE SENT · WAITING FOR COMMIT"; tone = "waiting"; }
-  else if (session.status === "active") {
-    text = isPractice() ? `LOCAL PRACTICE · ${session.current_player || "GAME OVER"} TO MOVE` :
-      session.current_player === state.snapshot.callsign ? "YOUR TURN · MAKE YOUR MOVE" : `WAITING FOR ${session.current_player || "THE TABLE"}`;
-    tone = session.current_player === state.snapshot.callsign || isPractice() ? "" : "waiting";
-    if (session.view?.kind === "settlement") text += ` · ${session.view.phase.toUpperCase()} PHASE`;
-  } else { text = session.status.toUpperCase(); tone = "waiting"; }
-  if (session.error) { text = `MOVE REJECTED · ${session.error}`; tone = "warning"; }
-  banner.textContent = text;
-  banner.title = text;
-  banner.className = `turn-banner ${tone}`.trim();
-  banner.hidden = false;
+  const banner=$("#turn-banner");
+  const feedback=session.feedback||{text:session.status,tone:"neutral"};
+  const submitting=state.submitting.has(session.id);
+  const text=submitting?(isPractice()?"Making your move…":"Sending move to Data2G…"):feedback.text;
+  const tone=submitting?"waiting":feedback.tone==="alert"||feedback.tone==="finished"?"warning":feedback.tone==="mine"?"":feedback.tone;
+  banner.textContent=text;banner.title=text;banner.className=("turn-banner "+tone).trim();banner.hidden=false;
 }
 
 function renderRoster(session) {
@@ -426,21 +424,34 @@ function addActionInput(parent, placeholder, id) {
 function renderSessionActions(session) {
   const actions = $("#session-actions");
   actions.replaceChildren();
+  const menu=node("details","table-action-menu"),summary=node("summary","button secondary","Table ⋯");
+  menu.append(summary);const more=node("div","table-action-content");menu.append(more);
   const command = (name, extra = {}) => sendCommand(name, { session_id: session.id, ...extra });
   const owner = session.coordinator === state.snapshot.callsign;
+  const definition=state.snapshot.catalog.find(g=>g.game_id===session.game_id);
+  if(definition)addButton(more,"How to play",()=>showGuide(definition));
+  addButton(more,"Move history",()=>showMoveHistory(session));
+  addButton(more,"Visual replay",()=>showReplay(session));
+  if(session.last_opponent_cue && session.view?.kind!=="scorched-earth")
+    addButton(more,"Replay last move",()=>animateLastOpponentMove(session));
   if (session.status === "active" && !isObserver() && (isPractice() || session.players.includes(state.snapshot.callsign))) {
-    const forfeit = addButton(actions, "Forfeit game…", () => {
+    const forfeit = addButton(more, "Forfeit game…", () => {
       if (window.confirm("Forfeit this game? This ends the table and awards the result to the other player(s).")) command("forfeit_game");
     }, false, !canTransmit() || session.has_pending_action);
     forfeit.classList.add("forfeit-game-action");
   }
-  if (session.status === "finished") addButton(actions, "View match result", () => showMatchResult(session));
+  if (session.status === "finished") {
+    addButton(actions, "View match result", () => showMatchResult(session));
+    const game=state.snapshot.catalog.find(g=>g.game_id===session.game_id);
+    if(game&&!isObserver()&&canTransmit()&&(state.snapshot.experimental_games||game.key!=="signal-siege"))
+      addButton(actions,"Play again",()=>chooseGame(game),true);
+  }
   if (!isObserver() && session.status === "invited") addButton(actions, "Accept invitation", () => command("accept_invite"), true, !canTransmit());
   if (!isObserver() && session.hosted && ["lobby", "joining"].includes(session.status) && !session.players.includes(state.snapshot.callsign))
     addButton(actions, session.status === "joining" ? "Retry join request" : "Join hosted table", () => command("join_game"), true, !canTransmit());
   if (!isObserver() && session.hosted && session.status === "lobby" && owner) {
-    const order = addActionInput(actions, `Turn order · ${state.snapshot.callsign},GUEST1,…`, "reply-order");
-    const row = node("div", "action-row"); actions.append(row);
+    const order = addActionInput(more, `Turn order · ${state.snapshot.callsign},GUEST1,…`, "reply-order");
+    const row = node("div", "action-row"); more.append(row);
     addButton(row, "Set reply order", () => command("set_reply_order", { order: order.value }), false, !canTransmit());
     addButton(row, "Re-announce", () => command("announce_game"), false, !canTransmit());
   }
@@ -448,18 +459,20 @@ function renderSessionActions(session) {
     const peer = addActionInput(actions, "Station callsign to invite", "invite-peer");
     addButton(actions, "Invite station", () => command("invite_player", { peer: peer.value }), false, !canTransmit());
     if (session.invited?.length) {
-      const cancelPeer = addActionInput(actions, "Pending station callsign", "cancel-peer");
-      addButton(actions, "Cancel invitation", () => command("cancel_invitation", { peer: cancelPeer.value }), false, !canTransmit());
+      const cancelPeer = addActionInput(more, "Pending station callsign", "cancel-peer");
+      addButton(more, "Cancel invitation", () => command("cancel_invitation", { peer: cancelPeer.value }), false, !canTransmit());
     }
   }
-  if (!isObserver() && session.status === "lobby" && owner)
-    addButton(actions, "Start this game", () => command("start_game"), true, !canTransmit() || session.invited?.length > 0);
-  if (session.status === "active" && (isObserver() || session.players.includes(state.snapshot.callsign))) {
+  if (!isObserver() && session.status === "lobby" && owner){
+    const min=state.snapshot.catalog.find(g=>g.game_id===session.game_id)?.min_players??2;
+    addButton(actions,"Start game",()=>command("start_game"),true,!canTransmit()||session.invited?.length>0||session.players.length<min);
+  }
+  if (!isPractice() && ["active","finished"].includes(session.status) && (isObserver() || session.players.includes(state.snapshot.callsign))) {
     const waitingForSync = syncPending(session);
     const syncTimedOut = waitingForSync && Date.now() / 1000 - Number(session.sync_requested_at) > 30;
     const label = waitingForSync ? syncTimedOut ? "Resend resync request" : "Resync requested · waiting for table" :
       isObserver() ? "Resync table · transmits" : owner ? "Send latest state to table" : "Resync table";
-    addButton(actions, label, () => {
+    addButton(recoveryNeeded(session)?actions:more, label, () => {
       if (isObserver() && !window.confirm("This sends one synchronization request over the radio. Continue?")) return;
       requestSessionSync(session);
     }, false, (waitingForSync && !syncTimedOut) || (!state.snapshot?.tx_enabled && !isPractice()));
@@ -467,15 +480,21 @@ function renderSessionActions(session) {
   if (!isObserver() && session.hosted && session.has_pending_action)
     addButton(actions, "Retry pending move", () => command("resend_pending_action"), false, !canTransmit());
   if (!isObserver() && state.snapshot.transport === "connected") {
-    const peer = addActionInput(actions, "Station callsign", "peer-connect");
-    const row = node("div", "action-row"); actions.append(row);
+    const peer = addActionInput(more, "Station callsign", "peer-connect");
+    const row = node("div", "action-row"); more.append(row);
     addButton(row, "Connect / resume", () => sendCommand("connect_peer", { peer: peer.value }), false, !canTransmit());
     addButton(row, "Disconnect", () => sendCommand("disconnect_peer"));
   }
-  addButton(actions, "Delete game from this device", () => {
+  if(["finished","cancelled"].includes(session.status))
+    addButton(more,"Archive completed table",async()=>{
+      const result=await sendCommand("archive_game",{session_id:session.id});
+      if(result){selectSession(null);await refresh();}
+    });
+  addButton(more, "Delete local copy…", () => {
     if (!window.confirm("Delete this game's saved state, chat, and queued messages from this device? This does not notify other stations.")) return;
     command("delete_game");
   });
+  actions.append(menu);
 }
 
 function requestSessionSync(session) {
@@ -512,6 +531,11 @@ function showMatchResult(session) {
   dialog.append(node("p", "eyebrow", "MATCH COMPLETE"), heading, node("p", "", session.game), renderScoreStrip(session, session.view));
   const close = node("button", "button primary full", "Back to board"); close.type = "button";
   close.addEventListener("click", () => dialog.close()); dialog.append(close);
+  const game=state.snapshot.catalog.find(g=>g.game_id===session.game_id);
+  if(game&&canTransmit()&&(state.snapshot.experimental_games||game.key!=="signal-siege")){
+    const again=node("button","button secondary full","Play again");again.type="button";
+    again.addEventListener("click",()=>{dialog.close();chooseGame(game);});dialog.append(again);
+  }
   dialog.addEventListener("close", () => dialog.remove());
   document.body.append(dialog); dialog.showModal();
 }
@@ -595,6 +619,7 @@ function renderHexxagon(session, view, host) {
     const label = svgElement("text", { x: 0, y: 4, "text-anchor": "middle" }); label.textContent = cell.id + 1;
     group.append(label); group.addEventListener("click", () => choose(cell.id));
     group.addEventListener("keydown", event => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); choose(cell.id); } });
+    group.dataset.moveCell=cell.id;
     elements.set(cell.id, group); svg.append(group);
   }
   host.append(svg, hint);
@@ -606,7 +631,7 @@ function renderGrid(session, view, host) {
   const active = canAct(session);
   for (const [index, value] of view.cells.entries()) {
     const cell = node("button", `ttt-cell${value === "O" ? " mark-o" : ""}`, value.trim());
-    cell.type = "button";
+    cell.type = "button";cell.dataset.moveCell=index;
     cell.setAttribute("aria-label", `Square ${index + 1}${value.trim() ? `, ${value}` : ", empty"}`);
     cell.disabled = !active || Boolean(value.trim());
     cell.addEventListener("click", () => submitAction([index]));
@@ -615,9 +640,30 @@ function renderGrid(session, view, host) {
   host.append(board, node("p", "turn-meta", active ? "Choose a square to play. Your move is committed only when selected." : "Follow the active station's turn. The board updates as commits arrive."));
 }
 
+function renderConnectFour(session, view, host) {
+  const active=canAct(session);
+  const board=node("div","connect-four-board");
+  const controls=node("div","connect-four-controls");
+  for(let col=0;col<7;col++){
+    const choose=node("button","button secondary",String(col+1));
+    choose.type="button";choose.disabled=!active||view.cells[col]!==" ";
+    choose.setAttribute("aria-label","Drop into column "+(col+1));
+    choose.addEventListener("click",()=>submitAction([col]));
+    controls.append(choose);
+  }
+  for(let i=0;i<view.cells.length;i++){
+    const value=view.cells[i];
+    const disc=node("div","four-cell"+(value==="X"?" four-x":value==="O"?" four-o":""));
+    disc.dataset.moveCell=i;disc.setAttribute("aria-label","Row "+(Math.floor(i/7)+1)+", column "+(i%7+1)+(value.trim()?", "+value:""));
+    board.append(disc);
+  }
+  host.append(node("p","turn-meta","Drop a disc into a column · first four connected horizontally, vertically or diagonally wins."),controls,board);
+}
+
 function renderBattleship(session, view, host) {
   const wrapper = node("div", "battleship-view"), draftKey = `ra-bs-draft-${session.id}`;
   const sea = view.kind === "sea-warfare", fleetSizes = sea ? [5,4,3,3,3,2] : [5,4,3,3,2];
+  if (!sea) wrapper.classList.add("bs-classic");
   const shipNames = sea ? ["Carrier","Battleship","Cruiser","Destroyer","Submarine","Patrol boat"] : ["Carrier","Battleship","Cruiser","Destroyer","Patrol boat"];
   const shipSprites = ["battleship-carrier.png", "battleship-hull.png", "battleship-cruiser.png", "battleship-destroyer.png", "battleship-submarine.png", "battleship-patrol.png"];
   if (sea) {
@@ -627,38 +673,144 @@ function renderBattleship(session, view, host) {
   }
   const drawFleet = (grid, fleets) => {
     fleets.forEach((cells, index) => {
+      if(!cells || !cells.length)return;
       const first = Math.min(...cells), vertical = cells.length > 1 && cells[1] - cells[0] === 10;
       const row = Math.floor(first / 10), col = first % 10;
       const ship = node("span", "bs-fleet-ship");
       ship.style.gridRow = `${row + 1} / span ${vertical ? cells.length : 1}`;
       ship.style.gridColumn = `${col + 1} / span ${vertical ? 1 : cells.length}`;
-      const sprite = shipSprites[index].replace(".png", vertical ? ".png" : "-horizontal.png");
+      const sprite = shipSprites[!sea && index === 4 ? 5 : index].replace(".png", vertical ? ".png" : "-horizontal.png");
       ship.style.backgroundImage = `url("/${sprite}")`;
-      ship.setAttribute("aria-label", `Ship ${index + 1}`);
+      ship.setAttribute("aria-label", shipNames[index]);
       grid.append(ship);
     });
   };
   const ownCells = new Set((session.private_fleet || []).flat());
-  const ownGrid = () => {
-    wrapper.append(node("h3", "", "Your fleet · stored on this station"));
+  const ownGrid = (parent=wrapper) => {
+    parent.append(node("h3", "", "Your fleet · stored on this station"));
     if (sea) {
       const carrierLost = (session.private_fleet?.[0] || []).length > 0 && session.private_fleet[0].every(cell => (session.private_hits || []).includes(cell));
       const fighter=node("div","bs-fighter-status"); const plane=node("img","","");plane.src="/battleship-fighter.png";plane.alt="Carrier fighter plane";
-      fighter.append(plane,node("span","",carrierLost?"Carrier lost · fighter unavailable":session.fighter_used?"Fighter interception expended":"Fighter interception ready · first incoming hit gets a 50% block roll"));wrapper.append(fighter);
+      fighter.append(plane,node("span","",carrierLost?"Carrier lost · fighter unavailable":session.fighter_used?"Fighter interception expended":"Fighter interception ready · first incoming hit gets a 50% block roll"));parent.append(fighter);
     }
     const grid=node("div","battleship-grid");
-    for(let i=0;i<100;i++){const b=node("span",`battleship-cell ${ownCells.has(i)?"bs-ship":""}`);grid.append(b);}
+    grid.dataset.moveBoard="incoming";
+    for(let i=0;i<100;i++){const b=node("span",`battleship-cell ${ownCells.has(i)?"bs-ship":""}`);b.dataset.moveCell=i;grid.append(b);}
     drawFleet(grid, session.private_fleet || []);
+    if (!sea) {
+      for (const [cell, value] of (view.incoming_shots || []).entries()) {
+        if (!value) continue;
+        const sunk=(session.private_fleet || []).some(ship=>ship.includes(cell)&&ship.every(c=>view.incoming_shots[c]>=2));
+        const token=node("span","bs-token "+(value === 1 ? "bs-own-miss" : sunk ? "bs-own-sunk" : "bs-own-hit"),value===1?"○":sunk?"S":"×");token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`;grid.append(token);
+      }
+    }
     if (sea) {
+      const misses = (view.incoming_shots || []).flatMap((value, cell) => value === 1 ? [cell] : []);
+      for (const cell of misses) { const token=node("span","bs-token bs-own-miss","○"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
       for (const cell of session.private_deploy?.mines || []) { const token=node("span","bs-token bs-mine","✹"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
       for (const cell of session.private_deploy?.decoys || []) { const token=node("span","bs-token bs-decoy","◉"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
       for (const cell of session.private_hits || []) { const token=node("span","bs-token bs-own-hit","×"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
     }
-    wrapper.append(grid);
+    parent.append(grid);
+    if (!sea && session.private_fleet) {
+      const incoming=view.incoming_shots || [];
+      const sunk=ship=>ship.every(c=>incoming[c]>=2);
+      const remaining=session.private_fleet.filter(ship=>!sunk(ship)).length;
+      parent.append(node("p","turn-meta",remaining+" / 5 ships afloat · "+session.private_fleet.map((ship,i)=>shipNames[i]+": "+(sunk(ship)?"sunk":"afloat")).join(" · ")));
+    }
   };
   const pendingText = view.pending_kind === 2 ? `Submarine sonar is checking row ${view.pending+1}. The result returns in a compact reply.` : view.pending_kind === 1 ? `Battleship salvo called across row ${Math.floor(view.pending/10)+1}.` : `Called row ${Math.floor(view.pending/10)+1}, column ${view.pending%10+1}.`;
-  wrapper.append(node("p", "turn-meta", view.phase === "setup" ? "Fleet, mine, and decoy positions stay on this station. Only compact actions and results are transmitted." : view.phase === "reply" ? `${pendingText} Your station is resolving it privately.` : `${session.current_player}: choose a tactical action.`));
-  if (view.phase === "setup" && !session.private_fleet) {
+  wrapper.append(node("p", "turn-meta", view.phase === "setup" ? "Fleet positions stay on this station. Only compact actions and results are transmitted." : session.status === "finished" ? `${view.winner || "No station"} wins.` : view.phase === "reply" ? `${pendingText} Awaiting ${session.current_player}’s report.` : `${session.current_player}: choose a tactical action.`));
+  if (!sea && view.phase === "setup" && !session.private_fleet && !isObserver() && session.players.includes(state.snapshot?.callsign)) {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(draftKey) || "{}"); } catch { saved = {}; }
+    let ships = Array.isArray(saved) ? saved : (Array.isArray(saved.ships) ? saved.ships : []);
+    let vertical = Boolean(saved.vertical);
+    let history = Array.isArray(saved.history) ? saved.history : [];
+    const allowed = canTransmit() && session.status === "active" && !session.has_pending_action && !recoveryNeeded(session);
+    let saving = false, hovered = null;
+    const prompt = node("p", "bs-placement-prompt");
+    const controls = node("div", "bs-tactical-controls");
+    const rotate = node("button", "button secondary"), undo = node("button", "button secondary", "Undo");
+    const randomize = node("button", "button secondary", "Randomize"), clear = node("button", "button secondary", "Clear");
+    const deploy = node("button", "button primary", "Deploy fleet");
+    for (const b of [rotate, undo, randomize, clear, deploy]) b.type = "button";
+    controls.append(rotate, undo, randomize, clear);
+    const grid = node("div", "battleship-grid bs-placement-grid");
+    const roster = node("p", "turn-meta bs-placement-roster");
+    const hint = node("p", "turn-meta", "Green preview: fits · Red: blocked. Your fleet stays private.");
+    wrapper.append(prompt, controls, grid, roster, hint, deploy);
+    const cells = [];
+    const persist = () => { try {localStorage.setItem(draftKey, JSON.stringify({ships, vertical, history}));} catch {} };
+    const remember = () => { history.push(ships.map(ship => ship.slice())); if (history.length > 30) history.shift(); };
+    const footprint = (i, length, vert, occupied) => {
+      const row=Math.floor(i/10), col=i%10;
+      const points=Array.from({length}, (_, j) => [row+(vert?j:0), col+(vert?0:j)]).filter(([r,c])=>r<10 && c<10).map(([r,c])=>r*10+c);
+      return {points, valid:points.length===length && !points.some(c=>occupied.has(c))};
+    };
+    function paintPreview(cell) {
+      hovered=cell;
+      for (const b of cells) b.classList.remove("bs-preview-valid","bs-preview-invalid");
+      if (cell===null || !allowed || saving || ships.length>=fleetSizes.length) return;
+      const candidate=footprint(cell,fleetSizes[ships.length],vertical,new Set(ships.flat()));
+      for (const i of candidate.points) cells[i].classList.add(candidate.valid?"bs-preview-valid":"bs-preview-invalid");
+    }
+    function redraw() {
+      grid.querySelectorAll(".bs-fleet-ship").forEach(el=>el.remove());
+      const occupied=new Set(ships.flat()), complete=ships.length===fleetSizes.length;
+      cells.forEach((b,i)=>{b.classList.toggle("bs-ship",occupied.has(i));b.disabled=!allowed||saving||complete;});
+      drawFleet(grid,ships);
+      prompt.textContent=complete?"Fleet ready — deploy when you're happy with it": "Place "+shipNames[ships.length]+" · "+fleetSizes[ships.length]+" squares ("+(ships.length+1)+"/5)";
+      rotate.textContent=(vertical?"Vertical":"Horizontal")+" · R"; rotate.disabled=!allowed||complete||saving;
+      undo.disabled=!allowed||saving||!(history.length||ships.length);
+      randomize.disabled=!allowed||saving; clear.disabled=!allowed||saving||!ships.length;
+      deploy.disabled=!allowed||saving||!complete;
+      roster.textContent=shipNames.map((name,i)=>(i<ships.length?"✓ ":"○ ")+name+" ("+fleetSizes[i]+")").join(" · ");
+      paintPreview(hovered);
+      persist();
+    }
+    for(let i=0;i<100;i++){
+      const b=node("button","battleship-cell");b.type="button";
+      b.title=String.fromCharCode(65+i%10)+(1+Math.floor(i/10));b.setAttribute("aria-label",b.title);
+      b.addEventListener("pointerenter",()=>paintPreview(i));b.addEventListener("focus",()=>paintPreview(i));
+      b.addEventListener("pointerleave",()=>paintPreview(null));b.addEventListener("blur",()=>paintPreview(null));
+      b.addEventListener("click",()=>{
+        if (!allowed || saving || ships.length>=fleetSizes.length) return;
+        const candidate=footprint(i,fleetSizes[ships.length],vertical,new Set(ships.flat()));
+        if (!candidate.valid) return;
+        remember();ships.push(candidate.points);redraw();
+      });cells.push(b);grid.append(b);
+    }
+    rotate.addEventListener("click",()=>{vertical=!vertical;redraw();});
+    wrapper.addEventListener("keydown",event=>{if(event.key.toLowerCase()==="r"&&!rotate.disabled){event.preventDefault();rotate.click();}});
+    undo.addEventListener("click",()=>{if(history.length)ships=history.pop();else ships.pop();redraw();});
+    clear.addEventListener("click",()=>{remember();ships=[];redraw();});
+    randomize.addEventListener("click",()=>{
+      remember();
+      let next;
+      do {
+        next=[];const occupied=new Set();
+        for(const length of fleetSizes){
+          const options=[];
+          for(let cell=0;cell<100;cell++)for(const vert of [false,true]){
+            const candidate=footprint(cell,length,vert,occupied);
+            if(candidate.valid)options.push(candidate.points);
+          }
+          if(!options.length)break;
+          const ship=options[Math.floor(Math.random()*options.length)];next.push(ship);ship.forEach(c=>occupied.add(c));
+        }
+      } while(next.length!==fleetSizes.length);
+      ships=next;redraw();
+    });
+    deploy.addEventListener("click",async()=>{
+      if(saving||!allowed||ships.length!==fleetSizes.length)return;
+      saving=true;redraw();
+      try{await request("/api/command",{method:"POST",body:JSON.stringify({command:"place_battleship_fleet",session_id:session.id,ships})});
+        localStorage.removeItem(draftKey);await refresh();}
+      catch(error){saving=false;notify(error.message);redraw();}
+    });
+    redraw();
+  } else if (sea && view.phase === "setup" && !session.private_fleet && !isObserver() && session.players.includes(state.snapshot?.callsign)) {
     let draft; try { draft = JSON.parse(localStorage.getItem(draftKey) || (sea ? "{}" : "[]")); } catch { draft = sea ? {} : []; }
     if (sea && Array.isArray(draft)) draft = {ships:draft};
     const ships = sea ? (draft.ships || []) : draft;
@@ -702,13 +854,20 @@ function renderBattleship(session, view, host) {
     if (sea && draft.decoy != null) { const token=node("span","bs-token bs-decoy","◉"); token.style.gridArea=`${Math.floor(draft.decoy/10)+1} / ${draft.decoy%10+1}`; grid.append(token); }
     wrapper.append(grid);
   } else if (view.phase === "setup") {
-    wrapper.append(node("p", "", "Fleet saved privately. Waiting for both stations to finish placement."));
-    ownGrid();
-  } else if (view.phase === "reply") {
-    wrapper.append(node("p", "", "Your fleet is saved on this station. The result will be sent automatically."));
+    wrapper.append(node("p", "", session.private_fleet ? "Fleet saved privately. Waiting for both stations to finish placement." : "Waiting for both stations to finish placement."));
+    if (session.private_fleet) ownGrid();
   } else {
-    ownGrid();
-    wrapper.append(node("h3", "", "Enemy waters · called coordinates"));
+    if (view.phase === "reply" && sea)
+      wrapper.append(node("p","turn-meta","Awaiting the defender's private hit/miss report. Both boards remain visible."));
+    const boards=node("div","bs-board-pair");
+    wrapper.append(boards);
+    if (session.private_fleet){
+      const ownPanel=node("section","bs-board-panel bs-own-panel");
+      boards.append(ownPanel);ownGrid(ownPanel);
+    }
+    const enemyPanel=node("section","bs-board-panel bs-enemy-panel");
+    boards.append(enemyPanel);
+    enemyPanel.append(node("h3", "", !sea && view.shot_owner !== state.snapshot?.callsign ? `${view.shot_owner} · called coordinates` : "Enemy waters · your shots"));
     let seaMode = "shot", seaSeat = session.players.indexOf(state.snapshot?.callsign), used = view.used?.[seaSeat] || 0, seaGridButtons = [];
     if (sea && canAct(session)) {
       const controls=node("div","bs-tactical-controls");
@@ -733,8 +892,22 @@ function renderBattleship(session, view, host) {
       if(view.sonar?.some(x=>x!==255)){const sonar=node("p","turn-meta",`Last sonar: ${view.sonar.map((x,i)=>x===255?null:`row ${i+1}: ${["clear","faint","strong"][x]}`).filter(Boolean).join(" · ")}`);wrapper.append(sonar);}
     }
     const grid=node("div","battleship-grid");
-    view.shots.forEach((value,index)=>{const row=Math.floor(index/10),col=index%10; const b=node("button",`battleship-cell bs-${value}`,value===1?"·":value===2?"✕":value>=3?`S${value-3}`:"");b.type="button";b.disabled=!canAct(session)||value!==0||(sea&&(seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[index+1]!==0))));b.addEventListener("click",()=>submitAction([sea&&seaMode==="double"?100+row*9+col:index]));grid.append(b);if(sea)seaGridButtons.push(b);});
-    wrapper.append(grid);
+    grid.dataset.moveBoard="enemy";
+    view.shots.forEach((value,index)=>{const row=Math.floor(index/10),col=index%10; const b=node("button",`battleship-cell bs-${value}`,value===1?"○":value===2?"✕":value>=3?`S${value-2}`:"");b.type="button";b.dataset.moveCell=index;b.title=`${String.fromCharCode(65+col)}${row+1}: ${value===1?"miss":value===2?"hit":value>=3?"sunk":"uncalled"}`;b.setAttribute("aria-label",b.title);b.disabled=!canAct(session)||(!sea&&(view.phase!=="call"||session.current_player!==state.snapshot?.callsign))||value!==0||(sea&&(seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[index+1]!==0))));b.addEventListener("click",()=>submitAction([sea&&seaMode==="double"?100+row*9+col:index]));grid.append(b);if(sea)seaGridButtons.push(b);});
+    const revealed=session.revealed_enemy_ships||[];
+    if(revealed.length){
+      const fleets=Array.from({length:fleetSizes.length},()=>[]);
+      for(const ship of revealed)fleets[ship.id]=ship.cells;
+      drawFleet(grid,fleets);
+      for(const ship of revealed)for(const cell of ship.cells){
+        const token=node("span","bs-token bs-own-sunk","S");
+        token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`;
+        grid.append(token);
+      }
+    }
+    enemyPanel.append(grid);
+    if (sea) enemyPanel.append(node("p","turn-meta",revealed.length+" confirmed enemy ship(s) sunk · ○ White: miss · × Red: hit · S Amber: sunk"));
+    if (!sea) enemyPanel.append(node("p","turn-meta",(5-new Set(view.shots.filter(v=>v>=3)).size)+" / 5 enemy ships afloat · ○ White: miss · × Red: hit · S Sunk"));
   }
   host.append(wrapper);
 }
@@ -743,6 +916,7 @@ function renderNim(session, view, host) {
   const piles = node("div", "nim-piles");
   view.piles.forEach((count, index) => {
     const row = node("div", "nim-pile");
+    row.dataset.movePile=index;
     row.append(node("span", "nim-label", `PILE ${String(index + 1).padStart(2, "0")}`));
     row.append(node("span", "nim-stones", "◆ ".repeat(count).trim() || "—"));
     row.append(node("span", "nim-number", count));
@@ -794,64 +968,183 @@ function parseWord(start, direction, word, cells) {
 }
 
 function renderWordTiles(session, view, host) {
-  const meta = node("div", "word-meta");
-  meta.append(node("strong", "", `${view.lexicon} · OPEN RACKS`));
-  meta.append(node("span", "", "Every rack is public; plan with the whole table."));
-  const bag = node("span", "word-bag", `BAG · ${view.bag}`); meta.append(bag); host.append(meta);
-  const boardShell = node("div", "word-board-shell");
-  const axes = node("div", "word-axes"); axes.append(node("span", "", ""));
-  for (let x = 0; x < 15; x++) axes.append(node("span", "", String.fromCharCode(65 + x)));
-  boardShell.append(axes);
-  const board = node("div", "word-board");
-  const startInput = node("input", "field"); startInput.id = "word-start"; startInput.value = "H8"; startInput.setAttribute("aria-label", "Starting square"); startInput.hidden = true;
-  const dir = node("select", "field"); dir.id = "word-direction";
-  for (const [value, label] of [["H", "Across"], ["V", "Down"]]) { const option = node("option", "", label); option.value = value; dir.append(option); }
-  const wordInput = node("input", "field"); wordInput.id = "word-text"; wordInput.placeholder = "Word · {A} uses a blank as A"; wordInput.autocomplete = "off";
-  for (let y = 0; y < 15; y++) {
-    const rowLabel = node("span", "word-row-label", y + 1); rowLabel.setAttribute("aria-hidden", "true");
-    board.append(rowLabel);
-    for (let x = 0; x < 15; x++) {
-      const index = y * 15 + x, tile = view.cells[index], premium = view.premiums[index];
-      const label = `${String.fromCharCode(65 + x)}${y + 1}`;
-      const cell = node("button", `word-cell${tile ? " filled" : ` premium-${premium.toLowerCase()}`}${index === 112 && !tile ? " center-star" : ""}`, tile || (index === 112 ? "★" : premium));
-      cell.type = "button"; cell.dataset.index = index; cell.setAttribute("aria-label", `${label}${tile ? `, ${tile}` : `, ${premium} premium`}`);
-      cell.addEventListener("click", () => { startInput.value = label; updatePreview(); wordInput.focus(); });
-      board.append(cell);
+  const actor=state.snapshot.callsign, allowed=canAct(session)&&session.current_player===actor;
+  const key=JSON.stringify([session.id,session.revision,actor]);
+  for(const k of state.wordDrafts.keys())if(JSON.parse(k)[0]===session.id&&k!==key)state.wordDrafts.delete(k);
+  const draft=state.wordDrafts.get(key)||{start:"H8",direction:"H",word:"",rack:[...(view.racks[actor]||[])]};
+  state.wordDrafts.set(key,draft);
+  const meta=node("div","word-meta",view.lexicon+" · OPEN RACKS · BAG "+view.bag);host.append(meta);
+  const draftState=node("div","word-draft-state empty");draftState.id="word-draft-state";draftState.setAttribute("role","status");draftState.setAttribute("aria-live","polite");host.append(draftState);
+  const draftLegend=node("div","word-draft-legend");
+  draftLegend.append(node("span","word-legend-draft","◇ TEAL DASHED = DRAFT · NOT SENT"),node("span","word-legend-committed","■ TAN SOLID = ON BOARD"));
+  host.append(draftLegend);
+  const shell=node("div","word-board-shell"),axes=node("div","word-axes");axes.append(node("span"));
+  for(let x=0;x<15;x++)axes.append(node("span","",String.fromCharCode(65+x)));
+  shell.append(axes);const board=node("div","word-board");shell.append(board);host.append(shell);
+  const cells=[];
+  for(let y=0;y<15;y++){
+    board.append(node("span","word-row-label",y+1));
+    for(let x=0;x<15;x++){
+      const i=y*15+x,tile=view.cells[i],premium=view.premiums[i],label=String.fromCharCode(65+x)+(y+1);
+      const cell=node("button","word-cell"+(tile?" filled":" premium-"+premium.toLowerCase())+(i===112&&!tile?" center-star":""),tile||(i===112?"★":premium));
+      cell.type="button";cell.disabled=!allowed;cell.setAttribute("aria-label",label);cell.dataset.index=i;cell.dataset.moveCell=i;
+      cell.addEventListener("click",()=>{start.value=label;update();});
+      cells.push(cell);board.append(cell);
     }
   }
-  boardShell.append(board); host.append(boardShell);
-  const racks = node("div", "rack-list");
-  for (const [player, tiles] of Object.entries(view.racks)) {
-    const row = node("div", "rack-row"); row.append(node("span", "rack-name", `${player} RACK`));
-    for (const tile of tiles) row.append(node("span", "rack-tile", tile === "·" ? "–" : tile));
-    racks.append(row);
+  host.append(node("p","preview-note","★ Center · TW triple word · DW double word · TL triple letter · DL double letter"));
+  const rackTitle=node("strong","","Your rack · click or drag tiles");host.insertBefore(rackTitle,shell);
+  const rackRow=node("div","rack-row word-rack-interactive"),rackButtons=[];
+  for(let slot=0;slot<draft.rack.length;slot++){
+    const b=node("button","rack-tile");b.type="button";b.dataset.rackSlot=slot;
+    let drag=null,suppressClick=false;
+    b.addEventListener("click",()=>{if(!suppressClick)addTile(slot);suppressClick=false;});
+    b.addEventListener("pointerdown",event=>{
+      if(b.disabled||event.button!==0)return;
+      suppressClick=false;drag={id:event.pointerId,x:event.clientX,y:event.clientY,active:false,target:null,ghost:null};
+      b.setPointerCapture(event.pointerId);
+    });
+    b.addEventListener("pointermove",event=>{
+      if(!drag||drag.id!==event.pointerId)return;
+      if(!drag.active&&Math.hypot(event.clientX-drag.x,event.clientY-drag.y)<6)return;
+      if(!drag.active){
+        drag.active=true;drag.ghost=node("div","word-drag-ghost",b.textContent);document.body.append(drag.ghost);
+      }
+      event.preventDefault();drag.ghost.style.left=event.clientX+"px";drag.ghost.style.top=event.clientY+"px";
+      drag.target?.classList.remove("drop-target");
+      const target=document.elementFromPoint(event.clientX,event.clientY)?.closest(".word-cell");
+      drag.target=target&&board.contains(target)&&!target.disabled?target:null;
+      drag.target?.classList.add("drop-target");
+    });
+    const finishDrag=(event,commit)=>{
+      if(!drag||drag.id!==event.pointerId)return;
+      const d=drag;drag=null;d.ghost?.remove();d.target?.classList.remove("drop-target");
+      if(d.active){suppressClick=true;if(commit&&d.target&&b.isConnected)addTile(slot,Number(d.target.dataset.index));}
+      if(b.hasPointerCapture(event.pointerId))b.releasePointerCapture(event.pointerId);
+    };
+    b.addEventListener("pointerup",event=>finishDrag(event,true));
+    b.addEventListener("pointercancel",event=>finishDrag(event,false));
+    b.addEventListener("lostpointercapture",event=>finishDrag(event,false));
+    rackButtons.push(b);rackRow.append(b);
   }
-  host.append(racks);
-  const note = node("div", "preview-note", "Click a square, then enter your word."); host.append(note);
-  const form = node("form", "word-controls");
-  startInput.hidden = false;
-  form.append(startInput, dir, wordInput);
-  const place = node("button", "button primary", "Place word"); place.type = "submit"; place.disabled = !canAct(session); form.append(place);
-  form.addEventListener("submit", event => { event.preventDefault(); sendCommand("place_word", { session_id: session.id, start: startInput.value, direction: dir.value, word: wordInput.value }); });
-  host.append(form);
-  const exchangeForm = node("form", "word-secondary");
-  const exchange = node("input", "field"); exchange.placeholder = "Exchange letters · ? for blank"; exchange.setAttribute("aria-label", "Tiles to exchange");
-  const exchangeButton = node("button", "button", "Exchange"); exchangeButton.type = "submit"; exchangeButton.disabled = !canAct(session) || view.bag < 7;
-  const pass = node("button", "button", "Pass"); pass.type = "button"; pass.disabled = !canAct(session); pass.addEventListener("click", () => submitAction([1]));
-  exchangeForm.append(exchange, exchangeButton, pass);
-  exchangeForm.addEventListener("submit", event => { event.preventDefault(); sendCommand("exchange_word", { session_id: session.id, tiles: exchange.value }); });
-  host.append(exchangeForm);
-  function updatePreview() {
-    const preview = parseWord(startInput.value, dir.value, wordInput.value, view.cells);
-    note.textContent = preview.message;
-    for (const cell of board.querySelectorAll(".word-cell")) {
-      cell.classList.remove("preview", "preview-conflict");
-      const index = Number(cell.dataset.index);
-      if (preview.positions.has(index)) cell.classList.add(view.cells[index] && view.cells[index].toUpperCase() !== preview.positions.get(index) ? "preview-conflict" : "preview");
+  host.insertBefore(rackRow,shell);
+  for(const [player,rack] of Object.entries(view.racks))if(player!==actor)host.append(node("p","preview-note",player+" · "+rack.join("  ")));
+  const form=node("form","word-controls");
+  const start=node("input","field");start.id="word-start";start.value=draft.start;start.setAttribute("aria-label","Starting square");start.maxLength=3;
+  const dir=node("select","field");dir.id="word-direction";
+  for(const [value,label] of [["H","Across"],["V","Down"]]){const option=node("option","",label);option.value=value;dir.append(option);}dir.value=draft.direction;
+  const word=node("input","field");word.id="word-text";word.value=draft.word;word.placeholder="Word · {A} for blank";word.autocomplete="off";
+  const place=node("button","button primary","Submit word");place.type="submit";place.title="Only this button submits tiles to the game";
+  form.append(start,dir,word,place);host.append(form);
+  const tools=node("div","word-draft-tools");
+  const undo=node("button","button secondary","Undo tile"),clear=node("button","button secondary","Clear"),shuffle=node("button","button secondary","Shuffle rack");
+  for(const b of [undo,clear,shuffle])b.type="button";
+  tools.append(undo,clear,shuffle);host.append(tools);
+  const note=node("p","preview-note word-live-score");note.setAttribute("aria-live","polite");host.append(note);
+  const exchangeForm=node("form","word-secondary"),exchange=node("input","field");exchange.placeholder="Exchange letters · ? blank";
+  const exchangeButton=node("button","button","Exchange");exchangeButton.type="submit";exchangeButton.disabled=!allowed||view.bag<7;
+  const pass=node("button","button","Pass");pass.type="button";pass.disabled=!allowed;pass.addEventListener("click",()=>submitAction([1]));
+  exchangeForm.append(exchange,exchangeButton,pass);host.append(exchangeForm);
+  exchangeForm.addEventListener("submit",event=>{event.preventDefault();if(allowed)sendCommand("exchange_word",{session_id:session.id,tiles:exchange.value});});
+  for(const c of [start,dir,word,undo,clear,shuffle,exchange])c.disabled=!allowed;
+  let generation=0,timer=null,valid=false,submitting=false;
+  const tokens=()=>word.value.trim().toUpperCase().match(/\{[A-Z]\}|[A-Z]/g)||[];
+  function coords(){
+    const m=/^([A-O])(1[0-5]|[1-9])$/.exec(start.value.trim().toUpperCase());
+    return m?[m[1].charCodeAt(0)-65,Number(m[2])-1]:null;
+  }
+  function addTile(slot,target=null){
+    if(!allowed||!rackButtons[slot]||rackButtons[slot].disabled)return;
+    let letter=draft.rack[slot];
+    const dx=dir.value==="H"?1:0,dy=1-dx;
+    if(target!==null){
+      if(target<0||target>=225||view.cells[target]){note.textContent="Drop onto an empty square";return;}
+      const xy=coords(),t=tokens();
+      if(!word.value.trim()){
+        let first=target,step=dx?1:15;
+        while((dx?first%15:Math.floor(first/15))>0&&view.cells[first-step])first-=step;
+        start.value=String.fromCharCode(65+first%15)+(Math.floor(first/15)+1);
+      }else{
+        if(!xy||t.join("")!==word.value.trim().toUpperCase())return;
+        let x=xy[0]+t.length*dx,y=xy[1]+t.length*dy;
+        while(x<15&&y<15&&view.cells[y*15+x]){x+=dx;y+=dy;}
+        if(x>=15||y>=15||target!==y*15+x){note.textContent="Extend at the next empty square, or clear the draft to start elsewhere";return;}
+      }
     }
+    if(letter==="?"){
+      const value=(window.prompt("Assign blank tile a letter A–Z")||"").trim().toUpperCase();
+      if(!/^[A-Z]$/.test(value))return;letter="{"+value+"}";
+    }
+    const xy=coords(),t=tokens();if(!xy||t.join("")!==word.value.trim().toUpperCase())return;
+    let x=xy[0]+t.length*dx,y=xy[1]+t.length*dy;
+    const include=()=>{while(x<15&&y<15&&view.cells[y*15+x]){t.push(view.cells[y*15+x].toUpperCase());x+=dx;y+=dy;}};
+    include();if(x>=15||y>=15)return;t.push(letter);x+=dx;y+=dy;include();word.value=t.join("");update();
   }
-  startInput.addEventListener("input", updatePreview); dir.addEventListener("change", updatePreview); wordInput.addEventListener("input", updatePreview);
-  updatePreview();
+  undo.addEventListener("click",()=>{
+    const t=tokens(),xy=coords(),step=dir.value==="H"?1:15;
+    while(t.length){const i=xy?xy[1]*15+xy[0]+(t.length-1)*step:-1;t.pop();if(!view.cells[i])break;}
+    word.value=t.join("");update();
+  });
+  clear.addEventListener("click",()=>{word.value="";update();});
+  shuffle.addEventListener("click",()=>{for(let i=draft.rack.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[draft.rack[i],draft.rack[j]]=[draft.rack[j],draft.rack[i]];}update();});
+  function update(){
+    draft.start=start.value;draft.direction=dir.value;draft.word=word.value;
+    const preview=parseWord(start.value,dir.value,word.value.trim(),view.cells), t=tokens(),used=[];
+    const selected=parseWord(start.value,dir.value,"A",view.cells).positions;
+    let offset=0;
+    for(const [i,letter] of preview.positions){
+      const token=t[offset++];if(!view.cells[i])used.push(token?.startsWith("{")?"?":letter);
+    }
+    for(let i=0;i<cells.length;i++){
+      const c=cells[i],tile=view.cells[i],letter=preview.positions.get(i);
+      c.classList.toggle("preview",Boolean(letter));c.classList.toggle("preview-conflict",Boolean(tile&&letter&&tile.toUpperCase()!==letter));
+      c.classList.toggle("draft-start",selected.has(i));c.classList.toggle("draft-tile",Boolean(letter&&!tile));
+      c.textContent=tile||letter||(i===112?"★":view.premiums[i]);
+    }
+    rackButtons.forEach((b,i)=>{const tile=draft.rack[i],n=used.indexOf(tile);b.textContent=tile;b.disabled=!allowed||tile==="·"||n>=0;if(n>=0)used.splice(n,1);});
+    valid=false;place.disabled=true;place.textContent="Submit word";clearTimeout(timer);const g=++generation;
+    const proposed=[...preview.positions.keys()].filter(i=>!view.cells[i]).length;
+    draftState.classList.toggle("empty",!word.value.trim());
+    draftState.classList.toggle("confirmed",!word.value.trim()&&Boolean(session.last_confirmed_word));
+    draftState.classList.remove("submitting");
+    draftState.textContent=word.value.trim()?"◇ DRAFT — NOT SUBMITTED · "+proposed+" proposed tile"+(proposed===1?"":"s"):
+      session.last_confirmed_word?"✓ COMMITTED TO BOARD · Revision "+session.last_confirmed_word.revision:
+      "NO DRAFT · Choose a square and build a word";
+    if(!allowed){note.textContent="Waiting for your turn. Nothing has been sent.";return;}
+    if(submitting){note.textContent="Submitting word… waiting for the table";return;}
+    if(!word.value.trim()){
+      note.textContent=session.last_confirmed_word?"Your last confirmed word: "+session.last_confirmed_word.description+". Tan tiles are permanent.":
+        "Click or drag rack tiles, or type a word. Nothing transmits until you press Submit word.";
+      return;
+    }
+    note.textContent="Draft only · Checking dictionary and score…";
+    timer=setTimeout(async()=>{
+      try{
+        const result=await request("/api/command",{method:"POST",body:JSON.stringify({command:"preview_word",session_id:session.id,revision:session.revision,start:start.value,direction:dir.value,word:word.value})});
+        if(g!==generation||!host.isConnected)return;
+        valid=true;place.disabled=submitting;place.textContent="Submit word · +"+result.score+" points";
+        note.textContent="Legal word · "+result.score+" points available. Submit to lock these tiles onto the board.";
+      }catch(error){if(g===generation&&host.isConnected)note.textContent="Not ready to submit: "+error.message+". Keep editing; this is still a draft.";}
+    },150);
+  }
+  form.addEventListener("submit",async event=>{
+    event.preventDefault();if(!allowed||!valid||submitting)return;
+    submitting=true;place.disabled=true;
+    const expectedWord=word.value.trim().toUpperCase(),revision=session.revision;
+    draftState.textContent="SUBMITTING · Awaiting confirmation";draftState.classList.add("submitting");
+    try {
+      const result=await sendCommand("place_word",{session_id:session.id,revision:session.revision,start:start.value,direction:dir.value,word:word.value});
+      if(result){
+        try {
+          const journal=await request("/api/moves/"+encodeURIComponent(session.id));
+          const committed=journal.moves.some(move=>move.revision>revision&&move.actor===actor&&/place/i.test(move.description));
+          notify(committed?"✓ "+expectedWord+" committed to the board":
+            "Word submitted for delivery · Awaiting the host's confirmation");
+        } catch {notify("Word request sent · Check table status for confirmation");}
+      }
+    } finally {submitting=false;if(host.isConnected)update();}
+  });
+  start.addEventListener("input",update);dir.addEventListener("change",update);word.addEventListener("input",update);update();
 }
 
 function sitePositions() {
@@ -1093,14 +1386,17 @@ function renderScorchedEarth(session, view, host) {
   const beforeTerrain = animateShot ? view.previous_terrain || view.terrain : view.terrain;
   const wrap = node("div", "tank-layout");
   const arena = node("div", "tank-arena");
-  let followShot = true;
+  const camera = state.tankCameras.get(session.id) || {zoom:1,center:null,follow:true};
+  state.tankCameras.set(session.id,camera);
+  let followShot = camera.follow;
+  const manual = () => {followShot=false;camera.follow=false;follow.checked=false;};
   arena.setAttribute("tabindex", "0");
   arena.setAttribute("aria-label", "Scrollable battlefield. Use WASD or arrows, drag the map, or click to center the view.");
   const svg = svgElement("svg", { class: "tank-map", viewBox: `0 0 ${view.width * 24} ${view.sky_height * 24}`,
     preserveAspectRatio: "none",
     role: "img", "aria-label": `${view.map_name} battlefield. Both tanks are visible; adjust the weapon and firing angle.` });
-  svg.style.width = `${Math.round(view.width * 20 * state.tankZoom)}px`;
-  svg.style.height = `${Math.round(view.sky_height * 14 * state.tankZoom)}px`;
+  svg.style.width = `${Math.round(view.width * 20 * camera.zoom)}px`;
+  svg.style.height = `${Math.round(view.sky_height * 14 * camera.zoom)}px`;
   const width = view.width * 24, height = view.sky_height * 24;
   const defs = svgElement("defs");
   const skyGradient = svgElement("linearGradient", { id: "scorched-sky", x1: "0%", y1: "0%", x2: "0%", y2: "100%" });
@@ -1213,15 +1509,18 @@ function renderScorchedEarth(session, view, host) {
   overview.append(visibleRegion);
   const zoomOut = node("button", "button tank-zoom", "−"); zoomOut.type = "button"; zoomOut.title = "Zoom out";
   const zoomIn = node("button", "button tank-zoom", "+"); zoomIn.type = "button"; zoomIn.title = "Zoom in";
-  const zoomText = node("span", "tank-zoom-label", `${Math.round(state.tankZoom * 100)}%`);
+  const follow = node("input");follow.type="checkbox";follow.checked=followShot;follow.addEventListener("change",()=>{followShot=follow.checked;camera.follow=followShot;});
+  const followLabel=node("label","tank-follow","Follow shots");followLabel.prepend(follow);
+  const zoomText = node("span", "tank-zoom-label", `${Math.round(camera.zoom * 100)}%`);
   function updateMinimap() {
     const mapWidth = svg.getBoundingClientRect().width || 1;
     const viewWidth = Math.min(view.width * 8, view.width * 8 * arena.clientWidth / mapWidth);
     visibleRegion.setAttribute("width", viewWidth);
     visibleRegion.setAttribute("x", view.width * 8 * arena.scrollLeft / mapWidth);
+    if(arena.clientWidth&&arena.clientHeight)camera.center=[(arena.scrollLeft+arena.clientWidth/2)/mapWidth,(arena.scrollTop+arena.clientHeight/2)/(svg.getBoundingClientRect().height||1)];
   }
   function centerOn(fraction) {
-    followShot = false;
+    manual();
     arena.scrollLeft = Math.max(0, fraction * svg.getBoundingClientRect().width - arena.clientWidth / 2);
     updateMinimap();
   }
@@ -1239,10 +1538,10 @@ function renderScorchedEarth(session, view, host) {
   });
   overview.addEventListener("pointerup", event => { if (overview.hasPointerCapture(event.pointerId)) overview.releasePointerCapture(event.pointerId); });
   function panKeys(event) {
-    if (event.ctrlKey || event.altKey || event.metaKey || event.target.closest("input,select,textarea,button,[contenteditable]")) return;
+    if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || event.target.closest("input,select,textarea,button,[contenteditable]")) return;
     const delta = { a: [-1, 0], d: [1, 0], w: [0, -1], s: [0, 1], arrowleft: [-1, 0], arrowright: [1, 0], arrowup: [0, -1], arrowdown: [0, 1] }[event.key.toLowerCase()];
     if (!delta) return;
-    event.preventDefault(); followShot = false;
+    event.preventDefault(); manual();
     arena.scrollLeft += delta[0] * Math.max(32, arena.clientWidth / 8);
     arena.scrollTop += delta[1] * Math.max(32, arena.clientHeight / 8);
     updateMinimap();
@@ -1251,7 +1550,7 @@ function renderScorchedEarth(session, view, host) {
   let drag = null;
   arena.addEventListener("pointerdown", event => {
     if (event.button !== 0) return;
-    event.preventDefault(); followShot = false; arena.focus({ preventScroll: true });
+    event.preventDefault(); manual(); arena.focus({ preventScroll: true });
     arena.setPointerCapture(event.pointerId); arena.classList.add("panning");
     drag = { x: event.clientX, y: event.clientY, left: arena.scrollLeft, top: arena.scrollTop, moved: false };
   });
@@ -1273,20 +1572,28 @@ function renderScorchedEarth(session, view, host) {
   }
   arena.addEventListener("pointerup", endPan); arena.addEventListener("pointercancel", endPan);
   arena.addEventListener("lostpointercapture", () => { drag = null; arena.classList.remove("panning"); });
-  arena.addEventListener("wheel", () => { followShot = false; }, { passive: true });
+  arena.addEventListener("wheel", () => { manual(); }, { passive: true });
   function zoomBy(delta) {
     const mapWidth = svg.getBoundingClientRect().width || 1;
     const centerFraction = (arena.scrollLeft + arena.clientWidth / 2) / mapWidth;
-    state.tankZoom = Math.max(.75, Math.min(1.6, Math.round((state.tankZoom + delta) * 100) / 100));
-    svg.style.width = `${Math.round(view.width * 20 * state.tankZoom)}px`;
-    svg.style.height = `${Math.round(view.sky_height * 14 * state.tankZoom)}px`;
-    zoomText.textContent = `${Math.round(state.tankZoom * 100)}%`;
+    camera.zoom = Math.max(.75, Math.min(1.6, Math.round((camera.zoom + delta) * 100) / 100));
+    svg.style.width = `${Math.round(view.width * 20 * camera.zoom)}px`;
+    svg.style.height = `${Math.round(view.sky_height * 14 * camera.zoom)}px`;
+    zoomText.textContent = `${Math.round(camera.zoom * 100)}%`;
     centerOn(centerFraction);
   }
   zoomOut.addEventListener("click", () => zoomBy(-.2));
   zoomIn.addEventListener("click", () => zoomBy(.2));
   arena.addEventListener("scroll", updateMinimap, { passive: true });
   navigation.append(navLabel, overview, zoomOut, zoomText, zoomIn);
+  const cameraTools=node("div","tank-camera-tools");
+  const own=view.tanks.find(t=>t.player===state.snapshot.callsign)||view.tanks[0],other=view.tanks.find(t=>t!==own);
+  for(const [label,target] of [[own.player===state.snapshot.callsign?"My tank":"Tank 1",own],[own.player===state.snapshot.callsign?"Opponent":"Tank 2",other]]){
+    const btn=node("button","button secondary",label);btn.type="button";
+    btn.addEventListener("click",()=>{centerOn(target.x/view.width);arena.scrollTop=(view.sky_height-target.world_y)/view.sky_height*svg.getBoundingClientRect().height-arena.clientHeight/2;updateMinimap();});
+    cameraTools.append(btn);
+  }
+  cameraTools.append(followLabel);
   const side = node("aside", "tank-side");
   side.append(node("div", "tank-map-name", view.map_name), node("div", "tank-wind", `${view.wind.direction} ${view.wind.label} · shifts each turn`), node("div", "tank-help", isPractice()
     ? "Aim with the wind and reshape the hills. Cannon ammunition is unlimited; other rounds, fuel, and repairs are limited."
@@ -1303,7 +1610,8 @@ function renderScorchedEarth(session, view, host) {
   }
   const form = node("form", "tank-controls");
   const weapon = node("select", "field"); weapon.setAttribute("aria-label", "Weapon");
-  const activeTank = view.tanks.find(tank => tank.player === (isPractice() ? view.turn : state.snapshot.callsign));
+  const activeTank=view.tanks.find(tank=>tank.player===state.snapshot.callsign);
+  const allowed=canAct(session)&&session.current_player===state.snapshot.callsign;
   for (const item of view.weapons) {
     const stock = activeTank?.ammo[item.id] ?? 0;
     const option = node("option", "", `${item.name} · ${item.tag} · ${item.id ? `${stock} rounds` : "∞ rounds"}`);
@@ -1314,22 +1622,40 @@ function renderScorchedEarth(session, view, host) {
   weapon.value = String(activeTank?.ammo[selectedWeapon] ? selectedWeapon : 0);
   weapon.addEventListener("change", () => state.tankWeapons.set(weaponKey, Number(weapon.value)));
   const angleLabel = node("label", "tank-angle-label", "Firing angle · 45°");
-  const angle = node("input", "field tank-angle"); angle.type = "range"; angle.min = String(view.min_angle); angle.max = String(view.max_angle); angle.value = "45";
+  const angle = node("input", "field tank-angle"); angle.type = "range"; angle.min = String(view.min_angle); angle.max = String(view.max_angle); angle.value = String(state.tankAim.get(weaponKey)?.angle ?? 45);
   angleLabel.append(angle);
-  const submit = node("button", "button primary", "Fire weapon"); submit.type = "submit"; submit.disabled = !canAct(session);
+  const submit = node("button", "button primary", "Fire weapon"); submit.type = "submit"; submit.disabled = !allowed;
   const powerLabel = node("label", "tank-angle-label", "Power · 100%");
   const power = node("input", "field tank-angle"); power.type = "range";
-  power.min = String(view.min_power); power.max = String(view.max_power); power.step = String(view.power_step); power.value = String(view.max_power);
+  power.min = String(view.min_power); power.max = String(view.max_power); power.step = String(view.power_step); power.value = String(state.tankAim.get(weaponKey)?.power ?? view.max_power);
   powerLabel.append(power);
-  form.append(weapon, angleLabel, powerLabel, submit);
+  const angleNumber=node("input","field tank-number");angleNumber.type="number";angleNumber.min=angle.min;angleNumber.max=angle.max;angleNumber.value=angle.value;angleNumber.setAttribute("aria-label","Angle in degrees");
+  const powerNumber=node("input","field tank-number");powerNumber.type="number";powerNumber.min=power.min;powerNumber.max=power.max;powerNumber.step=power.step;powerNumber.value=power.value;powerNumber.setAttribute("aria-label","Power percent");
+  angleLabel.append(angleNumber);powerLabel.append(powerNumber);
+  const info=node("p","tank-help"),predicted=node("p","tank-help");
+  const adjust=(a,p)=>{if(!allowed)return;angle.value=String(Math.max(+angle.min,Math.min(+angle.max,+angle.value+a)));power.value=String(Math.max(+power.min,Math.min(+power.max,+power.value+p*view.power_step)));updatePreview();};
+  for(const target of [arena,overview])target.addEventListener("keydown",event=>{
+    if(!event.shiftKey)return;const delta={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,1],ArrowDown:[0,-1]}[event.key];
+    if(delta){event.preventDefault();adjust(...delta);}
+  });
+  for(const control of [weapon,angle,power,angleNumber,powerNumber])control.disabled=!allowed;
+  angleNumber.addEventListener("change",()=>{angle.value=angleNumber.value;updatePreview();});
+  powerNumber.addEventListener("change",()=>{power.value=String(Math.round(Number(powerNumber.value)/view.power_step)*view.power_step);updatePreview();});
+  form.append(weapon,info,angleLabel,powerLabel,predicted,node("p","tank-help","Shift + arrows: precise aim"),submit);
   function updatePreview() {
+    angleNumber.value=angle.value;powerNumber.value=power.value;
+    state.tankAim.set(weaponKey,{angle:Number(angle.value),power:Number(power.value)});
+    const item=view.weapons[Number(weapon.value)]||view.weapons[0];
+    info.textContent=item.tag+" · "+item.damage+" damage · "+item.radius+" blast radius · "+(item.id?(activeTank?.ammo[item.id]||0)+" in stock":"Unlimited");
+    predicted.textContent=allowed?"Trajectory preview":"Waiting for your turn";
     powerLabel.firstChild.textContent = `Power · ${power.value}%`;
     angleLabel.firstChild.textContent = `Firing angle · ${angle.value}°`;
-    const shooterName = isPractice() ? view.turn : state.snapshot.callsign;
+    const shooterName=state.snapshot.callsign;
     const shooter = view.tanks.find(tank => tank.player === shooterName);
     barrels.get(shooterName)?.setAngle(Number(angle.value));
-    if (!shooter || !canAct(session)) { preview.remove(); return; }
-    const points = traceTankPreview(view, shooter, view.weapons[Number(weapon.value)], Number(angle.value), Number(power.value));
+    if (!shooter || !allowed) { preview.remove(); return; }
+    const {points,kind} = traceTankPreview(view, shooter, view.weapons[Number(weapon.value)], Number(angle.value), Number(power.value), true);
+    predicted.textContent = "Predicted: " + ({tank:"direct hit",terrain:"terrain impact",edge:"leaves battlefield"}[kind]);
     preview.setAttribute("points", points.map(([x, y]) => `${x * 24},${(view.sky_height - y) * 24}`).join(" "));
     if (!preview.isConnected) svg.append(preview);
   }
@@ -1339,7 +1665,7 @@ function renderScorchedEarth(session, view, host) {
   updatePreview();
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (!canAct(session) || submit.disabled) return;
+    if (!allowed || submit.disabled) return;
     const degrees = Number(angle.value);
     if (!Number.isInteger(degrees) || degrees < view.min_angle || degrees > view.max_angle) { notify(`Firing angle must be between ${view.min_angle}° and ${view.max_angle}°.`); return; }
     const strength = Number(power.value);
@@ -1353,48 +1679,51 @@ function renderScorchedEarth(session, view, host) {
       renderGame({ ...session, has_pending_action: true, animation_revision: session.revision + 1, animation_view: prediction.view });
       const result = await sendCommand("legal_action", { session_id: session.id, action });
       if (!result) { state.tankPlayback = null; state.sessionSignature = ""; await refresh(); }
-    } catch (error) { submit.disabled = !canAct(session); notify(error.message); }
+    } catch (error) { submit.disabled = !allowed; notify(error.message); }
   });
-  const shop = node("div", "tank-shop");
-  shop.append(node("div", "tank-shop-title", "ARMORY · BUY AMMUNITION (USES TURN)"));
-  for (const item of view.weapons.slice(1)) {
-    const buy = node("button", "button secondary tank-buy", `${item.name} · ¤${item.cost}`);
-    buy.type = "button";
-    buy.disabled = !canAct(session) || !activeTank || activeTank.credits < item.cost || activeTank.ammo[item.id] >= 254;
-    buy.addEventListener("click", () => submitAction([view.actions.buy, item.id]));
-    shop.append(buy);
+  const armory=node("button","button secondary","Armory · "+(activeTank?.credits??0)+" credits");armory.type="button";armory.disabled=!activeTank;
+  const shop=node("dialog","tank-armory-dialog");
+  shop.append(node("h3","","Armory"),node("p","tank-help","Buying one round uses your turn."));
+  for(const item of view.weapons){
+    const card=node("div","tank-armory-card");card.append(node("strong","",item.name+" · "+(item.id?(activeTank?.ammo[item.id]||0)+" rounds":"Unlimited")),node("p","tank-help",item.tag+" · Damage "+item.damage+" · Radius "+item.radius+" · Speed "+item.speed));
+    if(item.id){const buy=node("button","button secondary","Buy one round · "+item.cost+" credits");buy.type="button";buy.disabled=!allowed||!activeTank||activeTank.credits<item.cost||activeTank.ammo[item.id]>=254;buy.addEventListener("click",()=>{shop.close();submitAction([view.actions.buy,item.id]);});card.append(buy);}
+    shop.append(card);
   }
+  const close=node("button","button secondary","Close");close.type="button";close.addEventListener("click",()=>shop.close());shop.append(close);
+  armory.addEventListener("click",()=>shop.showModal());
   const tactics = node("div", "tank-tactics");
   const drive = node("div", "tank-drive-controls");
-  const left = node("button", "button secondary", "◀ Drive"); left.type = "button"; left.disabled = !canAct(session) || !activeTank?.fuel;
-  const right = node("button", "button secondary", "Drive ▶"); right.type = "button"; right.disabled = !canAct(session) || !activeTank?.fuel;
+  const left = node("button", "button secondary", "◀ Drive"); left.type = "button"; left.disabled = !allowed || !activeTank?.fuel;
+  const right = node("button", "button secondary", "Drive ▶"); right.type = "button"; right.disabled = !allowed || !activeTank?.fuel;
   left.addEventListener("click", () => submitAction([view.actions.drive, 0]));
   right.addEventListener("click", () => submitAction([view.actions.drive, 1]));
   drive.append(left, right); tactics.append(drive);
   const repair = node("button", "button secondary", "Repair +24 HP"); repair.type = "button";
-  repair.disabled = !canAct(session) || !activeTank || activeTank.repair_kits <= 0 || activeTank.hp >= 100;
+  repair.disabled = !allowed || !activeTank || activeTank.repair_kits <= 0 || activeTank.hp >= 100;
   repair.addEventListener("click", () => submitAction([view.actions.repair, 0]));
   const shield = node("button", "button secondary", "Raise shield"); shield.type = "button";
-  shield.disabled = !canAct(session) || !activeTank || activeTank.shielded;
+  shield.disabled = !allowed || !activeTank || activeTank.shielded;
   shield.addEventListener("click", () => submitAction([view.actions.shield, 0]));
   tactics.append(repair, shield); side.append(tactics);
-  side.append(form);
-  side.append(shop);
+  side.append(armory,form,shop);
   const callout = node("div", "tank-shot-result", view.last_action ? `${view.last_actor} ${view.last_action}` : "Take the first turn");
   side.append(callout);
   const replay = node("button", "button secondary", "Instant replay"); replay.type = "button";
   replay.disabled = !view.impact;
   replay.addEventListener("click", () => {
     state.lastTankAnimation = null;
+    camera.follow=true;
     renderGame(session);
   });
   side.append(replay);
-  wrap.append(navigation, arena, panHint, side); host.append(wrap);
+  wrap.append(navigation,cameraTools,arena,panHint,side); host.append(wrap);
   // On a panoramic map, start near the tank whose turn it is; players can pan
   // across the entire battlefield with touch, trackpad or the scrollbar.
-  const activeViewTank = view.tanks.find(tank => tank.player === view.turn);
+  const savedCenter=camera.center?.slice();
+  const activeViewTank = activeTank || view.tanks.find(tank => tank.player === view.turn);
   if (activeViewTank && !animateShot) requestAnimationFrame(() => {
     const x = activeViewTank.x / view.width * svg.getBoundingClientRect().width;
+    if(savedCenter){arena.scrollLeft=savedCenter[0]*svg.getBoundingClientRect().width-arena.clientWidth/2;arena.scrollTop=savedCenter[1]*svg.getBoundingClientRect().height-arena.clientHeight/2;updateMinimap();return;}
     arena.scrollLeft = Math.max(0, x - arena.clientWidth * .35);
     arena.scrollTop = Math.max(0, (view.sky_height - activeViewTank.world_y) / view.sky_height * svg.getBoundingClientRect().height - arena.clientHeight * .65);
     updateMinimap();
@@ -1421,7 +1750,7 @@ function renderScorchedEarth(session, view, host) {
   }
 }
 
-function traceTankPreview(view, shooter, weapon, angle, power = 100) {
+function traceTankPreview(view, shooter, weapon, angle, power = 100, details = false) {
   // Match the engine's integer coordinates and Python's ties-to-even rounding.
   const roundEven = value => { const floor = Math.floor(value), fraction = value - floor; return fraction === .5 ? floor + (floor % 2 !== 0 ? 1 : 0) : Math.round(value); };
   const direction = shooter.facing === 0 ? 1 : -1;
@@ -1431,6 +1760,7 @@ function traceTankPreview(view, shooter, weapon, angle, power = 100) {
   let vx = direction * roundEven(speed * Math.cos(theta)), vy = roundEven(speed * Math.sin(theta));
   const target = view.tanks.find(tank => tank.player !== shooter.player);
   const points = [[x / 1000, y / 1000]];
+  let kind = "edge";
   for (let step = 0; step < 240; step++) {
     const startX = x, startY = y;
     const steps = Math.max(1, Math.ceil(Math.max(Math.abs(vx), Math.abs(vy)) / 100));
@@ -1439,10 +1769,10 @@ function traceTankPreview(view, shooter, weapon, angle, power = 100) {
       x = startX + roundEven(vx * substep / steps);
       y = startY + roundEven(vy * substep / steps);
       const ty = target ? roundEven(target.world_y * 1000) : 0;
-      if (target && Math.abs(x - target.x * 1000) <= 1050 && y >= ty - 500 && y <= ty + 1000) { collided = true; break; }
+      if (target && Math.abs(x - target.x * 1000) <= 1050 && y >= ty - 500 && y <= ty + 1000) { kind = "tank"; collided = true; break; }
       if (x < 0 || x >= view.width * 1000) { collided = true; break; }
       const column = Math.max(0, Math.min(view.width - 1, roundEven(x / 1000)));
-      if (y <= view.terrain[column] * 1000) { y = view.terrain[column] * 1000; collided = true; break; }
+      if (y <= view.terrain[column] * 1000) { y = view.terrain[column] * 1000; kind = "terrain"; collided = true; break; }
     }
     points.push([x / 1000, y / 1000]);
     if (collided) break;
@@ -1450,7 +1780,7 @@ function traceTankPreview(view, shooter, weapon, angle, power = 100) {
     if (direction * vx < 0) vx = 0;
     vy -= roundEven(view.gravity * 1000);
   }
-  return points;
+  return details ? {points,kind} : points;
 }
 
 function animateTankShot(svg, view, actor, callout, onImpact = () => {}, onPosition = () => {}) {
@@ -1533,7 +1863,7 @@ function animateTankShot(svg, view, actor, callout, onImpact = () => {}, onPosit
 
 function renderGame(session) {
   const view = session.view;
-  const host = $("#arena-body"); host.replaceChildren();
+  const host = $("#arena-body"); document.querySelectorAll(".word-drag-ghost").forEach(g=>g.remove()); host.replaceChildren();
   host.classList.toggle("tank-arena-body", view?.kind === "scorched-earth");
   state.islandSelection = view?.kind === "settlement" ? state.islandSelection : null;
   if (!view) {
@@ -1541,7 +1871,11 @@ function renderGame(session) {
     empty.append(node("div", "welcome-emblem", "◈"));
     empty.append(node("p", "eyebrow", session.status === "invited" ? "A SEAT IS WAITING" : "TABLE OPEN"));
     empty.append(node("h2", "", session.status === "invited" ? "You're invited." : "The table is set."));
-    empty.append(node("p", "", session.status === "invited" ? `Accept the invitation from ${session.coordinator} in the left panel to take your seat.` : "Invite a station or wait for players to join, then start the game from the table controls."));
+    const min=state.snapshot.catalog.find(g=>g.game_id===session.game_id)?.min_players??2;
+    empty.append(node("p","",session.players.length+" joined · "+min+" required"));
+    for(const player of session.players)empty.append(node("p","", "● "+player+(player===session.coordinator?" · Host":"")+(player===state.snapshot.callsign?" (you)":"")));
+    for(const player of session.invited||[])empty.append(node("p","", "○ "+player+" · Invitation pending"));
+    empty.append(node("p","",session.status==="invited"?"Accept the invitation above to take your seat.":"Invite stations or wait for players to join, then start the game."));
     host.append(empty); return;
   }
   const block = node("div", "game-block");
@@ -1550,6 +1884,7 @@ function renderGame(session) {
     case "signal-siege": renderSignalSiege(session, view, block); break;
     case "hexxagon": renderHexxagon(session, view, block); break;
     case "grid": renderGrid(session, view, block); break;
+    case "connect-four": renderConnectFour(session, view, block); break;
     case "battleship": case "sea-warfare": renderBattleship(session, view, block); break;
     case "scorched-earth": renderScorchedEarth(session, view, block); break;
     case "piles": renderNim(session, view, block); break;
@@ -1578,6 +1913,51 @@ function renderChat(messages) {
   list.scrollTop = list.scrollHeight;
 }
 
+function animateLastOpponentMove(session, {automatic=false}={}){
+  const cue=session.last_opponent_cue;
+  if(!cue||session.id!==state.selectedId||cue.kind==="scorched-earth")return;
+  const key=session.id+":"+cue.revision;
+  if(automatic && state.moveCueSeen.get(session.id)===key)return;
+  state.moveCueSeen.set(session.id,key);
+  const root=$("#arena-body");
+  if(!root||!root.isConnected)return;
+  root.querySelectorAll(".move-wave,.move-popover").forEach(el=>el.remove());
+  const index=cue.indices?.[Math.floor(cue.indices.length/2)];
+  const board=cue.board;
+  let target;
+  if(cue.kind==="nim")target=root.querySelector(`[data-move-pile="${index}"]`);
+  else if(["battleship-classic","sea-warfare"].includes(cue.kind))
+    target=root.querySelector(`[data-move-board="${board}"] [data-move-cell="${index}"]`);
+  else target=root.querySelector(`[data-move-cell="${index}"]`);
+  const fallback=root.querySelector(".game-block")||root;
+  target=target||fallback;
+  target.classList.add("move-cue-target");
+  const wave=node("span","move-wave"+(cue.outcome==="hit"||cue.outcome==="sunk"?" move-wave-hit":cue.outcome==="miss"?" move-wave-miss":""));
+  wave.setAttribute("aria-hidden","true");
+  target.append(wave);
+  const label=cue.kind==="battleship-classic"||cue.kind==="sea-warfare"?
+    cue.actor+" · "+({"miss":"MISS · white splash","hit":"HIT · red splash","sunk":"SUNK · red splash","incoming":"Incoming shot"}[cue.outcome]||cue.description):
+    cue.actor+" · "+cue.description;
+  const pop=node("div","move-popover",label);
+  pop.setAttribute("role","status");
+  fallback.prepend(pop);
+  // Prompt stays visible briefly after the board ripple, but never captures input.
+  const stop=()=>{wave.remove();pop.remove();target.classList.remove("move-cue-target");};
+  if(state.moveCueTimer)clearTimeout(state.moveCueTimer);
+  state.moveCueTimer=setTimeout(stop,1800);
+}
+function syncReplayMoveButton(session){
+  const old=$("#replay-move-button");
+  const cue=session?.last_opponent_cue;
+  if(!cue||session.view?.kind==="scorched-earth"){old?.remove();return;}
+  let button=old;
+  if(!button){button=node("button","button secondary","↻ Replay last move");button.id="replay-move-button";button.type="button";
+    button.addEventListener("click",()=>{if(state.session)animateLastOpponentMove(state.session);});
+    $("#turn-banner").after(button);
+  }
+  button.title="Replay "+cue.actor+"'s latest move without changing the game or transmitting";
+}
+
 function renderSession(session, messages) {
   const syncPending = s => Number(s?.sync_requested_at || 0) > Number(s?.sync_at || 0);
   observeCompletion(session);
@@ -1586,18 +1966,22 @@ function renderSession(session, messages) {
     session.current_player, session.view, session.has_pending_action, session.invited, session.error, session.last_move,
     session.sync_at, session.sync_requested_at, syncPending(session)]);
   $("#arena-title").textContent = session.game;
-  $("#arena-game-tag").textContent = `${session.status.toUpperCase()} · ${session.hosted ? "HOSTED BROADCAST" : "DIRECT TABLE"}`;
+  const localPractice = state.snapshot?.transport === "practice";
+  $("#arena-game-tag").textContent = localPractice ? "LOCAL PRACTICE · NO RADIO" :
+    `${session.status.toUpperCase()} · ${session.hosted ? "HOSTED BROADCAST" : "DIRECT TABLE"}`;
   const last = session.last_move ? ` · Last: ${session.last_move.actor} ${session.last_move.description}` : "";
-  const subtitle = `TABLE ${session.id.slice(-8)} · ${session.players.length} STATIONS${last}`;
+  const subtitle = localPractice ? `PRACTICE · YOU VS COMPUTER${last}` :
+    `TABLE ${session.id.slice(-8)} · ${session.players.length} STATIONS${last}`;
   $("#arena-subtitle").textContent = subtitle;
   $("#arena-subtitle").title = subtitle;
   const revision = $("#arena-revision"); revision.hidden = false; revision.textContent = `REV ${session.revision}`;
   setTurnBanner(session);
+  syncReplayMoveButton(session);
   renderRoster(session);
   const actionSignature = JSON.stringify([session.id, session.status, session.players, session.invited,
     session.hosted, session.coordinator, session.has_pending_action, state.snapshot.transport,
     state.snapshot.observer_mode, state.snapshot.callsign, state.snapshot.tx_enabled,
-    syncPending(session) ? Math.floor(Date.now() / 30_000) : 0]);
+    syncPending(session) ? Math.floor(Date.now() / 30_000) : 0, session.error]);
   if (actionSignature !== state.actionSignature) {
     state.actionSignature = actionSignature;
     renderSessionActions(session);
@@ -1613,6 +1997,8 @@ function renderSession(session, messages) {
   if (gameSignature !== state.sessionSignature) {
     state.sessionSignature = gameSignature;
     renderGame(session);
+    if(session.last_opponent_cue && session.view?.kind!=="scorched-earth")
+      animateLastOpponentMove(session,{automatic:true});
   }
 }
 
@@ -1638,20 +2024,25 @@ async function refresh() {
     renderSessionList(snapshot.sessions || []);
     placeSessionActions();
     if (!snapshot.ready && snapshot.callsign && snapshot.error) $("#transport-label").textContent = `OFFLINE · ${snapshot.error}`;
-    if (!snapshot.callsign && !state.setupShown) { state.setupShown = true; openSettings(); }
+    $("#new-game").disabled=isObserver();
+    if (!snapshot.callsign && !state.setupShown) { state.setupShown=true; $("#welcome-dialog").showModal(); }
     if (snapshot.error) $("#transport-label").textContent = `OFFLINE · ${snapshot.error}`;
     if (state.selectedId && snapshot.ready) {
       const detail = await request(`/api/session/${encodeURIComponent(state.selectedId)}`);
       renderSession(detail.session, detail.chat || []);
       $("#mobile-turn-dot").hidden = !canAct(detail.session);
-    } else if (!state.selectedId) {
+    } else {
       $("#mobile-turn-dot").hidden = true;
       state.session = null; state.sessionSignature = ""; state.chatSignature = ""; state.islandSelection = null;
-      $("#arena-title").textContent = "The airwaves are yours.";
+      $("#arena-title").textContent = "Game library";
       $("#arena-subtitle").textContent = "Choose a table or start a new match to take your seat.";
       $("#arena-game-tag").textContent = "READY WHEN YOU ARE";
       $("#arena-revision").hidden = true; $("#turn-banner").hidden = true;
-      $("#arena-body").replaceChildren(createWelcome());
+      $("#replay-move-button")?.remove();
+      const libraryKey=JSON.stringify([snapshot.catalog,snapshot.transport,snapshot.ready,snapshot.tx_enabled,snapshot.observer_mode,snapshot.callsign]);
+      if(state.librarySignature!==libraryKey||!$("#arena-body .game-library")){
+        state.librarySignature=libraryKey;$("#arena-body").replaceChildren(createWelcome());
+      }
       $("#roster").className = "roster empty-roster";
       $("#roster").replaceChildren(node("span", "roster-icon", "◌"), node("p", "", "Choose a table to see who's playing."));
       $("#player-count").textContent = "—"; $("#session-actions").replaceChildren(); $("#last-move").hidden = true;
@@ -1666,34 +2057,255 @@ async function refresh() {
   } finally { state.busy = false; }
 }
 
-function createWelcome() {
-  const welcome = node("div", "welcome-state");
-  welcome.append(node("div", "welcome-orbit orbit-one"), node("div", "welcome-orbit orbit-two"));
-  welcome.append(node("div", "welcome-emblem", "◈"));
-  welcome.append(node("p", "eyebrow", "ONE ROOM · MANY WORLDS"));
-  const heading = node("h2", ""); heading.append(document.createTextNode("Pick a game."), document.createElement("br")); heading.append(node("span", "", "Make a little history."));
-  welcome.append(heading);
-  welcome.append(node("p", "", "Your table, your station, your next move. All game logic runs through the same engine as the desktop and terminal clients."));
-  const browse = node("button", "button primary welcome-cta", "Browse games & create a table →");
-  browse.type = "button"; browse.dataset.openTables = ""; welcome.append(browse);
-  const chips = node("div", "welcome-chips");
-  for (const text of ["✳ Live tables", "⌘ Shared game engine", "◉ Local practice"]) chips.append(node("span", "", text));
-  welcome.append(chips); return welcome;
+function openInfo(title){
+  $("#info-heading").textContent=title;
+  const body=$("#info-content");body.replaceChildren();
+  if(!$("#info-dialog").open)$("#info-dialog").showModal();
+  return body;
 }
+async function showGuide(game){
+  const body=openInfo("How to play · "+game.name);
+  try{
+    const guides=await request("/api/guides");
+    const steps=guides[game.key]||["Use the available controls and follow the turn indicator."];
+    const list=node("ol","game-guide");
+    for(const step of steps)list.append(node("li","",step));
+    body.append(list);
+  }catch(error){body.append(node("p","",error.message));}
+}
+async function showHistory(){
+  const body=openInfo("Match history");
+  try{
+    const history=await request("/api/history");
+    const totals=history.totals;
+    body.append(node("p","micro-copy","Local saved results · "+(isPractice()?"Practice":"Radio")+(isObserver()?" · Receive-only":" · "+(state.snapshot.callsign||""))));
+    const stats=node("div","history-stats");
+    for(const [key,label] of [["played","Played"],["wins","Wins"],["losses","Losses"],["draws","Draws"]]){
+      const item=node("div","history-card");item.append(node("strong","",totals[key]),node("span","micro-copy",label));stats.append(item);
+    }
+    body.append(stats);
+    for(const [game,g] of Object.entries(history.by_game))body.append(node("p","",game+" — "+g.wins+"W / "+g.losses+"L / "+g.draws+"D"));
+    body.append(node("h3","","Completed matches"));
+    if(!history.matches.length)body.append(node("p","micro-copy","Finish a match to see it here."));
+    for(const match of history.matches){
+      const item=node("div","history-card");
+      item.append(node("strong","",match.game+" · "+match.outcome),node("p","micro-copy",match.players.join(" / ")+" · "+(match.updated?new Date(match.updated*1000).toLocaleString():"Unknown date")+" · rev "+match.revision));
+      if(match.archived)item.append(node("p","micro-copy","Archived · hidden from active tables"));
+      addButton(item,match.archived?"Restore to tables":"View table",async()=>{
+        if(match.archived){
+          const result=await sendCommand("archive_game",{session_id:match.id,archived:false});
+          if(!result)return;
+        }
+        closeDialog("info-dialog");selectSession(match.id);await refresh();
+      });
+      body.append(item);
+    }
+    body.append(node("p","micro-copy","Archived matches stay in your statistics. Deleting a saved match permanently removes its record."));
+  }catch(error){body.append(node("p","",error.message));}
+}
+function drawReplayView(view,host){
+  host.replaceChildren();
+  const kind=view.kind;
+  if(["grid","connect-four","word-tiles","battleship","sea-warfare"].includes(kind)){
+    const cells=["battleship","sea-warfare"].includes(kind)?view.shots||[]:view.cells||[];
+    const cols=kind==="word-tiles"?15:["battleship","sea-warfare"].includes(kind)?10:view.width||3;
+    const board=node("div","replay-grid");
+    board.style.setProperty("--replay-cols",cols);
+    for(const raw of cells){
+      const c=node("div","replay-cell");
+      if(["battleship","sea-warfare"].includes(kind)){
+        c.textContent=raw===1?"○":raw===2?"×":raw>=3?"S":"";
+        if(raw>=1)c.classList.add(raw===1?"miss":raw===2?"hit":"sunk");
+      }else{
+        c.textContent=String(raw||"").trim();
+        if(raw&&String(raw).trim())c.classList.add("occupied");
+      }
+      board.append(c);
+    }
+    host.append(board);
+  }else if(kind==="piles"){
+    const pileRow=node("div","replay-piles");
+    for(const n of view.piles||[]){
+      const pile=node("div","replay-pile");
+      const bar=node("div","replay-pile-bar");bar.style.height=Math.min(260,n*25)+"px";
+      pile.append(bar,node("strong","",String(n)));pileRow.append(pile);
+    }
+    host.append(pileRow);
+  }else if(kind==="hexxagon"){
+    const field=node("div","replay-hexx");
+    for(const cell of view.cells||[]){
+      const piece=node("span","replay-hex replay-owner-"+cell.owner);
+      piece.style.left=(50+cell.q*6+cell.r*3)+"%";
+      piece.style.top=(50+cell.r*7)+"%";
+      piece.title="Hex "+cell.id;
+      field.append(piece);
+    }
+    host.append(field);
+  }else if(kind==="scorched-earth"){
+    const NS="http://www.w3.org/2000/svg",make=(type,attrs={})=>{
+      const el=document.createElementNS(NS,type);
+      Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,String(v)));
+      return el;
+    };
+    const field=make("svg",{viewBox:"0 0 600 350",role:"img","aria-label":"Scorched Earth terrain and tanks"});
+    const terrain=view.terrain||[],sky=view.sky_height||1;
+    if(terrain.length){
+      const points=terrain.map((n,i)=>[600*i/Math.max(1,terrain.length-1),350-320*n/sky]);
+      field.append(make("polygon",{points:"0,350 "+points.map(([x,y])=>x+","+y).join(" ")+" 600,350",fill:"#346650"}));
+      for(const [i,t] of (view.tanks||[]).entries()){
+        const x=t.x*600/terrain.length,y=350-320*(t.world_y||0)/sky;
+        field.append(make("rect",{x:x-10,y:y-8,width:20,height:15,rx:4,fill:i?"#fbbf24":"#00cfa5"}));
+        const label=make("text",{x,y:y-14,"text-anchor":"middle",fill:"#e2e8f0","font-size":12});
+        label.textContent=t.hp+" HP";field.append(label);
+      }
+    }
+    host.append(field);
+  }else{
+    host.append(node("p","", "Board replay for "+String(kind)+" is not available yet."));
+  }
+}
+async function showReplay(session){
+  const body=openInfo("Visual replay · "+session.game);
+  try{
+    const {frames}=await request("/api/replay/"+encodeURIComponent(session.id));
+    if(!frames.length){body.append(node("p","micro-copy","No saved board snapshots for this table."));return;}
+    const status=node("p","micro-copy"),board=node("div","replay-board");
+    const tools=node("div","replay-controls");
+    const prev=node("button","button secondary","◀ Previous"),play=node("button","button primary","Play"),next=node("button","button secondary","Next ▶");
+    for(const b of [prev,play,next])b.type="button";
+    const slider=node("input","replay-slider");slider.type="range";slider.min=0;slider.max=frames.length-1;slider.step=1;slider.value=0;slider.setAttribute("aria-label","Replay frame");
+    tools.append(prev,play,next);body.append(status,board,tools,slider);
+    body.append(node("p","micro-copy","Public saved board snapshots only. Historical gaps remain explicit; private fleet placements are never revealed."));
+    let index=0,timer=null;
+    const show=(i)=>{
+      index=Math.max(0,Math.min(frames.length-1,i));slider.value=index;
+      const frame=frames[index];
+      status.textContent="Revision "+frame.revision+" · "+(frame.actor||"Game")+" · "+frame.description+" · "+(index+1)+"/"+frames.length+" snapshots";
+      drawReplayView(frame.view,board);
+      prev.disabled=index===0;next.disabled=index===frames.length-1;
+    };
+    const stop=()=>{if(timer!==null){clearInterval(timer);timer=null;}play.textContent="Play";};
+    prev.addEventListener("click",()=>{stop();show(index-1);});
+    next.addEventListener("click",()=>{stop();show(index+1);});
+    slider.addEventListener("input",()=>{stop();show(Number(slider.value));});
+    play.addEventListener("click",()=>{
+      if(timer!==null){stop();return;}
+      if(index===frames.length-1)show(0);
+      play.textContent="Pause";
+      timer=setInterval(()=>{
+        if(index>=frames.length-1){stop();return;}
+        show(index+1);
+      },900);
+    });
+    $("#info-dialog").addEventListener("close",stop,{once:true});
+    show(0);play.disabled=frames.length<2;
+  }catch(error){body.append(node("p","",error.message));}
+}
+async function showMoveHistory(session){
+  const body=openInfo("Move history · "+session.game);
+  try{
+    const {moves,revision}=await request("/api/moves/"+encodeURIComponent(session.id));
+    body.append(node("p","micro-copy","Committed actions only · "+moves.length+" of "+revision+" revisions available"));
+    let previous=0;
+    for(const move of moves){
+      if(move.revision>previous+1)body.append(node("p","micro-copy","Revisions "+(previous+1)+"–"+(move.revision-1)+" not recorded"));
+      body.append(node("p","history-card",move.revision+". "+move.actor+" · "+move.description));previous=move.revision;
+    }
+    if(previous<revision)body.append(node("p","micro-copy","Revisions "+(previous+1)+"–"+revision+" not recorded"));
+    if(!moves.length)body.append(node("p","micro-copy","No recorded moves yet."));
+  }catch(error){body.append(node("p","",error.message));}
+}
+$("#history-open").addEventListener("click",showHistory);
+
+function gameLibrary(){
+  const container=node("div","game-library");
+  container.append(node("h2","","Explore the arcade"),node("p","micro-copy",isPractice()?"Pick a game to play against the computer — no radio needed.":"Pick a game and choose how to invite stations."));
+  if(!state.snapshot?.ready){
+    addButton(container,"Play offline instead",startPractice,true);
+    addButton(container,"Connect my radio station",()=>openSettings("broadcast"));
+  }else if(isObserver())container.append(node("p","micro-copy","Receive-only: choose a heard table to observe, or change play mode in Settings."));
+  const grid=node("div","game-library-grid");
+  const games=(state.snapshot?.catalog||[]).filter(g=>(!g.clients||g.clients.includes("web"))&&(state.snapshot?.experimental_games||g.key!=="signal-siege"));
+  for(const game of games){
+    const card=node("article","game-library-card"),meta=GAME_PREVIEWS[game.key]||["◈","Open a table for this game."];
+    // Use the existing sprite assets when available.
+    const art={"battleship-classic":"battleship-hull-horizontal.png","sea-warfare":"battleship-carrier-horizontal.png","scorched-earth":"tank-teal.png"}[game.key];
+    const head=node("div","library-card-heading");head.append(node("strong","",meta[0]+"  "+game.name));
+    if(art){const image=node("img");image.src="/"+art;image.alt="";head.append(image);}card.append(head);
+    card.append(node("p","micro-copy",(game.min_players===game.max_players?game.min_players:game.min_players+"–"+game.max_players)+" players"),node("p","",meta[1]));
+    addButton(card,isPractice()?"Play vs computer":"Select game",()=>chooseGame(game),true,!canTransmit()||state.creating);
+    addButton(card,"How to play",()=>showGuide(game));
+    grid.append(card);
+  }
+  container.append(grid);return container;
+}
+function createWelcome(){return gameLibrary();}
+function browseGames(){
+  $("#library-body").replaceChildren(gameLibrary());$("#library-dialog").showModal();
+}
+function closeDialog(id){const dialog=$("#"+id);if(dialog.open)dialog.close();}
+async function chooseGame(game){
+  if(!canTransmit()||state.creating)return;
+  closeDialog("library-dialog");$("#game-select").value=game.key;updateGamePreview();
+  if(isPractice()){await createTable(game.key,"",false);return;}
+  const form=$("#create-form");form.dataset.game=game.key;form.elements.mode.value="direct";
+  form.elements.mode.querySelector('[value="hosted"]').disabled=state.snapshot.transport!=="broadcast";
+  form.elements.peer.value="";
+  $("#create-heading").textContent="New "+game.name+" table";
+  $("#create-description").textContent=(GAME_PREVIEWS[game.key]||["",""])[1];
+  $("#create-error").hidden=true;updateCreateDialog();$("#create-dialog").showModal();
+}
+function updateCreateDialog(){
+  const form=$("#create-form"),hosted=form.elements.mode.value==="hosted",peer=form.elements.peer.value.trim();
+  $("#create-peer-label").hidden=hosted;form.elements.peer.disabled=hosted;
+  $("#create-submit").textContent=hosted?"Announce open table":peer?"Create & invite":"Create lobby";
+  $("#create-hint").textContent=hosted?"Announce to listening stations. You choose when to start.":peer?"Send an invitation now. The match starts when the roster is full.":"Create a saved lobby and invite stations when ready.";
+  $("#create-error").hidden=true;
+}
+async function createTable(game,peer,hosted){
+  if(state.creating||!canTransmit())return;
+  state.creating=true;
+  try{const result=await sendCommand("create_game",{game,peer,hosted});if(result){closeDialog("create-dialog");state.focusMode=false;applyWorkspace();}}
+  finally{state.creating=false;}
+}
+$("#create-form").addEventListener("submit",async event=>{
+  event.preventDefault();const f=event.currentTarget,hosted=f.elements.mode.value==="hosted",peer=hosted?"":f.elements.peer.value.trim().toUpperCase();
+  if(peer&&(peer===state.snapshot.callsign||! /^[A-Z0-9/-]{1,15}$/.test(peer))){$("#create-error").textContent="Enter a different, valid station callsign.";$("#create-error").hidden=false;return;}
+  $("#create-submit").disabled=true;try{await createTable(f.dataset.game,peer,hosted);}finally{$("#create-submit").disabled=false;}
+});
+$("#create-form").elements.mode.addEventListener("change",updateCreateDialog);
+$("#create-form").elements.peer.addEventListener("input",updateCreateDialog);
+$("#new-game").addEventListener("click",browseGames);
+document.querySelectorAll("[data-close-dialog]").forEach(b=>b.addEventListener("click",()=>closeDialog(b.dataset.closeDialog)));
+async function startPractice(){
+  closeDialog("welcome-dialog");closeDialog("library-dialog");
+  try{
+    const snapshot=await request("/api/settings",{method:"POST",body:JSON.stringify({transport:"practice",observer_mode:false,callsign:state.snapshot?.callsign||"PLAYER"})});
+    state.snapshot=snapshot;selectSession(null);state.selectedInitialized=false;state.librarySignature="";
+    await refresh();
+  }catch(error){notify(error.message);}
+}
+document.querySelectorAll("[data-onboard]").forEach(b=>b.addEventListener("click",()=>{
+  closeDialog("welcome-dialog");if(b.dataset.onboard==="practice")startPractice();else openSettings(b.dataset.onboard);
+}));
 
 async function sendCommand(command, extra = {}) {
+  const move=["legal_action","place_word","exchange_word","place_battleship_fleet"].includes(command)&&extra.session_id;
+  if(move&&state.submitting.has(extra.session_id))return null;
+  if(move){state.submitting.add(extra.session_id);if(state.session?.id===extra.session_id)setTurnBanner(state.session);}
   try {
     const result = await request("/api/command", { method: "POST", body: JSON.stringify({ command, ...extra }) });
     if ((command === "create_game" || command === "answer_cq") && result.session_id) {
       selectSession(result.session_id);
       switchPane("arena");
     }
-    if (command === "delete_game") {
+    if (command === "delete_game" || command === "archive_game" && extra.archived !== false) {
       selectSession(null);
     }
     await refresh();
     return result;
   } catch (error) { notify(error.message); return null; }
+  finally{if(move){state.submitting.delete(extra.session_id);if(state.session?.id===extra.session_id)setTurnBanner(state.session);}}
 }
 function submitAction(bytes) {
   if (!state.session) return;
@@ -1701,20 +2313,39 @@ function submitAction(bytes) {
   sendCommand("legal_action", { session_id: state.session.id, action });
 }
 
-function openSettings() {
+function openSettings(mode) {
   const form = $("#settings-form");
   if (state.snapshot) {
-    for (const key of ["callsign", "host", "transport", "group", "broadcast_mode", "station_id_mode", "cw_wpm", "command_port", "kiss_port", "color_scheme", "dx_cluster_url"]) {
+    for (const key of ["callsign", "host", "transport", "group", "broadcast_mode", "station_id_mode", "cw_wpm", "command_port", "kiss_port", "color_scheme", "ai_difficulty", "dx_cluster_url"]) {
       if (form.elements[key]) form.elements[key].value = state.snapshot[key] ?? "";
     }
     form.elements.observer_mode.checked = Boolean(state.snapshot.observer_mode);
     form.elements.sound_enabled.checked = Boolean(state.snapshot.sound_enabled);
     form.elements.experimental_games.checked = Boolean(state.snapshot.experimental_games);
   }
+  if(typeof mode==="string"){
+    form.elements.transport.value=mode==="observer"?"broadcast":mode;
+    form.elements.observer_mode.checked=mode==="observer";
+  }
+  $("#advanced-radio").setAttribute("aria-expanded","false");
+  updateSettingsMode();
   $("#settings-error").hidden = true;
   $("#settings-dialog").showModal();
 }
 
+function updateSettingsMode(){
+  const f=$("#settings-form"),practice=f.elements.transport.value==="practice",broadcast=f.elements.transport.value==="broadcast";
+  const radio=!practice,advanced=$("#advanced-radio").getAttribute("aria-expanded")==="true"&&radio;
+  const show=(name,visible)=>{f.elements[name].closest("label").hidden=!visible;};
+  show("host",radio);show("observer_mode",broadcast);show("ai_difficulty",practice);
+  for(const name of ["command_port","station_id_mode","cw_wpm","dx_cluster_url"])show(name,advanced);
+  for(const name of ["group","broadcast_mode","kiss_port"])show(name,advanced&&broadcast);
+  $("#advanced-radio").hidden=!radio;$("#advanced-radio").textContent=advanced?"Advanced radio settings ▾":"Advanced radio settings ▸";
+  if(!broadcast)f.elements.observer_mode.checked=false;
+  f.elements.callsign.required=radio;f.elements.callsign.placeholder=practice?"PLAYER (optional)":"N0CALL";
+}
+$("#settings-form").elements.transport.addEventListener("change",updateSettingsMode);
+$("#advanced-radio").addEventListener("click",()=>{$("#advanced-radio").setAttribute("aria-expanded",String($("#advanced-radio").getAttribute("aria-expanded")!=="true"));updateSettingsMode();});
 $("#settings-open").addEventListener("click", openSettings);
 $("#tx-toggle").addEventListener("click", async () => {
   if (!state.snapshot || isPractice()) return;
@@ -1737,7 +2368,8 @@ $("#settings-form").addEventListener("submit", async event => {
   data.experimental_games = form.elements.experimental_games.checked;
   try {
     const snapshot = await request("/api/settings", { method: "POST", body: JSON.stringify(data) });
-    state.snapshot = snapshot; state.sessionSignature = ""; state.chatSignature = "";
+    if(snapshot.transport!==state.snapshot?.transport||snapshot.callsign!==state.snapshot?.callsign){selectSession(null);state.selectedInitialized=false;}
+    state.snapshot = snapshot; state.sessionSignature = ""; state.chatSignature = "";state.librarySignature="";
     $("#settings-dialog").close();
     if (snapshot.error) notify(`Settings saved, but the station could not connect: ${snapshot.error}`);
     if (snapshot.identification_warning) notify(snapshot.identification_warning);
@@ -1747,7 +2379,7 @@ $("#settings-form").addEventListener("submit", async event => {
 
 $("#create-game").addEventListener("click", () => {
   if (!state.snapshot?.ready) { openSettings(); return; }
-  sendCommand("create_game", { game: $("#game-select").value, peer: $("#peer-input").value.trim(), hosted: $("#table-mode").value === "hosted" });
+  createTable($("#game-select").value,isPractice()?"":$("#peer-input").value.trim(),!isPractice()&&$("#table-mode").value==="hosted");
 });
 $("#cq-send").addEventListener("click", () => sendCommand("call_cq", { game: $("#cq-game").value }));
 $("#cq-list").addEventListener("click", event => {

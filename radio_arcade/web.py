@@ -39,6 +39,8 @@ class WebController:
         self._notifications = deque(maxlen=100)
         self._notification_sequence = 0
         self._notification_lock = threading.Lock()
+        self._delivery_lock = threading.Lock()
+        self._delivery = {}
         self._lock = threading.RLock()
         if self.settings.callsign:
             self._connect()
@@ -64,6 +66,16 @@ class WebController:
                              f"{event.data.get('callsign')} wants {event.data.get('game')}"
                              if event.name == "cq_request" else
                              f"{event.data['message']['sender']}: {event.data['message']['body']}")})
+        if event.name == "delivery" and event.session and event.data.get("kind") in ("ACTION","COMMIT","RESIGN"):
+            with self._delivery_lock:
+                records = self._delivery.setdefault(event.session,{})
+                key = (event.data.get("sequence"),event.data.get("kind"),event.data.get("target"))
+                records[key] = dict(event.data)
+                latest = max((k[0] or 0 for k in records),default=0)
+                for old in tuple(records):
+                    if (old[0] or 0) < latest-2: records.pop(old)
+        elif event.name == "session_deleted":
+            with self._delivery_lock: self._delivery.pop(event.session,None)
         if event.name == "transmitting":
             self.transmitting = True
             self.last_transmission = {**event.data, "started": time.time(), "active": True}
@@ -79,10 +91,19 @@ class WebController:
         if engine:
             engine.close()
 
-    @staticmethod
-    def _public_session(session: dict[str, Any]) -> dict[str, Any]:
-        from .presentation import scoreboard
+    def _public_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        from .presentation import scoreboard, table_feedback
+        from .wire import Kind
         result = dict(session)
+        with self._delivery_lock:
+            delivery = tuple(self._delivery.get(session["id"],{}).values())
+        outstanding = 0
+        if self.engine and self.settings.transport != "practice" and not session.get("hosted") and session.get("coordinator") == self.settings.callsign:
+            outstanding = self.engine.store.count_outgoing(session["id"],int(Kind.COMMIT),session["sequence"])
+        feedback, tone = table_feedback(session,self.settings.callsign,
+            practice=self.settings.transport=="practice",observer=self.settings.observer_mode,
+            tx_enabled=self.settings.tx_enabled,delivery=delivery,outstanding=outstanding)
+        result["feedback"] = {"text":feedback,"tone":tone}
         result["scoreboard"] = scoreboard(session)
         result.pop("state", None)
         result.pop("last_action", None)
@@ -108,6 +129,7 @@ class WebController:
             "kiss_port": self.settings.kiss_port,
             "color_scheme": self.settings.color_scheme,
             "sound_enabled": self.settings.sound_enabled,
+            "ai_difficulty": self.settings.ai_difficulty,
             "experimental_games": self.settings.experimental_games,
             "dx_cluster_url": self.settings.dx_cluster_url,
             "observer_mode": self.settings.observer_mode,
@@ -126,7 +148,7 @@ class WebController:
             "error": self.last_error,
             "catalog": catalog,
             "sessions": [self._public_session(session) for session in engine.sessions()
-                         if session["game_id"] in web_game_ids] if engine else [],
+                         if session["game_id"] in web_game_ids and not session.get("archived")] if engine else [],
             "cq_requests": engine.cq_requests() if engine else [],
         }
 
@@ -157,8 +179,11 @@ class WebController:
         experimental_games = data.get("experimental_games", self.settings.experimental_games)
         if not isinstance(experimental_games, bool):
             raise ValueError("experimental games must be true or false")
+        difficulty = data.get("ai_difficulty", self.settings.ai_difficulty)
+        if type(difficulty) is not str or difficulty not in ("casual","standard","challenging"):
+            raise ValueError("Choose Casual, Standard or Challenging AI difficulty")
         candidate = Settings(
-            callsign=station_name(str(data.get("callsign", self.settings.callsign))),
+            callsign=station_name(str(data.get("callsign", self.settings.callsign)).strip() or ("PLAYER" if transport == "practice" else "")),
             host=str(data.get("host", self.settings.host)).strip() or "127.0.0.1",
             transport=transport,
             group=group_name(str(data.get("group", self.settings.group))),
@@ -167,6 +192,7 @@ class WebController:
             kiss_port=integer("kiss_port"),
             color_scheme=scheme,
             sound_enabled=bool(data.get("sound_enabled", self.settings.sound_enabled)),
+            ai_difficulty=difficulty,
             experimental_games=experimental_games,
             dx_cluster_url=str(data.get("dx_cluster_url", self.settings.dx_cluster_url)).strip(),
             observer_mode=observer,
@@ -174,7 +200,10 @@ class WebController:
             station_id_mode=station_id_mode,
             cw_wpm=cw_wpm,
         )
+        if candidate.transport != "practice" and candidate.callsign == "PLAYER":
+            raise ValueError("Replace the local PLAYER name with your station callsign for radio play")
         previous, self.engine = self.engine, None
+        with self._delivery_lock: self._delivery.clear()
         if previous:
             previous.close()
         self.settings = candidate
@@ -209,9 +238,29 @@ class WebController:
             predicted = game.apply_action(game.decode_state(row["state"]), tuple(row["players"]), actor, action)
             return {"ok": True, "view": game.view_model(predicted, tuple(row["players"]))}
 
+        if name == "preview_word":
+            from .word_draft import preview_word
+            row = engine.session(sid)
+            game = engine.registry.by_id(row["game_id"])
+            if game.key != "open-word-tiles" or row["status"] != "active":
+                raise ValueError("expected an active Open Word Tiles table")
+            if data.get("revision") != row["revision"]:
+                raise ValueError("Table changed; refresh your draft")
+            actor = self.settings.callsign
+            if self.settings.observer_mode or row["current_player"] != actor:
+                raise ValueError("Wait for your turn")
+            players = tuple(row["players"])
+            saved = game.decode_state(row["state"])
+            game.validate_roster(saved, players)
+            result = preview_word(game, saved, players, actor, str(data.get("start", "")),
+                                  str(data.get("direction", "H")), str(data.get("word", "")))
+            return {"ok": True, "revision": row["revision"], **result}
+
         def place_word() -> None:
             from .games.scrabble import make_placement
             row = engine.session(sid)
+            if "revision" in data and data["revision"] != row["revision"]:
+                raise ValueError("Table changed; refresh your draft")
             game = engine.registry.by_id(row["game_id"])
             state = game.decode_state(row["state"])
             game.validate_roster(state, tuple(row["players"]))
@@ -256,6 +305,7 @@ class WebController:
             "disconnect_peer": engine.disconnect,
             "forfeit_game": lambda: engine.forfeit_game(sid),
             "delete_game": lambda: engine.delete_game(sid),
+            "archive_game": lambda: engine.archive_game(sid, data.get("archived", True)),
         }
         if name not in commands:
             raise ValueError("unknown game-room command")
@@ -448,6 +498,21 @@ class WebController:
                     return 200, self._state()
                 if method == "POST" and route == "/api/command":
                     return 200, self._command(data)
+                if method == "GET" and route == "/api/history":
+                    from .match_history import match_history
+                    return 200, match_history(self.engine.sessions() if self.engine else [],self.settings.callsign,
+                                              observer=self.settings.observer_mode)
+                if method == "GET" and route == "/api/guides":
+                    from .game_guides import GUIDES
+                    return 200, GUIDES
+                if method == "GET" and route.startswith("/api/replay/"):
+                    if self.engine is None: raise ValueError("game service is not ready")
+                    sid=unquote(route[len("/api/replay/"):])
+                    return 200, {"frames":self.engine.replay_frames(sid)}
+                if method == "GET" and route.startswith("/api/moves/"):
+                    if self.engine is None: raise ValueError("game service is not ready")
+                    sid=unquote(route[len("/api/moves/"):])
+                    return 200, {"moves":self.engine.move_history(sid),"revision":self.engine.session(sid)["revision"]}
                 prefix = "/api/session/"
                 if method == "GET" and route.startswith(prefix):
                     if self.engine is None:
@@ -543,6 +608,12 @@ class ArcadeRequestHandler(BaseHTTPRequestHandler):
                        "/app.js": "app.js", "/style.css": "style.css",
                        "/tank-teal.png": "tank-teal.png", "/tank-amber.png": "tank-amber.png"}
         name = asset_names.get(path)
+        # Explicitly permit bundled naval art (not arbitrary asset paths).
+        naval_art = {p.name for p in ASSETS.glob("battleship-*.png")}
+        if name is None and path.startswith("/"):
+            candidate = path[1:]
+            if candidate in naval_art:
+                name = candidate
         if not name:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return

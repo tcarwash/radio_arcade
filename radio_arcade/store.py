@@ -72,6 +72,18 @@ class SessionStore:
                     actor TEXT NOT NULL, body BLOB NOT NULL,
                     PRIMARY KEY(session, revision)
                 );
+                CREATE TABLE IF NOT EXISTS state_history(
+                    session TEXT NOT NULL, revision INTEGER NOT NULL,
+                    state BLOB NOT NULL, PRIMARY KEY(session, revision)
+                );
+                CREATE TABLE IF NOT EXISTS archived_sessions(
+                    session TEXT PRIMARY KEY, archived_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS move_history(
+                    session TEXT NOT NULL, revision INTEGER NOT NULL,
+                    actor TEXT NOT NULL, body BLOB NOT NULL,
+                    PRIMARY KEY(session,revision)
+                );
                 CREATE TABLE IF NOT EXISTS private_game_data(
                     session TEXT PRIMARY KEY, data TEXT NOT NULL
                 );
@@ -109,6 +121,52 @@ class SessionStore:
                  session.get("last_actor"), session.get("last_action"), session.get("sync_at", 0),
                  session.get("sync_requested_at", 0),
                  time.time(), session.get("error", ""), int(session.get("hosted", False))))
+
+            if session.get("state") is not None:
+                self.db.execute("INSERT OR IGNORE INTO state_history VALUES(?,?,?)",
+                                (session["id"],session["revision"],session["state"]))
+
+            if session.get("revision",0)>0 and session.get("last_actor") and session.get("last_action") is not None:
+                self.db.execute("INSERT OR IGNORE INTO move_history VALUES(?,?,?,?)",
+                                (session["id"],session["revision"],session["last_actor"],session["last_action"]))
+
+    def set_archived(self, session: str, archived: bool) -> None:
+        with self._lock, self.db:
+            if archived:
+                if self.db.execute("SELECT 1 FROM sessions WHERE id=?", (session,)).fetchone() is None:
+                    raise ValueError("game no longer exists")
+                self.db.execute("INSERT OR REPLACE INTO archived_sessions VALUES(?,?)",
+                                (session, time.time()))
+            else:
+                self.db.execute("DELETE FROM archived_sessions WHERE session=?", (session,))
+
+    def archived_ids(self) -> set[str]:
+        with self._lock:
+            return {r[0] for r in self.db.execute("SELECT session FROM archived_sessions")}
+
+    def is_archived(self, session: str) -> bool:
+        with self._lock:
+            return self.db.execute("SELECT 1 FROM archived_sessions WHERE session=?",
+                                   (session,)).fetchone() is not None
+
+    def state_history(self, session: str, since: int | None = None) -> list[dict]:
+        with self._lock:
+            if since is None:
+                rows=self.db.execute("SELECT revision,state FROM state_history WHERE session=? ORDER BY revision",
+                                     (session,)).fetchall()
+            else:
+                rows=self.db.execute("SELECT revision,state FROM state_history WHERE session=? AND revision>=? ORDER BY revision",
+                                     (session,max(0,int(since)))).fetchall()
+        return [dict(revision=int(r["revision"]),state=bytes(r["state"])) for r in rows]
+
+    def move_history(self, session: str, limit: int | None = None) -> list[dict]:
+        with self._lock:
+            if limit is None:
+                rows=self.db.execute("SELECT revision,actor,body FROM move_history WHERE session=? ORDER BY revision",(session,)).fetchall()
+            else:
+                rows=self.db.execute("SELECT revision,actor,body FROM move_history WHERE session=? ORDER BY revision DESC LIMIT ?",
+                                     (session,max(1,int(limit)))).fetchall()
+        return [dict(revision=r["revision"],actor=r["actor"],body=bytes(r["body"])) for r in sorted(rows,key=lambda x:x["revision"])]
 
     @staticmethod
     def _session(row: sqlite3.Row) -> dict[str, Any]:
@@ -214,7 +272,7 @@ class SessionStore:
         """Remove one local game's saved state and related queued data."""
         with self._lock, self.db:
             self.db.execute("DELETE FROM sessions WHERE id=?", (session,))
-            for table in ("outbox", "chat", "opaque_states", "cancelled_invites", "pico8_actions", "private_game_data"):
+            for table in ("outbox", "chat", "opaque_states", "cancelled_invites", "pico8_actions", "private_game_data", "move_history", "archived_sessions", "state_history"):
                 self.db.execute(f"DELETE FROM {table} WHERE session=?", (session,))
 
     def record_pico8_action(self, session: str, revision: int, actor: str, body: bytes) -> None:

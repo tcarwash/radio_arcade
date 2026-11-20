@@ -12,7 +12,7 @@ stations that want to interoperate, not restrictions on private forks or code
 reuse. Some bundled third-party materials have separate terms listed in
 [Third-party notices](THIRD-PARTY-NOTICES.md).
 
-Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local hot-seat practice works without Data2G. Built-in games include tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, Signal Siege, Battleship Classic, and Battleship: Sea Warfare.
+Radio Arcade is a multiplayer game engine with desktop, terminal, and browser clients. Games use Data2G KISS broadcast or its connected endpoint; local practice against a simple computer opponent works without Data2G. Built-in games include tic-tac-toe, Nim, Connect Four, Hexxagon, Open Word Tiles, Scorched Earth, Signal Siege, Battleship Classic, and Battleship: Sea Warfare.
 
 **Battleship Classic** is available in the desktop and web clients; it keeps private fleets and reports the classic miss, hit,
 and sunk results. **Battleship: Sea Warfare** adds a carrier fighter roll, a
@@ -53,7 +53,31 @@ radio-arcade-tui
 radio-arcade-web
 ```
 
-Set your callsign and Data2G connection in station settings. The browser client opens at `http://127.0.0.1:8765`. Its API has no authentication; keep it on localhost or a trusted network. Use `--callsign N0CALL --transport practice` with desktop or TUI for local play.
+### First five minutes — no radio needed
+
+1. Run `radio-arcade` (desktop) or `radio-arcade-web` (browser), then choose
+   **Play against the computer**. You don't need a callsign, modem, or antenna.
+2. Choose a game card in the **Game library** and click **Play vs computer**.
+   The turn banner tells you when to move; **How to play** explains each game.
+3. Try Tic-tac-toe first, or Open Word Tiles to build words with rack tiles.
+   In Word Tiles, **teal dashed tiles are an unsubmitted draft**, not a real
+   move. The board accepts incomplete or invalid drafts while you're editing.
+   Only **Submit word** commits a legal word; **solid tan tiles** are already
+   on the board. The button remains disabled until the dictionary and score
+   check passes.
+4. After a turn, the opposing move is highlighted. Use **Replay last move**
+   or **Table → Move history** for a second look. Completed matches appear
+   under **Match history**; archiving hides a table without deleting results.
+
+When you want real radio play, open **Settings**, choose broadcast or connected
+mode, enter your amateur callsign, and configure Data2G. Invitations, moves,
+acknowledgements, retries and side-chat messages may transmit publicly over RF.
+Do not treat table chat as private.
+
+The browser opens at `http://127.0.0.1:8765` by default. Its API does not
+have built-in authentication; keep it on localhost or a trusted network.
+Use `--callsign N0CALL --transport practice` to skip onboarding with a custom
+practice name on desktop or TUI.
 
 At narrow desktop window sizes, the Games, Table, and Chat tabs replace the
 three-column layout; Station Settings scrolls inside its dialog. In broadcast
