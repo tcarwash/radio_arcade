@@ -618,6 +618,7 @@ function renderGrid(session, view, host) {
 function renderBattleship(session, view, host) {
   const wrapper = node("div", "battleship-view"), draftKey = `ra-bs-draft-${session.id}`;
   const sea = view.kind === "sea-warfare", fleetSizes = sea ? [5,4,3,3,3,2] : [5,4,3,3,2];
+  if (!sea) wrapper.classList.add("bs-classic");
   const shipNames = sea ? ["Carrier","Battleship","Cruiser","Destroyer","Submarine","Patrol boat"] : ["Carrier","Battleship","Cruiser","Destroyer","Patrol boat"];
   const shipSprites = ["battleship-carrier.png", "battleship-hull.png", "battleship-cruiser.png", "battleship-destroyer.png", "battleship-submarine.png", "battleship-patrol.png"];
   if (sea) {
@@ -632,7 +633,7 @@ function renderBattleship(session, view, host) {
       const ship = node("span", "bs-fleet-ship");
       ship.style.gridRow = `${row + 1} / span ${vertical ? cells.length : 1}`;
       ship.style.gridColumn = `${col + 1} / span ${vertical ? 1 : cells.length}`;
-      const sprite = shipSprites[index].replace(".png", vertical ? ".png" : "-horizontal.png");
+      const sprite = shipSprites[!sea && index === 4 ? 5 : index].replace(".png", vertical ? ".png" : "-horizontal.png");
       ship.style.backgroundImage = `url("/${sprite}")`;
       ship.setAttribute("aria-label", `Ship ${index + 1}`);
       grid.append(ship);
@@ -649,6 +650,12 @@ function renderBattleship(session, view, host) {
     const grid=node("div","battleship-grid");
     for(let i=0;i<100;i++){const b=node("span",`battleship-cell ${ownCells.has(i)?"bs-ship":""}`);grid.append(b);}
     drawFleet(grid, session.private_fleet || []);
+    if (!sea) {
+      for (const [cell, value] of (view.incoming_shots || []).entries()) {
+        if (!value) continue;
+        const token=node("span","bs-token "+(value === 1 ? "bs-own-miss" : "bs-own-hit"),value===1?"·":value>=3?"S":"×");token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`;grid.append(token);
+      }
+    }
     if (sea) {
       for (const cell of session.private_deploy?.mines || []) { const token=node("span","bs-token bs-mine","✹"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
       for (const cell of session.private_deploy?.decoys || []) { const token=node("span","bs-token bs-decoy","◉"); token.style.gridArea=`${Math.floor(cell/10)+1} / ${cell%10+1}`; grid.append(token); }
@@ -657,7 +664,7 @@ function renderBattleship(session, view, host) {
     wrapper.append(grid);
   };
   const pendingText = view.pending_kind === 2 ? `Submarine sonar is checking row ${view.pending+1}. The result returns in a compact reply.` : view.pending_kind === 1 ? `Battleship salvo called across row ${Math.floor(view.pending/10)+1}.` : `Called row ${Math.floor(view.pending/10)+1}, column ${view.pending%10+1}.`;
-  wrapper.append(node("p", "turn-meta", view.phase === "setup" ? "Fleet, mine, and decoy positions stay on this station. Only compact actions and results are transmitted." : view.phase === "reply" ? `${pendingText} Your station is resolving it privately.` : `${session.current_player}: choose a tactical action.`));
+  wrapper.append(node("p", "turn-meta", view.phase === "setup" ? "Fleet positions stay on this station. Only compact actions and results are transmitted." : session.status === "finished" ? `${view.winner || "No station"} wins.` : view.phase === "reply" ? `${pendingText} Awaiting ${session.current_player}’s report.` : `${session.current_player}: choose a tactical action.`));
   if (view.phase === "setup" && !session.private_fleet) {
     let draft; try { draft = JSON.parse(localStorage.getItem(draftKey) || (sea ? "{}" : "[]")); } catch { draft = sea ? {} : []; }
     if (sea && Array.isArray(draft)) draft = {ships:draft};
@@ -704,11 +711,11 @@ function renderBattleship(session, view, host) {
   } else if (view.phase === "setup") {
     wrapper.append(node("p", "", "Fleet saved privately. Waiting for both stations to finish placement."));
     ownGrid();
-  } else if (view.phase === "reply") {
+  } else if (view.phase === "reply" && sea) {
     wrapper.append(node("p", "", "Your fleet is saved on this station. The result will be sent automatically."));
   } else {
-    ownGrid();
-    wrapper.append(node("h3", "", "Enemy waters · called coordinates"));
+    if (session.private_fleet) ownGrid();
+    wrapper.append(node("h3", "", !sea && view.shot_owner !== state.snapshot?.callsign ? `${view.shot_owner} · called coordinates` : "Enemy waters · your shots"));
     let seaMode = "shot", seaSeat = session.players.indexOf(state.snapshot?.callsign), used = view.used?.[seaSeat] || 0, seaGridButtons = [];
     if (sea && canAct(session)) {
       const controls=node("div","bs-tactical-controls");
@@ -733,8 +740,9 @@ function renderBattleship(session, view, host) {
       if(view.sonar?.some(x=>x!==255)){const sonar=node("p","turn-meta",`Last sonar: ${view.sonar.map((x,i)=>x===255?null:`row ${i+1}: ${["clear","faint","strong"][x]}`).filter(Boolean).join(" · ")}`);wrapper.append(sonar);}
     }
     const grid=node("div","battleship-grid");
-    view.shots.forEach((value,index)=>{const row=Math.floor(index/10),col=index%10; const b=node("button",`battleship-cell bs-${value}`,value===1?"·":value===2?"✕":value>=3?`S${value-3}`:"");b.type="button";b.disabled=!canAct(session)||value!==0||(sea&&(seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[index+1]!==0))));b.addEventListener("click",()=>submitAction([sea&&seaMode==="double"?100+row*9+col:index]));grid.append(b);if(sea)seaGridButtons.push(b);});
+    view.shots.forEach((value,index)=>{const row=Math.floor(index/10),col=index%10; const b=node("button",`battleship-cell bs-${value}`,value===1?"·":value===2?"✕":value>=3?`S${value-2}`:"");b.type="button";b.title=`${String.fromCharCode(65+col)}${row+1}: ${value===1?"miss":value===2?"hit":value>=3?"sunk":"uncalled"}`;b.setAttribute("aria-label",b.title);b.disabled=!canAct(session)||(!sea&&(view.phase!=="call"||session.current_player!==state.snapshot?.callsign))||value!==0||(sea&&(seaMode==="sonar"||(seaMode==="double"&&(col>8||view.shots[index+1]!==0))));b.addEventListener("click",()=>submitAction([sea&&seaMode==="double"?100+row*9+col:index]));grid.append(b);if(sea)seaGridButtons.push(b);});
     wrapper.append(grid);
+    if (!sea) wrapper.append(node("p","turn-meta","· Miss · × Hit · S Sunk ship"));
   }
   host.append(wrapper);
 }
