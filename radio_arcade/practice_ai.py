@@ -99,8 +99,9 @@ def choose(game, state, players, actor, rng=random, difficulty="standard"):
         else:
             return None
     elif key in ("pico8-cartridge", "external-game"):
-        from .pico8 import EVENT
-        moves = [bytes((EVENT,))] if state["cart_hash"] else []
+        # External cartridges supply their own event stream. A fabricated AI
+        # event would corrupt replay/checkpoint semantics and may desync peers.
+        return None
     else:
         moves = []
     if isinstance(moves, list):

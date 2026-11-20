@@ -86,6 +86,23 @@ class ArchiveReplayAITests(unittest.TestCase):
                 finally:
                     ctl.close()
 
+    def test_external_cartridges_do_not_invent_computer_events(self):
+        with tempfile.TemporaryDirectory() as folder,patch.dict(os.environ,{"RADIO_ARCADE_HOME":folder}):
+            from radio_arcade.games.pico8 import EVENT
+            from radio_arcade.practice_ai import choose
+            import random
+            engine=PracticeService("PLAYER")
+            try:
+                for key in ("pico8-cartridge","external-game"):
+                    sid=engine.create_game(key)
+                    row=engine.session(sid)
+                    game=engine.registry.by_id(row["game_id"])
+                    state=game.decode_state(row["state"])
+                    self.assertIsNone(choose(game,state,tuple(row["players"]),"ARCADE-AI",
+                                             random.Random(4)))
+                    self.assertEqual(engine.move_history(sid),[])
+            finally:engine.close()
+
     def test_public_battleship_replay_excludes_private_fleets(self):
         from radio_arcade.practice_ai import fleet
         from radio_arcade.games.battleship import FLEET
