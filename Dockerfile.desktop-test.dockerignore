@@ -1,0 +1,6 @@
+**
+!pyproject.toml
+!radio_arcade/
+!radio_arcade/**
+**/__pycache__/
+**/*.pyc
