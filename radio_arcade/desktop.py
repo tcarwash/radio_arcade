@@ -14,7 +14,7 @@ from typing import Callable
 from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QSettings, QSize, Qt, QThread, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QRadialGradient, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QGridLayout, QBoxLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QSlider, QSplitter, QStackedWidget, QStyle, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
@@ -2165,8 +2165,8 @@ class ArcadeWindow(QMainWindow):
         elif view["kind"] == "battleship":
             from .games.battleship import FLEET
             host = QWidget(); box = QVBoxLayout(host); box.setSpacing(10)
-            active = not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"] and not session.get("resync_pending") and (self.settings.transport == "practice" or (self.settings.tx_enabled and session["current_player"] == self.settings.callsign))
-            phase_pill = QLabel(f"◈ {session['current_player']}  ·  {view['phase'].upper()}")
+            active = not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"] and not session.get("resync_pending") and (session["current_player"] == self.settings.callsign and (self.settings.transport == "practice" or self.settings.tx_enabled))
+            phase_pill = QLabel(f"◈ {session['current_player'] or view.get('winner') or 'GAME OVER'}  ·  {view['phase'].upper() if session['status'] != 'finished' else 'FINISHED'}")
             phase_pill.setStyleSheet("background: rgba(0, 245, 196, 0.08); border: 1px solid rgba(0, 245, 196, 0.25); border-radius: 8px; padding: 6px 12px; color: #00f5c4; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
             box.addWidget(phase_pill)
             if view["phase"] == "setup" and not session.get("private_fleet"):
@@ -2199,44 +2199,53 @@ class ArcadeWindow(QMainWindow):
                 msg = QLabel("Fleet saved privately · waiting for both stations")
                 msg.setStyleSheet("color: #94a3b8; font-size: 12px; padding: 10px 0;")
                 box.addWidget(msg)
-            elif view["phase"] == "reply":
-                msg = QLabel("Sending the result from your private fleet.")
-                msg.setStyleSheet("color: #94a3b8; font-size: 12px; padding: 10px 0;")
-                box.addWidget(msg)
             else:
+                if session["status"] == "finished":
+                    status = f"{view.get('winner') or 'No station'} wins"
+                elif view["phase"] == "reply":
+                    status = f"Awaiting {session['current_player']}'s report for {chr(65 + view['pending'] % 10)}{view['pending'] // 10 + 1}"
+                elif active:
+                    status = "Your turn · select an uncalled coordinate"
+                else:
+                    status = f"Waiting for {session['current_player']} to fire"
+                box.addWidget(QLabel(status))
+                boards = QBoxLayout(QBoxLayout.Direction.LeftToRight if self.width() >= 1180 else QBoxLayout.Direction.TopToBottom)
+                boards.setSpacing(12)
+                box.addLayout(boards)
+                cell_size = 26 if self.width() >= 1180 else 28
+                def make_board(title, cells, fleet=None, firing=False):
+                    panel = QWidget(); panel_layout = QVBoxLayout(panel)
+                    panel_layout.setContentsMargins(0, 0, 0, 0)
+                    header = QLabel(title)
+                    header.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 800;")
+                    panel_layout.addWidget(header)
+                    board = QWidget(); grid = QGridLayout(board)
+                    grid.setSpacing(2); grid.setContentsMargins(6, 6, 6, 6)
+                    board.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                    _add_radar_coordinates(grid, cell_size)
+                    occupied = set(sum(fleet or [], []))
+                    sunk_cells = {c for ship in (fleet or []) if all(cells[c] >= 2 for c in ship) for c in ship}
+                    for i, value in enumerate(cells):
+                        if i in sunk_cells:
+                            value = 3
+                        text = "·" if value == 1 else "✕" if value == 2 else ("S" if fleet else f"S{value-2}") if value >= 3 else "■" if i in occupied else "□"
+                        enabled = firing and active and view["phase"] == "call" and value == 0
+                        button = QPushButton(text)
+                        _style_naval_button(button, value if value else text, enabled=enabled, cell_size=cell_size)
+                        button.setStyleSheet(button.styleSheet().replace("QPushButton {", "QPushButton, QPushButton:disabled {"))
+                        button.setEnabled(enabled)
+                        button.setToolTip(f"{chr(65+i%10)}{i//10+1}: " + ("sunk" if value >= 3 else "hit" if value == 2 else "miss" if value == 1 else "ship" if i in occupied else "uncalled"))
+                        if firing:
+                            button.clicked.connect(lambda _=False, cell=i: self._submit_action(bytes((cell,))))
+                        grid.addWidget(button, i//10 + 1, i%10 + 1)
+                    panel_layout.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
+                    boards.addWidget(panel)
                 if session.get("private_fleet"):
-                    own_header = QLabel("YOUR HARBOR · PRIVATE ON THIS STATION")
-                    own_header.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-                    box.addWidget(own_header)
-                    own = QWidget(); own_grid = QGridLayout(own); own_grid.setSpacing(2); own_grid.setContentsMargins(6, 6, 6, 6)
-                    own.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                    own.setStyleSheet("QWidget { background: #07121b; border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 10px; }")
-                    _add_radar_coordinates(own_grid)
-                    own_cells = set(sum(session["private_fleet"], []))
-                    for i in range(100):
-                        lbl = QLabel("■" if i in own_cells else "□")
-                        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        lbl.setFixedSize(28, 28)
-                        if i in own_cells:
-                            lbl.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a3c4d, stop:1 #0c202b); color: #38bdf8; border: 1px solid #38bdf8; border-radius: 4px; font-weight: 900; font-size: 13px;")
-                        else:
-                            lbl.setStyleSheet("background: #06111b; color: #152738; border: 1px solid rgba(255, 255, 255, 0.04); border-radius: 4px; font-size: 11px;")
-                        own_grid.addWidget(lbl, (i//10) + 1, (i%10) + 1)
-                    box.addWidget(own, 0, Qt.AlignmentFlag.AlignHCenter)
-                enemy_header = QLabel("ENEMY WATERS · CALLED COORDINATES")
-                enemy_header.setStyleSheet("color: #f43f5e; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-                box.addWidget(enemy_header)
-                board = QWidget(); grid = QGridLayout(board); grid.setSpacing(2); grid.setContentsMargins(8, 8, 8, 8)
-                board.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                board.setStyleSheet("QWidget { background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, fx:0.5, fy:0.5, stop:0 #0a1b28, stop:0.7 #06121c, stop:1 #030a10); border: 1px solid rgba(0, 245, 196, 0.22); border-radius: 12px; }")
-                _add_radar_coordinates(grid)
-                for i, value in enumerate(view["shots"]):
-                    txt = "·" if value==1 else "✕" if value==2 else f"S{value-3}" if value>=3 else "□"
-                    button = QPushButton(txt)
-                    _style_naval_button(button, value if value else txt, enabled=bool(active and value==0))
-                    button.setEnabled(active and value==0); button.clicked.connect(lambda _=False, cell=i: self._submit_action(bytes((cell,))))
-                    grid.addWidget(button, (i//10) + 1, (i%10) + 1)
-                box.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
+                    make_board("YOUR FLEET · INCOMING FIRE", view["incoming_shots"], session["private_fleet"])
+                make_board("ENEMY WATERS · YOUR SHOTS" if view.get("shot_owner") == self.settings.callsign else f"{view.get('shot_owner', '')} · CALLED COORDINATES", view["shots"], firing=True)
+                legend = QLabel("■ Ship    · Miss    ✕ Hit    S Sunk")
+                legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                box.addWidget(legend)
             self.board_layout.addWidget(host)
         elif view["kind"] == "sea-warfare":
             self._render_sea_warfare(session, view)

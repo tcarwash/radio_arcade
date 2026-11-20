@@ -8,6 +8,12 @@ def scoreboard(session: dict) -> dict:
     winners = view.get("winners") or ([winner] if winner else [])
     scores = view.get("scores") or {}
     tanks = {tank["player"]: tank for tank in view.get("tanks", [])}
+    if view.get("kind") == "battleship" and not finished:
+        shots = view.get("shots_by_player", {})
+        return {"entries": [{"player": player, "value": str(len({v for v in shots.get(player, []) if v >= 3})),
+                             "unit": "SHIPS SUNK", "active": player == session.get("current_player"), "winner": False}
+                            for player in session.get("players", [])],
+                "finished": False, "winner": None, "label": "LIVE"}
     unit = "HP" if tanks or view.get("kind") == "signal-siege" else "POINTS" if scores else "RESULT"
     entries = []
     for player in session.get("players", []):

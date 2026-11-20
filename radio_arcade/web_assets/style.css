@@ -763,3 +763,5 @@ body { min-width: 320px; min-height: 100svh; overflow-x: hidden; font-size: 14px
   .siege-hero p { display: none; }
   .siege-hero { padding: 10px 12px; }
 }
+
+.bs-own-miss{color:#82d8f2}.bs-classic .battleship-cell.bs-3,.bs-classic .battleship-cell.bs-4,.bs-classic .battleship-cell.bs-5,.bs-classic .battleship-cell.bs-6,.bs-classic .battleship-cell.bs-7{background:#754411;color:#ffdc94}

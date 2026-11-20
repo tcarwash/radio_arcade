@@ -154,6 +154,9 @@ class ArcadeService:
                 result.append(view)
             return sorted(result, key=lambda item: item.get("updated", 0), reverse=True)
 
+    def _private_game_view_data(self, sid):
+        return self.store.load_private_game_data(sid)
+
     def session(self, session_id: str | int) -> dict[str, Any]:
         sid = self._sid(session_id)
         with self._lock:
@@ -165,9 +168,15 @@ class ArcadeService:
             result["view"] = game.view_model(state, tuple(row["players"])) if state is not None else None
             result["current_player"] = game.current_player(state, tuple(row["players"])) if state is not None else None
             if row["game_id"] in (12, 13):
-                private = self.store.load_private_game_data(sid)
-                result["private_fleet"] = private.get("ships")
-                if row["game_id"] == 13 and self.callsign in row["players"]:
+                private = self._private_game_view_data(sid)
+                if self.callsign in row["players"] and not self.observer_mode:
+                    result["private_fleet"] = private.get("ships")
+                    result["private_hits"] = private.get("hits", [])
+                    if row["game_id"] == 12 and state is not None:
+                        seat = row["players"].index(self.callsign)
+                        result["view"].update(shots=state["shots"][seat], shot_owner=self.callsign,
+                                              incoming_shots=state["shots"][1-seat])
+                if row["game_id"] == 13 and state is not None and self.callsign in row["players"] and not self.observer_mode:
                     state = self.registry.by_id(13).decode_state(row["state"])
                     seat = row["players"].index(self.callsign)
                     result["private_deploy"] = {"mines": private.get("mines", []),
@@ -680,8 +689,12 @@ class ArcadeService:
             return
         if row["game_id"] != 12 or row["status"] != "active": return
         game = self.registry.by_id(12); state = game.decode_state(row["state"])
-        if state["phase"] != "reply" or row["players"][state["turn"]] != self.callsign: return
+        if row["players"][state["turn"]] != self.callsign or row["pending_action"] is not None: return
         data = self.store.load_private_game_data(row["id"])
+        if state["phase"] == "setup" and data.get("ships") and not state["ready"][state["turn"]]:
+            self.legal_action(row["id"], b"\x7f")
+            return
+        if state["phase"] != "reply": return
         ships, hits = data.get("ships"), set(data.get("hits", []))
         if not ships: return
         target = state["pending"]

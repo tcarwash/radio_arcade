@@ -108,6 +108,13 @@ class PracticeService(ArcadeService):
             self.store.save_private_game_data(sid, private)
             self.legal_action(sid, b"\x7f")
 
+    def _private_game_view_data(self, sid):
+        private = self.store.load_private_game_data(sid)
+        row = self._sessions[sid]
+        if "practice_seats" in private and self.callsign in row["players"]:
+            return private["practice_seats"].get(str(row["players"].index(self.callsign)), {})
+        return private
+
     def _resolve_battleship_pending(self, row):
         if row["game_id"] not in (12, 13) or row["status"] != "active":
             return
@@ -118,6 +125,21 @@ class PracticeService(ArcadeService):
         seats = private.get("practice_seats", {})
         defender = state["turn"]
         if str(defender) not in seats:
+            return
+        if row["game_id"] == 12:
+            # Keep both fleets in their original private records; never put the
+            # AI fleet in the human's session view or rewrite a committed turn.
+            data = seats[str(defender)]
+            target = state["pending"]
+            hits = set(data.get("hits", []))
+            ship_id = next((i for i, ship in enumerate(data["ships"]) if target in ship), None)
+            result = 0
+            if ship_id is not None:
+                hits.add(target)
+                result = 2 + ship_id if all(cell in hits for cell in data["ships"][ship_id]) else 1
+            data["hits"] = sorted(hits)
+            self.store.save_private_game_data(row["id"], private)
+            self._commit(row, row["players"][defender], bytes((0x80 | result,)))
             return
         saved_call = self.callsign
         self.callsign = row["players"][defender]

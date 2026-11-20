@@ -51,7 +51,7 @@ class BattleshipGame:
         shots[shooter][state["pending"]] = MISS if result == 0 else HIT if result == 1 else 1 + result
         sunk = {v - 3 for v in shots[shooter] if v >= 3}
         finished = result >= 2 and len(sunk) == len(FLEET)
-        return {**state, "shots": shots, "turn": shooter, "phase": "call", "pending": -1,
+        return {**state, "shots": shots, "turn": turn, "phase": "call", "pending": -1,
                 "finished": finished, "winner": shooter if finished else -1}
 
     def encode_state(self, state) -> bytes:
@@ -88,7 +88,7 @@ class BattleshipGame:
         sunk = [{v-3 for v in row if v >= 3} for row in shots]
         for p in range(2):
             if len(sunk[p]) == 5:
-                winner = 1-p
+                winner = p
         return {"shots": shots, "ready": ready, "turn": payload[101], "phase": phase,
                 "pending": pending, "finished": winner >= 0, "winner": winner}
 
@@ -101,7 +101,8 @@ class BattleshipGame:
         return "reports miss" if result == 0 else "reports hit" if result == 1 else f"reports sunk ship {result-2}"
 
     def view_model(self, state, players):
-        shooter = state["turn"] if state["phase"] != "reply" else 1-state["turn"]
-        return {"kind": "battleship", "phase": state["phase"], "turn": players[state["turn"]],
+        shooter = state["winner"] if state["finished"] else state["turn"] if state["phase"] != "reply" else 1-state["turn"]
+        return {"kind": "battleship", "phase": state["phase"], "turn": self.current_player(state, players),
                 "pending": state["pending"], "shots": state["shots"][shooter],
+                "shot_owner": players[shooter], "shots_by_player": dict(zip(players, state["shots"])),
                 "ready": state["ready"], "winner": players[state["winner"]] if state["winner"] >= 0 else None}
