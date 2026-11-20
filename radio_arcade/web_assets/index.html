@@ -15,11 +15,13 @@
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <span>RADIO <b>ARCADE</b></span>
       </a>
-      <div class="brand-context"><span class="tiny-dot"></span> DATA2G · GAME ROOM</div>
+      <div class="brand-context"><span class="tiny-dot"></span> <span id="brand-mode">DATA2G · GAME ROOM</span></div>
       <div class="topbar-actions">
         <div id="connection-status" class="connection-status" role="status"><span class="status-dot"></span><span>Starting…</span></div>
         <button id="tx-toggle" class="button tx-toggle" type="button" aria-pressed="true">TX ENABLED</button>
         <span id="tx-activity" class="tx-activity" role="status" aria-live="polite"></span>
+        <button id="chat-toggle" class="button secondary" type="button" aria-pressed="true">Chat</button>
+        <button id="focus-toggle" class="button secondary" type="button" aria-pressed="false">Focus</button>
         <button id="settings-open" class="icon-button" type="button" title="Station settings" aria-label="Station settings">⚙</button>
       </div>
     </header>
@@ -35,6 +37,8 @@
           <div><p class="eyebrow">YOUR GAME ROOM</p><h2>Tables <span id="session-count" class="count-pill">0</span></h2></div>
           <span class="live-pulse" title="Live updates"></span>
         </div>
+        <button id="new-game" class="button primary full" type="button">＋ New game</button>
+        <button id="history-open" class="button secondary full" type="button">Match history</button>
         <div class="table-tools" role="search">
           <label class="sr-only" for="table-search">Find a game or station</label>
           <input id="table-search" type="search" placeholder="Find a game or station…" autocomplete="off">
@@ -45,11 +49,12 @@
             <option value="waiting">Waiting</option>
             <option value="resync">Needs resync</option>
             <option value="unread">Unread chat</option>
+            <option value="finished">Completed</option>
+            <option value="invited">Invitations</option>
           </select>
         </div>
         <div id="session-list" class="session-list" aria-live="polite"></div>
-        <section class="new-table">
-          <div class="section-rule"><span>START SOMETHING</span></div>
+        <details class="new-table" id="quick-setup"><summary>Game setup</summary>
           <label class="field-label" for="game-select">Choose a game</label>
           <select id="game-select" class="field"></select>
           <div class="game-preview" aria-live="polite">
@@ -65,16 +70,15 @@
           <input id="peer-input" class="field" autocomplete="off" placeholder="Opponent callsign" aria-label="Opponent callsign">
           <button id="create-game" class="button primary full" type="button"><span>＋</span> Create table</button>
           <p id="lobby-note" class="micro-copy" role="status">Choose your game and table type to begin.</p>
-          <details id="cq-panel" class="cq-panel" hidden>
+        </details>
+        <details id="cq-panel" class="cq-panel" hidden>
             <summary>Find a game · CQ</summary>
             <label class="field-label" for="cq-game">Call for a game</label>
             <select id="cq-game" class="field"><option value="">Any game</option></select>
             <button id="cq-send" class="button full" type="button">Call CQ to all stations</button>
             <p class="micro-copy">CQ broadcasts a request; it does not open a table. To answer an “Any game” call, choose a game above first. Recent calls:</p>
             <div id="cq-list" class="cq-list" aria-live="polite"></div>
-          </details>
-        </section>
-        <div id="session-actions" class="session-actions"></div>
+        </details>
       </aside>
 
       <section class="panel arena-panel" aria-label="Game board">
@@ -86,7 +90,8 @@
           </div>
           <div id="arena-revision" class="revision-tag" hidden></div>
         </div>
-        <div id="turn-banner" class="turn-banner" hidden></div>
+        <div id="turn-banner" class="turn-banner" role="status" hidden></div>
+        <div id="session-actions" class="session-actions"></div>
         <div id="arena-body" class="arena-body">
           <div class="welcome-state">
             <div class="welcome-orbit orbit-one"></div><div class="welcome-orbit orbit-two"></div>
@@ -98,7 +103,7 @@
             <div class="welcome-chips"><span>✳ Live tables</span><span>⌘ Shared game engine</span><span>◉ Local practice</span></div>
           </div>
         </div>
-        <footer class="arena-foot"><span><span class="foot-glyph">◉</span> PUBLIC RADIO · MOVES ONLY TRANSMIT WHEN SUBMITTED</span><span id="transport-label">STATION OFFLINE</span></footer>
+        <footer class="arena-foot"><span><span class="foot-glyph">◉</span> RADIO TRAFFIC IS PUBLIC · ACKS AND RETRIES MAY TRANSMIT</span><span id="transport-label">STATION OFFLINE</span></footer>
       </section>
 
       <aside class="panel station-panel" aria-label="Players and table chat">
@@ -111,7 +116,7 @@
           <div id="last-move" class="last-move" hidden></div>
         </section>
         <section class="chat-section">
-          <div class="chat-head"><div><p class="eyebrow">SIDE CHANNEL</p><h2>Table chat</h2></div><span class="chat-lock">⌁ PRIVATE TO THIS TABLE</span></div>
+          <div class="chat-head"><div><p class="eyebrow">SIDE CHANNEL</p><h2>Table chat</h2></div><span class="chat-lock">⌁ PUBLIC RF · TABLE CHAT</span></div>
           <div id="chat-list" class="chat-list" aria-live="polite"></div>
           <form id="chat-form" class="chat-form">
             <label class="sr-only" for="chat-input">Write a message</label>
@@ -125,20 +130,50 @@
 
     <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
 
+    <dialog id="info-dialog" class="settings-dialog"><div class="settings-card">
+      <div class="settings-top"><h2 id="info-heading"></h2><button type="button" class="icon-button" data-close-dialog="info-dialog" aria-label="Close information">×</button></div>
+      <div id="info-content" class="info-content"></div>
+      <button type="button" class="button secondary full" data-close-dialog="info-dialog">Close</button>
+    </div></dialog>
+    <dialog id="welcome-dialog" class="settings-dialog">
+      <div class="settings-card">
+        <div class="settings-top"><h2>Welcome to Radio Arcade</h2><button class="icon-button" data-close-dialog="welcome-dialog" aria-label="Close">×</button></div>
+        <p class="settings-intro">Choose how you want to play. Change modes in Settings anytime.</p>
+        <div class="welcome-choices">
+          <button class="button primary" data-onboard="practice">Play against the computer<small>No radio or callsign needed.</small></button>
+          <button class="button" data-onboard="broadcast">Connect my radio station<small>Configure Data2G and play over the air.</small></button>
+          <button class="button" data-onboard="observer">Watch games on the air<small>Receive-only observer mode.</small></button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="library-dialog" class="settings-dialog"><div class="settings-card">
+      <div class="settings-top"><h2>Choose a game</h2><button class="icon-button" data-close-dialog="library-dialog" aria-label="Close game library">×</button></div>
+      <div id="library-body"></div></div></dialog>
+    <dialog id="create-dialog" class="settings-dialog"><form id="create-form" class="settings-card">
+      <div class="settings-top"><h2 id="create-heading">Create a table</h2><button type="button" class="icon-button" data-close-dialog="create-dialog" aria-label="Close creation dialog">×</button></div>
+      <p id="create-description" class="settings-intro"></p>
+      <label>How do you want others to join?<select class="field" name="mode"><option value="direct">Invite a station directly</option><option value="hosted">Open table · stations discover and join</option></select></label>
+      <label id="create-peer-label">Opponent callsign (optional)<input class="field" name="peer" maxlength="15" placeholder="N0CALL" autocomplete="off"></label>
+      <p id="create-hint" class="micro-copy"></p><p class="micro-copy">Radio traffic is public. Invitations, announcements, acknowledgements and retries may transmit.</p>
+      <p id="create-error" class="form-error" hidden></p>
+      <div class="settings-actions"><button type="button" class="button" data-close-dialog="create-dialog">Cancel</button><button id="create-submit" class="button primary" type="submit">Create lobby</button></div>
+    </form></dialog>
     <dialog id="settings-dialog" class="settings-dialog">
       <form id="settings-form" class="settings-card">
         <div class="settings-top"><div><p class="eyebrow">YOUR STATION</p><h2>Connection settings</h2></div><button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button></div>
-        <p class="settings-intro">Choose how this game room talks to Data2G. Your station preferences are saved locally.</p>
+        <p class="settings-intro">Choose a play mode. Radio settings appear only when needed.</p>
         <div class="settings-grid">
-          <label>Callsign<input name="callsign" required maxlength="15" placeholder="N0CALL" autocomplete="off"></label>
+          <label>Callsign / local name<input name="callsign" maxlength="15" placeholder="N0CALL" autocomplete="off"></label>
           <label>Data2G host<input name="host" placeholder="127.0.0.1" autocomplete="off"></label>
-          <label>Transport<select name="transport"><option value="broadcast">Broadcast · KISS</option><option value="connected">Connected · VARA-like</option><option value="practice">Local practice · hot-seat</option></select></label>
+          <label>Play mode<select name="transport"><option value="broadcast">Over-the-air multiplayer · broadcast</option><option value="connected">Over-the-air multiplayer · connected</option><option value="practice">Play against the computer</option></select></label>
+          <button id="advanced-radio" class="button" type="button" aria-expanded="false">Advanced radio settings ▸</button>
           <label>Broadcast group<input name="group" maxlength="10" value="RAGAMES"></label>
           <label>Broadcast modem mode<input name="broadcast_mode" placeholder="Default, or e.g. n10-qpsk-r1/5"></label>
           <label>Station identification<select name="station_id_mode"><option value="auto">Data2G CWID (with fallback)</option><option value="application">Radio Arcade data ID</option></select></label>
           <label>CW ID speed (WPM)<input name="cw_wpm" type="number" min="15" max="40" value="20"></label>
           <label>Command port<input name="command_port" type="number" min="1" max="65535" value="8300"></label>
           <label>KISS port<input name="kiss_port" type="number" min="1" max="65535" value="8100"></label>
+          <label>Practice AI<select name="ai_difficulty"><option value="casual">Casual · relaxed moves</option><option value="standard">Standard · tactical play</option><option value="challenging">Challenging · deeper search</option></select></label>
           <label>Color scheme<select name="color_scheme"><option value="midnight">Midnight</option><option value="daylight">Daylight</option><option value="monochrome">Monochrome</option></select></label>
           <label>DX Cluster URL<input name="dx_cluster_url" type="url" placeholder="https://cluster.example.org"></label>
           <label class="check-setting"><input name="sound_enabled" type="checkbox"> Invitation and turn sounds <span>Desktop and terminal clients</span></label>

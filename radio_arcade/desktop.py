@@ -11,14 +11,22 @@ import sys
 import time
 from typing import Callable
 
-from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, QSettings, QSize, Qt, QThread, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QRadialGradient, QPen, QPixmap, QPolygonF
+from PySide6.QtCore import QObject, QPoint, QPointF, QMimeData, QRectF, QRunnable, QSettings, QSize, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QRadialGradient, QPen, QPixmap, QPolygonF, QKeySequence, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
+    QGridLayout, QBoxLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QSlider, QSplitter, QStackedWidget, QStyle, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
-from .presentation import CompletionTracker, scoreboard
+from .presentation import CompletionTracker, scoreboard, table_feedback
+from .match_history import match_history
+from .game_guides import guide_for
+from .desktop_move_effects import MoveRipple
+from datetime import datetime
+from .wire import Kind
+from .fleet_setup import CLASSIC_NAMES, FleetDraft
+from .word_draft import preview_word, positions, append_rack_tile, used_tiles, drop_rack_tile
+import random
 from .desktop_results import Scoreboard, ResultDialog
 from .scorched_navigation import BattleMapScroll, ScorchedMinimap
 from .service import ArcadeService, EngineEvent, station_name
@@ -89,12 +97,12 @@ def _style_naval_button(button: QPushButton, value: int | str, enabled: bool = T
                 font-weight: 900;
             }
         """)
-    elif val in ("·", "1"):
+    elif val in ("·", "○", "1"):
         button.setStyleSheet("""
             QPushButton {
                 background: #07121d;
-                color: #5a7495;
-                border: 1px solid rgba(100, 160, 240, 0.14);
+                color: #ffffff;
+                border: 1px solid #66798a;
                 border-radius: 4px;
                 font-size: 18px;
                 font-weight: 900;
@@ -141,6 +149,130 @@ def _style_naval_button(button: QPushButton, value: int | str, enabled: bool = T
                 font-size: 11px;
             }
         """)
+
+
+class WordRackTile(QPushButton):
+    """Click to append or drag a local rack slot onto the board."""
+    def __init__(self, slot, parent=None):
+        super().__init__(parent)
+        self.slot = slot
+        self._origin = QPoint()
+
+    def mousePressEvent(self,event):
+        self._origin=event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self,event):
+        if (self.isEnabled() and event.buttons() & Qt.MouseButton.LeftButton and
+                (event.position().toPoint()-self._origin).manhattanLength() >= QApplication.startDragDistance()):
+            drag=QDrag(self)
+            mime=QMimeData();mime.setData("application/x-radio-arcade-rack",str(self.slot).encode())
+            drag.setMimeData(mime);drag.setPixmap(self.grab())
+            self.setDown(False)
+            drag.exec(Qt.DropAction.CopyAction)
+            return
+        super().mouseMoveEvent(event)
+
+
+class WordBoardCell(QPushButton):
+    dropped=Signal(int,int)
+
+    def __init__(self,index,parent=None):
+        super().__init__(parent)
+        self.index=index
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self,event):
+        if self.isEnabled() and event.mimeData().hasFormat("application/x-radio-arcade-rack"):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self,event):
+        if self.isEnabled() and event.mimeData().hasFormat("application/x-radio-arcade-rack"):
+            event.acceptProposedAction()
+
+    def dropEvent(self,event):
+        if not self.isEnabled() or not event.mimeData().hasFormat("application/x-radio-arcade-rack"):
+            return
+        try: slot=int(bytes(event.mimeData().data("application/x-radio-arcade-rack")))
+        except ValueError:return
+        if 0<=slot<7:
+            self.dropped.emit(slot,self.index);event.acceptProposedAction()
+
+
+class FleetPlacementCell(QPushButton):
+    """Hover and keyboard focus both preview the candidate footprint."""
+    hovered = Signal(int)
+    departed = Signal()
+
+    def __init__(self, cell):
+        super().__init__()
+        self.cell = cell
+        self.setObjectName(f"fleetCell{cell}")
+        self.setAccessibleName(f"{chr(65 + cell % 10)}{cell // 10 + 1}")
+
+    def enterEvent(self, event):
+        self.hovered.emit(self.cell)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.departed.emit()
+        super().leaveEvent(event)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.hovered.emit(self.cell)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.departed.emit()
+
+
+
+
+_NAVAL_SPRITES = ("carrier", "hull", "cruiser", "destroyer", "submarine", "patrol")
+
+
+def _draw_naval_fleet(grid, fleet, cell_size, spacing, *, classic=False):
+    """Layer the existing naval artwork above cells, below shot markers."""
+    assets = Path(__file__).with_name("web_assets")
+    for index, ship in enumerate(fleet or []):
+        if not ship:
+            continue
+        ship = sorted(ship)
+        row, col = divmod(ship[0], 10)
+        vertical = len(ship) > 1 and ship[1] - ship[0] == 10
+        sprite_id = 5 if classic and index == 4 else index
+        name = f"battleship-{_NAVAL_SPRITES[sprite_id]}" + ("" if vertical else "-horizontal") + ".png"
+        sprite = QPixmap(str(assets / name))
+        if sprite.isNull():
+            continue
+        length = len(ship)
+        span = length * cell_size + (length - 1) * spacing
+        width, height = (cell_size, span) if vertical else (span, cell_size)
+        image = QLabel()
+        image.setObjectName("navalShipSprite")
+        image.setProperty("spriteName", name)
+        image.setFixedSize(width, height)
+        image.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        image.setStyleSheet("background:transparent;border:none")
+        image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image.setPixmap(sprite.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation))
+        grid.addWidget(image, row + 1, col + 1, length if vertical else 1,
+                       1 if vertical else length)
+        image.raise_()
+
+
+def _naval_shot_overlay(grid, cell, mark, *, color):
+    label = QLabel(mark)
+    label.setObjectName("navalShotMarker")
+    label.setProperty("shotCell", cell)
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    label.setStyleSheet(f"color:{color};font-size:17px;font-weight:900;"
+                        "background:rgba(5,15,25,150);border:none;border-radius:4px")
+    grid.addWidget(label, cell // 10 + 1, cell % 10 + 1)
+    label.raise_()
 
 
 def _add_radar_coordinates(grid: QGridLayout, cell_size: int = 28, responsive: bool = False):
@@ -193,14 +325,14 @@ class SessionListCard(QWidget):
         title = QLabel(game)
         title.setObjectName("sessionGameTitle")
         title.setMinimumWidth(0)
-        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        title.setWordWrap(True)
+        title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         title.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         badge = QLabel(status.upper())
         badge.setObjectName("sessionStatusBadge")
         badge.setProperty("kind", status_kind)
         badge.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         head.addWidget(title, 1)
-        head.addWidget(badge, 0)
         players = QLabel(f"{opponent}  ·  {stations} station{'s' if stations != 1 else ''}" +
                          (f"  ·  {unread} unread" if unread else ""))
         players.setObjectName("sessionPlayersLine")
@@ -214,58 +346,214 @@ class SessionListCard(QWidget):
         last.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         layout.addLayout(head)
         layout.addWidget(players)
+        status_row = QHBoxLayout(); status_row.addWidget(badge); status_row.addStretch(1)
+        layout.addLayout(status_row)
         layout.addWidget(last)
         main_layout.addLayout(layout, 1)
-        self.setMinimumHeight(66)
+        self.setMinimumHeight(90)
 
 
-class HeroWelcomeWidget(QWidget):
-    """Luminous tactical welcome state for when no table is currently selected."""
+GAME_DESCRIPTIONS = {
+    "tic-tac-toe": ("Quick play", "Make a line of three before your opponent."),
+    "nim": ("Strategy", "Take stones from one pile and outthink your opponent."),
+    "open-word-tiles": ("Word game", "Build words and claim premium squares."),
+    "connect-four": ("Quick play", "Drop discs and connect four in a row."),
+    "scorched-earth": ("Artillery", "Aim, adjust power and take out enemy tanks."),
+    "hexxagon": ("Strategy", "Clone, jump and capture neighboring pieces."),
+    "battleship-classic": ("Naval strategy", "Place your fleet and hunt enemy ships."),
+    "sea-warfare": ("Tactical strategy", "Command a fleet with sonar, salvos and mines."),
+    "signal-siege": ("Experimental co-op", "Build a deck and survive interference waves."),
+}
 
+
+def player_count_label(game):
+    return f"{game.min_players} players" if game.min_players == game.max_players else f"{game.min_players}–{game.max_players} players"
+
+
+class GameLibrary(QWidget):
+    """Browsable catalog; all cards use the registered game and client filters."""
+    def __init__(self, catalog, practice, activate, enabled=True, parent=None):
+        super().__init__(parent)
+        self.setObjectName("gameLibrary")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QVBoxLayout(self); layout.setContentsMargins(8, 8, 8, 8); layout.setSpacing(8)
+        title = QLabel("Explore the arcade"); title.setObjectName("gameTitle")
+        layout.addWidget(title)
+        subtitle = QLabel("Pick a game to play against the computer — no radio needed." if practice else
+                          "Pick a game, then choose how to invite other stations." if enabled else
+                          "Observe received tables from the Games panel. Change play mode in Settings to start a game.")
+        subtitle.setWordWrap(True); subtitle.setObjectName("muted"); layout.addWidget(subtitle)
+        self.cards = []
+        self.grid = QGridLayout(); self.grid.setSpacing(9); layout.addLayout(self.grid)
+        for game in catalog:
+            category, description = GAME_DESCRIPTIONS.get(game.key, ("Game", "Open a table for this game."))
+            card = QFrame(); card.setObjectName("libraryCard")
+            card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            col = QVBoxLayout(card); col.setContentsMargins(10, 9, 10, 9); col.setSpacing(5)
+            heading = QLabel(f"{game_glyph(game.key)}  {game.name}"); heading.setObjectName("cardTitle")
+            heading.setStyleSheet("font-size:15px;font-weight:700;"); heading.setWordWrap(True)
+            head = QHBoxLayout(); head.addWidget(heading, 1)
+            art = {"scorched-earth": "tank-teal.png", "battleship-classic": "battleship-hull-horizontal.png",
+                   "sea-warfare": "battleship-carrier-horizontal.png"}.get(game.key)
+            if art:
+                thumbnail = QLabel(); thumbnail.setFixedSize(62, 28)
+                thumbnail.setPixmap(QPixmap(str(Path(__file__).with_name("web_assets") / art)).scaled(
+                    62, 28, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                head.addWidget(thumbnail)
+            col.addLayout(head)
+            meta = QLabel(f"{category} · {player_count_label(game)}"); meta.setObjectName("muted")
+            meta.setWordWrap(True); col.addWidget(meta)
+            desc = QLabel(description); desc.setWordWrap(True); col.addWidget(desc)
+            col.addStretch(1)
+            button = QPushButton("Play vs computer" if practice else "Select game")
+            button.setObjectName("libraryPlayButton"); button.setProperty("gameKey", game.key)
+            button.setEnabled(enabled); button.clicked.connect(lambda _=False, key=game.key: activate(key))
+            col.addWidget(button)
+            rules=QPushButton("How to play")
+            rules.setObjectName("libraryRulesButton")
+            rules.clicked.connect(lambda _=False, g=game: show_guide(self,g.key,g.name))
+            col.addWidget(rules)
+            self.cards.append(card)
+        self._columns = 0; self._reflow(2)
+        layout.addStretch(1)
+
+    def _reflow(self, columns):
+        if columns == self._columns:
+            return
+        self._columns = columns
+        for card in self.cards:
+            self.grid.removeWidget(card)
+        for i, card in enumerate(self.cards):
+            self.grid.addWidget(card, i // columns, i % columns)
+        for c in range(2):
+            self.grid.setColumnStretch(c, int(c < columns))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reflow(1 if self.width() < 470 else 2)
+
+
+def themed_scroll_dialog(parent, title, width=660, height=600):
+    dialog=QDialog(parent);dialog.setObjectName("arcadeInfoDialog");dialog.setWindowTitle(title)
+    dialog.resize(max(280,min(width,parent.width()-12)),max(260,min(height,parent.height()-12)))
+    layout=QVBoxLayout(dialog);layout.setContentsMargins(14,14,14,14)
+    scroll=QScrollArea();scroll.setObjectName("arcadeInfoScroll")
+    scroll.viewport().setObjectName("arcadeInfoViewport")
+    scroll.setFrameShape(QFrame.Shape.NoFrame);scroll.setWidgetResizable(True)
+    host=QWidget();host.setObjectName("arcadeInfoHost");host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
+    body=QVBoxLayout(host);body.setSpacing(10);scroll.setWidget(host);layout.addWidget(scroll,1)
+    close=QPushButton("Close");close.clicked.connect(dialog.accept);layout.addWidget(close)
+    return dialog,scroll,body
+
+
+def info_label(value, name="", wrap=True):
+    label=QLabel(str(value));label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setObjectName(name);label.setWordWrap(wrap)
+    return label
+
+
+def show_guide(parent,key,name):
+    dialog,_,body=themed_scroll_dialog(parent,"How to play · "+name,540,430)
+    body.addWidget(info_label(name,"gameTitle"))
+    for i,step in enumerate(guide_for(key),1):
+        body.addWidget(info_label(f"{i}. {step}"))
+    body.addStretch(1);dialog.exec()
+
+
+class CreateTableDialog(QDialog):
+    """Confirm the RF table type and destination before creating or inviting."""
+    def __init__(self, game, settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create a table")
+        self.setObjectName("createTableDialog")
+        self.game = game
+        self.settings = settings
+        self.peer = None
+        self.hosted = False
+        self.resize(min(480, parent.width() - 16) if parent else 480, 350)
+        box = QVBoxLayout(self); box.setContentsMargins(18, 16, 18, 16); box.setSpacing(10)
+        title = QLabel(f"New {game.name} table"); title.setObjectName("dialogTitle"); title.setWordWrap(True); box.addWidget(title)
+        category, description = GAME_DESCRIPTIONS.get(game.key, ("Game", "Start a shared game."))
+        intro = QLabel(f"{category} · {player_count_label(game)}\n{description}")
+        intro.setWordWrap(True); intro.setObjectName("muted"); box.addWidget(intro)
+        box.addWidget(QLabel("How do you want others to join?"))
+        self.mode = QComboBox()
+        self.mode.addItem("Invite a station directly", "direct")
+        if settings.transport == "broadcast":
+            self.mode.addItem("Open table · let stations discover and join", "hosted")
+        box.addWidget(self.mode)
+        self.peer_label = QLabel("Opponent callsign (optional)"); box.addWidget(self.peer_label)
+        self.peer_input = QLineEdit(); self.peer_input.setPlaceholderText("e.g. N0CALL"); box.addWidget(self.peer_input)
+        self.hint = QLabel(); self.hint.setWordWrap(True); self.hint.setObjectName("muted"); box.addWidget(self.hint)
+        notice = QLabel("Radio traffic is public. Invitations, announcements, acknowledgements and retries may transmit over RF.")
+        notice.setWordWrap(True); notice.setObjectName("muted"); box.addWidget(notice)
+        self.error = QLabel(); self.error.setWordWrap(True); self.error.setStyleSheet("color:#fb7185"); self.error.hide(); box.addWidget(self.error)
+        box.addStretch(1)
+        buttons = QHBoxLayout(); buttons.addStretch()
+        cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject); buttons.addWidget(cancel)
+        self.create = QPushButton(); self.create.setObjectName("primaryButton"); self.create.clicked.connect(self._accept); buttons.addWidget(self.create)
+        box.addLayout(buttons)
+        self.mode.currentIndexChanged.connect(self._update)
+        self.peer_input.textChanged.connect(self._update)
+        self.peer_input.returnPressed.connect(self._accept)
+        self._update()
+
+    def _update(self):
+        hosted = self.mode.currentData() == "hosted"
+        self.peer_label.setVisible(not hosted); self.peer_input.setVisible(not hosted)
+        self.error.hide()
+        if hosted:
+            self.hint.setText("Announce this game to listening stations. You choose when to start and act as host.")
+            self.create.setText("Announce open table")
+        elif self.peer_input.text().strip():
+            self.hint.setText("Send an invitation now. The match starts when the roster is full; larger tables can be started earlier.")
+            self.create.setText("Create & invite")
+        else:
+            self.hint.setText("Create a saved lobby first. Invite other stations whenever you are ready.")
+            self.create.setText("Create lobby")
+
+    def _accept(self):
+        hosted = self.mode.currentData() == "hosted"
+        try:
+            peer = station_name(self.peer_input.text()) if not hosted and self.peer_input.text().strip() else None
+            if peer == self.settings.callsign:
+                raise ValueError("Choose a different station — that is your callsign.")
+        except ValueError as exc:
+            self.error.setText(str(exc)); self.error.show(); return
+        self.hosted, self.peer = hosted, peer
+        self.accept()
+
+
+class OnboardingDialog(QDialog):
+    """Choose a play mode before asking for radio-specific settings."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("heroWelcomeWidget")
-        layout = QVBoxLayout(self)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setContentsMargins(24, 40, 24, 40)
-        layout.setSpacing(14)
+        self.setWindowTitle("Welcome to Radio Arcade")
+        self.setMinimumWidth(300); self.resize(450, 410)
+        self.mode = None
+        box = QVBoxLayout(self); box.setSpacing(12); box.setContentsMargins(20, 20, 20, 20)
+        title = QLabel("Welcome to Radio Arcade"); title.setStyleSheet("font-size:22px;font-weight:800")
+        title.setWordWrap(True); box.addWidget(title)
+        intro = QLabel("Choose how you want to play. You can change this in Settings later.")
+        intro.setWordWrap(True); box.addWidget(intro)
+        for key, label, detail in (
+            ("practice", "▶  Play against the computer", "Start immediately — no radio or callsign needed."),
+            ("broadcast", "⌁  Connect my radio station", "Configure Data2G and play over the air."),
+            ("observer", "◉  Watch games on the air", "Receive-only observer mode for a Data2G station."),
+        ):
+            button = QPushButton(label); button.setObjectName("onboarding-" + key)
+            button.setMinimumHeight(44); button.clicked.connect(lambda _=False, mode=key: self.choose(mode))
+            box.addWidget(button)
+            hint = QLabel(detail); hint.setObjectName("muted"); hint.setWordWrap(True); box.addWidget(hint)
+        box.addStretch(1)
+        cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject); box.addWidget(cancel)
+        self.setStyleSheet("QDialog {background:#101926;color:#e8f0f7;} QLabel {color:#e8f0f7;} QLabel#muted {color:#9eafc2;} QPushButton {background:#20384c;color:#e8f0f7;border:1px solid #42677b;border-radius:8px;padding:8px;font-weight:600;} QPushButton#onboarding-practice {background:#00cfa5;color:#062620;} QPushButton:hover {border:1px solid #00f5c4;}")
 
-        emblem = QLabel("◈")
-        emblem.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        emblem.setStyleSheet("""
-            font-size: 50px;
-            color: #00f5c4;
-            background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
-                stop:0 rgba(0, 245, 196, 0.22), stop:0.65 rgba(0, 245, 196, 0.04), stop:1 transparent);
-            border-radius: 40px;
-            padding: 10px;
-        """)
-        layout.addWidget(emblem)
-
-        eyebrow = QLabel("SPECTRUM ARENA  ·  RADIO ARCADE")
-        eyebrow.setObjectName("eyebrow")
-        eyebrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(eyebrow)
-
-        title = QLabel("Take Your Seat at the Airwaves")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 26px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px;")
-        layout.addWidget(title)
-
-        sub = QLabel("Select an active table from dispatch, launch a hot-seat practice duel,\nor broadcast an open invitation across the spectrum.")
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setWordWrap(True)
-        sub.setStyleSheet("font-size: 13px; color: #94a3b8; max-width: 480px; line-height: 1.5;")
-        layout.addWidget(sub)
-
-        chips = QHBoxLayout()
-        chips.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chips.setSpacing(8)
-        for icon, text in [("✳", "2.4GHz KISS Broadcast"), ("⌘", "Deterministic Engine"), ("◉", "Hot-Seat Practice")]:
-            chip = QLabel(f"{icon}  {text}")
-            chip.setStyleSheet("background: rgba(255, 255, 255, 0.035); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px; padding: 5px 12px; color: #cbd5e1; font-size: 11px; font-weight: 600;")
-            chips.addWidget(chip)
-        layout.addLayout(chips)
+    def choose(self, mode):
+        self.mode = mode
+        self.accept()
 
 
 class ScorchedBattlefield(QWidget):
@@ -510,7 +798,7 @@ class SettingsDialog(QDialog):
         title = QLabel("Connect your station")
         title.setObjectName("dialogTitle")
         outer.addWidget(title)
-        subtitle = QLabel("Choose how Radio Arcade reaches your Data2G host.")
+        subtitle = QLabel("Choose a play mode. Radio settings appear only when needed.")
         subtitle.setObjectName("muted")
         subtitle.setWordWrap(True)
         outer.addWidget(subtitle)
@@ -524,7 +812,7 @@ class SettingsDialog(QDialog):
         self.transport = QComboBox()
         self.transport.addItem("Broadcast · KISS", "broadcast")
         self.transport.addItem("Connected · VARA-like", "connected")
-        self.transport.addItem("Local practice · play both sides", "practice")
+        self.transport.addItem("Local practice · vs computer", "practice")
         self.transport.setCurrentIndex(max(0, self.transport.findData(settings.transport)))
         self.group = QLineEdit(settings.group)
         self.broadcast_mode = QLineEdit(settings.broadcast_mode)
@@ -540,6 +828,13 @@ class SettingsDialog(QDialog):
         self.scheme.addItem("Monochrome", "monochrome")
         self.scheme.setCurrentIndex(max(0, self.scheme.findData(settings.color_scheme)))
         self.sound = QCheckBox("Play sounds"); self.sound.setChecked(settings.sound_enabled)
+        self.ai_difficulty = QComboBox()
+        for label,value in (("Casual · relaxed moves","casual"),
+                            ("Standard · tactical play","standard"),
+                            ("Challenging · deeper search","challenging")):
+            self.ai_difficulty.addItem(label,value)
+        self.ai_difficulty.setObjectName("aiDifficulty")
+        self.ai_difficulty.setCurrentIndex(max(0,self.ai_difficulty.findData(settings.ai_difficulty)))
         self.experimental_games = QCheckBox("Experimental games")
         self.experimental_games.setToolTip("Show the Signal Siege prototype when creating a table or calling CQ")
         self.experimental_games.setChecked(settings.experimental_games)
@@ -548,9 +843,11 @@ class SettingsDialog(QDialog):
         self.observer.setChecked(settings.observer_mode)
         self.dx_cluster_url = QLineEdit(settings.dx_cluster_url)
         self.dx_cluster_url.setPlaceholderText("https://cluster.example.org")
-        form.addRow("Callsign", self.callsign)
+        form.addRow("Play mode", self.transport)
+        form.addRow("Callsign / local name", self.callsign)
         form.addRow("Data2G host", self.host)
-        form.addRow("Transport", self.transport)
+        self.advanced = QPushButton("Advanced radio settings ▸"); self.advanced.setCheckable(True)
+        form.addRow(self.advanced)
         form.addRow("Broadcast group", self.group)
         form.addRow("Broadcast modem mode", self.broadcast_mode)
         form.addRow("Station identification", self.station_id_mode)
@@ -559,9 +856,30 @@ class SettingsDialog(QDialog):
         form.addRow("KISS port", self.kiss_port)
         form.addRow("Color scheme", self.scheme)
         form.addRow("Sound", self.sound)
+        form.addRow("Practice AI", self.ai_difficulty)
         form.addRow("Games", self.experimental_games)
         form.addRow("Observer", self.observer)
         form.addRow("DX Cluster URL", self.dx_cluster_url)
+        def update_mode():
+            mode = self.transport.currentData()
+            radio = mode != "practice"
+            broadcast = mode == "broadcast"
+            form.setRowVisible(self.ai_difficulty, not radio)
+            form.setRowVisible(self.host, radio)
+            form.setRowVisible(self.advanced, radio)
+            form.setRowVisible(self.observer, broadcast)
+            show_advanced = radio and self.advanced.isChecked()
+            self.advanced.setText("Advanced radio settings ▾" if show_advanced else "Advanced radio settings ▸")
+            for field in (self.command_port, self.station_id_mode, self.cw_wpm, self.dx_cluster_url):
+                form.setRowVisible(field, show_advanced)
+            for field in (self.group, self.broadcast_mode, self.kiss_port):
+                form.setRowVisible(field, show_advanced and broadcast)
+            if not broadcast:
+                self.observer.setChecked(False)
+            self.callsign.setPlaceholderText("PLAYER (optional)" if not radio else "N0CALL")
+        self.transport.currentIndexChanged.connect(update_mode)
+        self.advanced.toggled.connect(update_mode)
+        update_mode()
         form_scroll = QScrollArea(); form_scroll.setObjectName("settingsFormScroll")
         form_scroll.setFrameShape(QFrame.Shape.NoFrame)
         form_scroll.setWidgetResizable(True)
@@ -569,7 +887,8 @@ class SettingsDialog(QDialog):
         outer.addWidget(form_scroll, 1)
         buttons = QHBoxLayout(); buttons.addStretch(1)
         cancel = QPushButton("Cancel"); cancel.clicked.connect(self.reject)
-        save = QPushButton("Save settings"); save.setObjectName("primaryButton"); save.clicked.connect(self._save)
+        save = QPushButton("Save settings" if settings.transport == "practice" else "Save and connect"); save.setObjectName("primaryButton"); save.clicked.connect(self._save)
+        self.transport.currentIndexChanged.connect(lambda: save.setText("Save settings" if self.transport.currentData() == "practice" else "Save and connect"))
         buttons.addWidget(cancel); buttons.addWidget(save); outer.addLayout(buttons)
         if parent:
             self.resize(max(300, min(520, parent.width() - 16)),
@@ -577,8 +896,10 @@ class SettingsDialog(QDialog):
 
     def _save(self):
         try:
-            call = station_name(self.callsign.text())
-            group = group_name(self.group.text())
+            call = station_name(self.callsign.text() or ("PLAYER" if self.transport.currentData() == "practice" else ""))
+            if self.transport.currentData() != "practice" and call == "PLAYER":
+                raise ValueError("Replace the local PLAYER name with your station callsign for radio play.")
+            group = group_name(self.group.text()) if self.transport.currentData() == "broadcast" else self.settings.group
         except ValueError as exc:
             QMessageBox.warning(self, "Check settings", str(exc))
             return
@@ -597,6 +918,7 @@ class SettingsDialog(QDialog):
         self.settings.kiss_port = self.kiss_port.value()
         self.settings.color_scheme = self.scheme.currentData()
         self.settings.sound_enabled = self.sound.isChecked()
+        self.settings.ai_difficulty = self.ai_difficulty.currentData()
         self.settings.experimental_games = self.experimental_games.isChecked()
         self.settings.dx_cluster_url = self.dx_cluster_url.text().strip()
         self.settings.save()
@@ -640,6 +962,13 @@ class ArcadeWindow(QMainWindow):
         self._ui_settings = QSettings("Radio Arcade", "Radio Arcade")
         self.selected_id: str | None = self._ui_settings.value(f"selectedTable/{settings.callsign}") or None
         self._table_list_initialized = False
+        self._chat_visible = settings.transport != "practice"
+        self._focus_mode = False
+        self._connecting = False
+        self._move_jobs = set()
+        self._creating_table = False
+        self._delivery_status = {}
+        self._action_errors = {}
         saved_unread = self._ui_settings.value(f"unreadTables/{settings.callsign}", {})
         self._unread_by_session: dict[str, int] = {
             str(key): int(value) for key, value in (saved_unread.items() if isinstance(saved_unread, dict) else [])
@@ -657,7 +986,13 @@ class ArcadeWindow(QMainWindow):
         self._board_signature = None
         self._last_scorched_animation_key = None
         self._scorched_weapons = {}
+        self._scorched_aim = {}
+        self._scorched_camera = {}
+        self._move_cue_seen = {}
+        self._last_move_ripple = None
+        self._word_drafts = {}
         self._battleship_drafts = {}
+        self._fleet_deployments = set()
         self._event_bridge = EventBridge(self)
         self._event_bridge.received.connect(self._on_event, Qt.ConnectionType.QueuedConnection)
         self._pool = QThreadPool.globalInstance()
@@ -703,6 +1038,13 @@ class ArcadeWindow(QMainWindow):
         self.tx_toggle.toggled.connect(self._set_tx_enabled)
         self.tx_toggle.setEnabled(self.settings.transport != "practice")
         top_layout.addWidget(self.tx_toggle)
+        self.chat_toggle = QPushButton("Chat"); self.chat_toggle.setCheckable(True)
+        self.chat_toggle.setChecked(self._chat_visible); self.chat_toggle.toggled.connect(self._toggle_chat)
+        self.chat_toggle.setToolTip("Show or hide the players and chat panel")
+        self.focus_toggle = QPushButton("Focus"); self.focus_toggle.setCheckable(True)
+        self.focus_toggle.setToolTip("Hide sidebars and focus on the game")
+        self.focus_toggle.toggled.connect(self._toggle_focus)
+        top_layout.addWidget(self.chat_toggle); top_layout.addWidget(self.focus_toggle)
         self.settings_button = QPushButton("⚙  Settings"); self.settings_button.setObjectName("settingsButton")
         self.settings_button.clicked.connect(self._edit_settings)
         top_layout.addWidget(self.settings_button)
@@ -715,6 +1057,13 @@ class ArcadeWindow(QMainWindow):
         left_layout = left.layout()
         left_layout.setContentsMargins(14, 14, 14, 14)
         left_layout.setSpacing(8)
+        self.library_button = QPushButton("＋  New game")
+        self.library_button.setObjectName("primaryButton")
+        self.library_button.setMinimumHeight(38)
+        self.library_button.clicked.connect(self._browse_games)
+        left_layout.addWidget(self.library_button)
+        self.history_button=QPushButton("Match history");self.history_button.setObjectName("historyButton")
+        self.history_button.clicked.connect(self._show_history);left_layout.addWidget(self.history_button)
         self.session_list = QListWidget(); self.session_list.setObjectName("sessionList")
         self.session_list.currentItemChanged.connect(self._select_item)
         self.session_list.setMinimumHeight(70)
@@ -727,6 +1076,8 @@ class ArcadeWindow(QMainWindow):
         self.session_filter.addItem("Waiting", "waiting")
         self.session_filter.addItem("Needs resync", "resync")
         self.session_filter.addItem("Unread chat", "unread")
+        self.session_filter.addItem("Completed", "finished")
+        self.session_filter.addItem("Invitations", "invited")
         self.session_search.setMinimumWidth(0)
         self.session_search.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.session_filter.setMinimumWidth(92)
@@ -749,7 +1100,7 @@ class ArcadeWindow(QMainWindow):
         cq_layout = QVBoxLayout(cq_content); cq_layout.setContentsMargins(0, 4, 2, 4); cq_layout.setSpacing(7)
         self.cq_scroll.setWidget(cq_content)
         left_layout.addWidget(self.cq_scroll)
-        self.new_game_toggle = QPushButton("＋  Start a new game")
+        self.new_game_toggle = QPushButton("Game setup ▸")
         self.new_game_toggle.setCheckable(True)
         self.new_game_toggle.toggled.connect(self._toggle_new_game_setup)
         left_layout.addWidget(self.new_game_toggle)
@@ -813,7 +1164,7 @@ class ArcadeWindow(QMainWindow):
         self.invite_button = QPushButton("Invite to selected lobby"); self.invite_button.clicked.connect(self._invite_player)
         tools_layout.addWidget(self.invite_button)
         self.join_button = QPushButton("Join broadcast table"); self.join_button.clicked.connect(self._join_game)
-        tools_layout.addWidget(self.join_button)
+
         self.announce_button = QPushButton("Re-announce lobby"); self.announce_button.clicked.connect(self._announce_game)
         tools_layout.addWidget(self.announce_button)
         self.spot_button = QPushButton("✦  Spot my game · DX Cluster"); self.spot_button.clicked.connect(self._spot_game)
@@ -823,7 +1174,7 @@ class ArcadeWindow(QMainWindow):
         self.order_button = QPushButton("Set dealer reply order"); self.order_button.clicked.connect(self._set_reply_order)
         tools_layout.addWidget(self.order_button)
         self.retry_button = QPushButton("Retry pending move"); self.retry_button.clicked.connect(self._retry_move)
-        tools_layout.addWidget(self.retry_button)
+
         self.cancel_invite_button = QPushButton("Cancel pending invitation")
         self.cancel_invite_button.clicked.connect(self._cancel_invitation)
         tools_layout.addWidget(self.cancel_invite_button)
@@ -832,7 +1183,7 @@ class ArcadeWindow(QMainWindow):
         self.start_button.setMinimumHeight(42)
         self.start_button.hide()
         tools_layout.addStretch(1)
-        left_layout.addWidget(self.start_button)
+
         self.forfeit_button = QPushButton("Forfeit game…"); self.forfeit_button.setObjectName("forfeitGame")
         self.forfeit_button.clicked.connect(self._forfeit_game); self.forfeit_button.hide()
         self.delete_button = QPushButton("Delete selected game…")
@@ -844,18 +1195,50 @@ class ArcadeWindow(QMainWindow):
         center = self._card("ACTIVE TABLE", "Game workspace")
         center_layout = center.layout()
         self.game_heading = QLabel("Welcome to the airwaves"); self.game_heading.setObjectName("gameTitle")
+        self.game_heading.setWordWrap(True); self.game_heading.setMinimumWidth(0)
         self.game_subtitle = QLabel("Start a game or accept an invitation to take a seat."); self.game_subtitle.setObjectName("muted")
         heading_row = QHBoxLayout(); heading_row.addWidget(self.game_heading, 1)
         self.result_button = QPushButton("View match result"); self.result_button.clicked.connect(self._view_result)
         self.result_button.hide(); heading_row.addWidget(self.result_button)
+        self.table_menu_button = QPushButton("Table ⋯")
+        self.table_menu_button.setObjectName("tableMenuButton")
+        self.table_menu_button.setToolTip("Table actions and recovery")
+        self.table_menu = QMenu(self.table_menu_button)
+        self.table_menu_button.setMenu(self.table_menu)
+        self.table_menu.setObjectName("tableActionsMenu")
+        self.rules_menu_action=self.table_menu.addAction("How to play",self._show_game_guide)
+        self.moves_menu_action=self.table_menu.addAction("Move history",self._show_move_history)
+        self.animate_menu_action=self.table_menu.addAction("Replay last move",self._animate_last_move)
+        self.replay_menu_action=self.table_menu.addAction("Visual replay",self._show_replay)
+        self.table_menu.addSeparator()
+        self.again_menu_action = self.table_menu.addAction("Play again", self._play_again)
+        self.sync_menu_action = self.table_menu.addAction("Recover table", self._sync_selected)
+        self.announce_menu_action = self.table_menu.addAction("Re-announce open table", self._announce_game)
+        self.cancel_invite_menu_action = self.table_menu.addAction("Cancel invitation…", self._cancel_invite_from_table)
+        self.order_menu_action = self.table_menu.addAction("Set player order…", self._order_from_table)
+        self.spot_menu_action = self.table_menu.addAction("Spot game on DX Cluster…", self._spot_game)
+        self.table_menu.addSeparator()
+        self.forfeit_menu_action = self.table_menu.addAction("Forfeit game…", self._forfeit_game)
+        self.table_menu.addSeparator()
+        self.archive_menu_action = self.table_menu.addAction("Archive completed table", self._archive_selected)
+        self.delete_menu_action = self.table_menu.addAction("Delete local copy…", self._delete_game)
+        self.table_menu_button.hide(); heading_row.addWidget(self.table_menu_button)
         center_layout.addLayout(heading_row); center_layout.addWidget(self.game_subtitle)
         self.sync_button = QPushButton("↻  Sync / recover state"); self.sync_button.clicked.connect(self._sync_selected)
         self.sync_button.setVisible(False)
         self.table_action_row = QHBoxLayout(); self.table_action_row.setSpacing(6)
+        self.turn_badge = QLabel(""); self.turn_badge.setObjectName("turnBadge")
+        self.turn_badge.setWordWrap(True); self.turn_badge.setTextFormat(Qt.TextFormat.PlainText); self.turn_badge.setMinimumWidth(0); self.turn_badge.hide()
+        self.turn_badge.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.table_action_row.addWidget(self.turn_badge, 1)
+        self.replay_move_button=QPushButton("↻ Replay last move")
+        self.replay_move_button.setObjectName("replayLastMove")
+        self.replay_move_button.setToolTip("Replay the opponent's latest board move, without transmitting")
+        self.replay_move_button.clicked.connect(self._animate_last_move)
+        self.replay_move_button.hide()
+        self.table_action_row.addWidget(self.replay_move_button)
         self.table_action_row.addWidget(self.sync_button)
-        self.table_action_row.addWidget(self.forfeit_button)
-        self.table_action_row.addWidget(self.delete_button)
-        self.table_action_row.addStretch(1)
+        self.table_action_row.addWidget(self.retry_button)
         center_layout.addLayout(self.table_action_row)
         self.scoreboard_host = QWidget(); self.scoreboard_layout = QVBoxLayout(self.scoreboard_host)
         self.scoreboard_layout.setContentsMargins(0, 0, 0, 0)
@@ -873,13 +1256,19 @@ class ArcadeWindow(QMainWindow):
         center_layout.addWidget(self.board_scroll, 1)
         self.accept_button = QPushButton("Accept invitation"); self.accept_button.setObjectName("primaryButton")
         self.accept_button.hide()
-        self.accept_button.clicked.connect(self._accept_invite); center_layout.addWidget(self.accept_button, 0, Qt.AlignmentFlag.AlignCenter)
+        self.accept_button.clicked.connect(self._accept_invite)
+        self.lobby_row = QHBoxLayout()
+        self.lobby_invite = QPushButton("Invite a station…"); self.lobby_invite.clicked.connect(self._invite_from_table)
+        self.lobby_invite.hide()
+        self.lobby_row.addWidget(self.lobby_invite)
+        self.lobby_row.addWidget(self.accept_button)
+        self.lobby_row.addWidget(self.join_button)
+        self.lobby_row.addWidget(self.start_button)
+        center_layout.addLayout(self.lobby_row)
         splitter.addWidget(center)
 
         right = self._card("STATION PANEL", "Players & side chat")
         right_layout = right.layout()
-        self.turn_badge = QLabel("NO GAME SELECTED"); self.turn_badge.setObjectName("turnBadge")
-        right_layout.addWidget(self.turn_badge)
         self.players_label = QLabel("Stations appear here when a lobby opens."); self.players_label.setObjectName("players")
         self.players_label.setWordWrap(True); right_layout.addWidget(self.players_label)
         right_layout.addWidget(QLabel("SIDE CHAT"))
@@ -936,6 +1325,8 @@ class ArcadeWindow(QMainWindow):
             self._update_compact_layout()
             self._update_vertical_density()
             QTimer.singleShot(0, self._fit_naval_grid_cells)
+            QTimer.singleShot(0, self._fit_sea_layout)
+            QTimer.singleShot(0, self._fit_scorched_layout)
 
     def _update_compact_layout(self):
         compact = self.width() < 950
@@ -1013,8 +1404,8 @@ class ArcadeWindow(QMainWindow):
         self.top_frame.setMaximumHeight(36 if dense else 16777215)
         self.top_frame.layout().setContentsMargins(*( (6, 0, 6, 0) if dense else (16, 8, 16, 8) ))
         self.transport_label.setVisible(not dense)
-        self.status_label.setVisible(not dense)
-        self.tx_activity.setVisible(not dense)
+        self.status_label.setVisible(not compact)
+        self.tx_activity.setVisible(not compact and self.settings.transport != "practice")
         self.footer_label.setVisible(not dense)
         self.mode_label.setVisible(not dense)
         self.game_subtitle.setVisible(not dense and (not compact or self.width() >= 520))
@@ -1030,15 +1421,240 @@ class ArcadeWindow(QMainWindow):
         self.panes[1].layout().setSpacing(3 if dense else 13)
         self.board_scroll.setMinimumHeight(155 if dense else 220)
         self._fit_naval_grid_cells()
+        self._apply_workspace_visibility()
 
         has_score = bool(self.scoreboard_compact.text())
         self.scoreboard_host.setVisible(has_score and not compact and not short)
         self.scoreboard_compact.setVisible(has_score and (compact or short))
 
+    def _apply_workspace_visibility(self):
+        compact = self.layout_stack.currentWidget() is self.compact_tabs
+        practice = self.settings.transport == "practice"
+        self.chat_toggle.setVisible(not compact)
+        self.focus_toggle.setVisible(not compact)
+        self.tx_toggle.setVisible(not practice or compact)
+        self.tx_toggle.setText("NO RF" if practice else "TX ENABLED" if self.settings.tx_enabled else "TX DISABLED")
+        self.tx_toggle.setEnabled(not practice)
+        self.tx_toggle.blockSignals(True)
+        self.tx_toggle.setChecked(not practice and self.settings.tx_enabled)
+        self.tx_toggle.blockSignals(False)
+        self.library_button.setEnabled(not self.settings.observer_mode and not self._creating_table)
+        if not compact:
+            self.panes[0].setVisible(not self._focus_mode)
+            self.panes[2].setVisible(self._chat_visible and not self._focus_mode)
+
+    def _toggle_chat(self, visible):
+        self._chat_visible = visible
+        if hasattr(self, "panes"):
+            self._apply_workspace_visibility()
+
+    def _toggle_focus(self, enabled):
+        self._focus_mode = enabled
+        if hasattr(self, "panes"):
+            self._apply_workspace_visibility()
+
+    def _library_catalog(self):
+        catalog = self.engine.catalog() if self.engine else builtin_registry(load_plugins=False).catalog()
+        return [g for g in catalog if "desktop" in g.clients and self.settings.can_offer_game(g.key)]
+
+    def _library_select(self, key):
+        index = self.game_choice.findData(key)
+        if index < 0 or self.settings.observer_mode:
+            return
+        if not self.engine:
+            QMessageBox.information(self, "Station unavailable", "Connect your station in Settings or choose local practice.")
+            return
+        self.game_choice.setCurrentIndex(index)
+        if self.settings.transport == "practice":
+            self._create_table(key, None, False)
+            return
+        if not self.settings.tx_enabled:
+            QMessageBox.information(self, "TX paused", "Enable TX before creating a radio table.")
+            return
+        game = next((g for g in self._library_catalog() if g.key == key), None)
+        if not game:
+            return
+        dialog = CreateTableDialog(game, self.settings, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.hosted_checkbox.setChecked(dialog.hosted)
+            self.peer_input.setText(dialog.peer or "")
+            self._create_table(key, dialog.peer, dialog.hosted)
+
+    def _browse_games(self):
+        dialog,scroll,_=themed_scroll_dialog(self,"Choose a game",760,680)
+        def selected(key):
+            dialog.accept(); self._library_select(key)
+        scroll.setWidget(GameLibrary(self._library_catalog(),self.settings.transport=="practice",
+                                     selected,enabled=not self.settings.observer_mode))
+        dialog.exec()
+
+    def _show_game_guide(self):
+        if self.engine and self.selected_id:
+            session=self.engine.session(self.selected_id)
+            game=self.engine.registry.by_id(session["game_id"])
+            show_guide(self,game.key,game.name)
+
+    def _show_history(self):
+        dialog,_,body=themed_scroll_dialog(self,"Match history",680,650)
+        history=match_history(self.engine.sessions() if self.engine else [],self.settings.callsign,
+                              observer=self.settings.observer_mode)
+        body.addWidget(info_label("Match history","gameTitle"))
+        body.addWidget(info_label("Local saved results · "+("Practice" if self.settings.transport=="practice" else "Radio")+
+                                 (" · Receive-only" if self.settings.observer_mode else " · "+self.settings.callsign),"muted"))
+        totals=history["totals"]
+        body.addWidget(info_label(f"{totals['played']} played   ·   {totals['wins']} wins   ·   {totals['losses']} losses   ·   {totals['draws']} draws","cardTitle"))
+        for name,group in history["by_game"].items():
+            body.addWidget(info_label(f"{name} — {group['wins']}W / {group['losses']}L / {group['draws']}D"))
+        body.addWidget(info_label("Completed matches","cardTitle"))
+        if not history["matches"]:
+            body.addWidget(info_label("Finish a match to see it here.","muted"))
+        for record in history["matches"]:
+            card=QFrame();card.setObjectName("libraryCard");card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
+            col=QVBoxLayout(card)
+            col.addWidget(info_label(record["game"]+" · "+record["outcome"],"cardTitle"))
+            date=datetime.fromtimestamp(record["updated"]).strftime("%Y-%m-%d %H:%M") if record["updated"] else "Unknown date"
+            col.addWidget(info_label(" / ".join(record["players"])+" · "+date+" · rev "+str(record["revision"]),"muted"))
+            if record["archived"]:
+                col.addWidget(info_label("Archived · hidden from active tables","muted"))
+            button=QPushButton("Restore to tables" if record["archived"] else "View table")
+            def view_table(_=False,sid=record["id"],archived=record["archived"]):
+                if archived:
+                    self._run(partial(self.engine.archive_game,sid,False),
+                              lambda _: (setattr(self,"selected_id",sid),self._refresh_sessions()))
+                else:
+                    self.selected_id=sid;self._refresh_sessions()
+                dialog.accept()
+                if self.layout_stack.currentWidget() is self.compact_tabs:self.compact_tabs.setCurrentIndex(1)
+            button.clicked.connect(view_table);col.addWidget(button);body.addWidget(card)
+        body.addWidget(info_label("Archived matches remain in your statistics. Deleting a saved match permanently removes its record.","muted"))
+        body.addStretch(1);dialog.exec()
+
+    def _animate_last_move(self, *, cue=None, force=True):
+        if not self.engine or not self.selected_id:
+            return
+        if cue is None:
+            cue=self.engine.session(self.selected_id).get("last_opponent_cue")
+        if not cue:
+            return
+        key=(self.selected_id,cue["revision"])
+        if not force and self._move_cue_seen.get(self.selected_id)==key:
+            return
+        self._move_cue_seen[self.selected_id]=key
+        kind=cue["kind"]
+        idxs=cue["indices"]
+        index=idxs[len(idxs)//2] if idxs else -1
+        if kind in ("battleship-classic","sea-warfare"):
+            name=f"navalIncoming{index}" if cue.get("board")=="incoming" else f"navalEnemy{index}"
+        elif kind=="tic-tac-toe":name=f"boardCell{index}"
+        elif kind=="connect-four":name=f"connectFourCell{index}"
+        elif kind=="open-word-tiles":name=f"wordCell{index}"
+        elif kind=="hexxagon":name=f"hexCell{index}"
+        elif kind=="nim":name=f"pileRow{index}"
+        else:name=""
+        target=self.board_host.findChild(QWidget,name) if name else None
+        if target and target.isVisible():
+            self.board_scroll.ensureWidgetVisible(target,60,60)
+        else:target=None
+        if self._last_move_ripple is not None:
+            self._last_move_ripple.close()
+        actor=cue["actor"]
+        outcome=cue["outcome"]
+        if kind in ("battleship-classic","sea-warfare"):
+            text=f"{actor}: " + ("MISS · white splash" if outcome=="miss" else
+                 "HIT · red splash" if outcome=="hit" else
+                 "SUNK · red splash" if outcome=="sunk" else "Incoming shot")
+        else:
+            text=f"{actor}: {cue['description']}"
+        self._last_move_ripple=MoveRipple(self.board_scroll.viewport(),target,text,outcome)
+
+    def _show_replay(self):
+        if not self.engine or not self.selected_id:return
+        from .replay_canvas import replay_pixmap
+        sid=self.selected_id
+        session=self.engine.session(sid)
+        frames=self.engine.replay_frames(sid)
+        dialog,_,body=themed_scroll_dialog(self,"Replay · "+session["game"],710,600)
+        body.addWidget(info_label("Visual replay","gameTitle"))
+        info=info_label("","muted");body.addWidget(info)
+        canvas=QLabel();canvas.setObjectName("replayBoard");canvas.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.addWidget(canvas)
+        controls=QHBoxLayout()
+        previous=QPushButton("◀ Previous");next_step=QPushButton("Next ▶")
+        play=QPushButton("Play")
+        position=QSlider(Qt.Orientation.Horizontal);position.setObjectName("replayPosition")
+        position.setRange(0,max(0,len(frames)-1))
+        controls.addWidget(previous);controls.addWidget(play);controls.addWidget(next_step)
+        body.addLayout(controls);body.addWidget(position)
+        tip=info_label("Only saved public board snapshots are displayed. Historical gaps stay visible; private fleet placements are never exposed.","muted")
+        body.addWidget(tip)
+        timer=QTimer(dialog);timer.setInterval(900)
+        def show(index):
+            if not frames:
+                info.setText("No saved board snapshots for this match.");canvas.clear();return
+            frame=frames[index]
+            info.setText(f"Revision {frame['revision']} · {frame['actor'] or 'Game'} · {frame['description']}"
+                         + (f"   ·   {index+1}/{len(frames)} snapshots"))
+            canvas.setPixmap(replay_pixmap(frame["view"],width=620,height=370))
+        def tick():
+            if position.value()>=position.maximum():
+                timer.stop();play.setText("Play")
+            else:position.setValue(position.value()+1)
+        def toggle():
+            if timer.isActive():timer.stop();play.setText("Play")
+            else:
+                if position.value()==position.maximum():position.setValue(0)
+                timer.start();play.setText("Pause")
+        previous.clicked.connect(lambda:position.setValue(max(position.minimum(),position.value()-1)))
+        next_step.clicked.connect(lambda:position.setValue(min(position.maximum(),position.value()+1)))
+        play.clicked.connect(toggle)
+        position.valueChanged.connect(show)
+        position.setEnabled(bool(frames))
+        play.setEnabled(len(frames)>1)
+        show(0)
+        dialog.exec()
+        timer.stop()
+
+    def _show_move_history(self):
+        if not self.engine or not self.selected_id:return
+        session=self.engine.session(self.selected_id)
+        moves=self.engine.move_history(self.selected_id)
+        dialog,_,body=themed_scroll_dialog(self,"Move history · "+session["game"],560,580)
+        body.addWidget(info_label("Move history","gameTitle"))
+        body.addWidget(info_label("Committed actions only · "+str(len(moves))+" of "+str(session["revision"])+" revisions available","muted"))
+        previous=0
+        for m in moves:
+            if m["revision"]>previous+1:
+                body.addWidget(info_label(f"Revisions {previous+1}–{m['revision']-1} not recorded","muted"))
+            body.addWidget(info_label(f"{m['revision']}. {m['actor']} · {m['description']}"))
+            previous=m["revision"]
+        if previous<session["revision"]:
+            body.addWidget(info_label(f"Revisions {previous+1}–{session['revision']} not recorded","muted"))
+        if not moves:body.addWidget(info_label("No recorded moves yet.","muted"))
+        body.addStretch(1);dialog.exec()
+
+    def _start_practice(self):
+        if self._connecting:
+            return
+        self.settings.transport = "practice"
+        self.settings.observer_mode = False
+        if not self.settings.callsign:
+            self.settings.callsign = "PLAYER"
+        self.settings.save()
+        self.chat_toggle.setChecked(False)
+        self.selected_id = None
+        self._table_list_initialized = False
+        self._update_new_game_mode()
+        self._update_cq_visibility()
+        self.connect_service()
+
     def _fit_naval_grid_cells(self):
         if not hasattr(self, "board_scroll"):
             return
-        cell_size = max(18, min(28, (self.board_scroll.viewport().height() - 110) // 11))
+        view_width = self.board_scroll.viewport().width()
+        sea_pair = self.board_scroll.findChild(QWidget, "seaBoards")
+        usable = max(200, (view_width - 40) // 2 if sea_pair and self.width() >= 1180 else view_width - 26)
+        cell_size = max(18, min(28, (self.board_scroll.viewport().height() - 110) // 11,
+                                (usable - 16) // 11))
         grids = set()
         for button in self.board_scroll.findChildren(QPushButton):
             if button.property("adaptiveRadarCell"):
@@ -1049,6 +1665,26 @@ class ArcadeWindow(QMainWindow):
                 label.setFixedSize(cell_size, max(12, cell_size - 8))
             elif label.property("radarRow"):
                 label.setFixedSize(max(12, cell_size - 8), cell_size)
+        for sprite in self.board_scroll.findChildren(QLabel, "navalShipSprite"):
+            from PySide6.QtGui import QPixmap
+            name=sprite.property("spriteName")
+            if not name or not sprite.parentWidget():
+                continue
+            grid=sprite.parentWidget().layout()
+            if grid is None:continue
+            index=grid.indexOf(sprite)
+            if index<0:continue
+            row,col,rowspan,colspan=grid.getItemPosition(index)
+            vertical=rowspan>1
+            length=rowspan if vertical else colspan
+            span=length*cell_size+(length-1)*grid.spacing()
+            size=(cell_size,span) if vertical else (span,cell_size)
+            if (sprite.width(),sprite.height())==size:continue
+            art=QPixmap(str(Path(__file__).with_name("web_assets")/name))
+            if art.isNull():continue
+            sprite.setFixedSize(*size)
+            sprite.setPixmap(art.scaled(*size,Qt.AspectRatioMode.IgnoreAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
         for board in grids:
             if board.layout():
                 board.layout().invalidate()
@@ -1069,7 +1705,7 @@ class ArcadeWindow(QMainWindow):
         hosted = self.hosted_checkbox.isChecked() and not practice
         self.peer_input.setVisible(not practice and not hosted)
         self.create_hint.setText(
-            "LOCAL PRACTICE  ·  Players take turns on this computer. No radio required."
+            "LOCAL PRACTICE  ·  Play against the computer. No radio required."
             if practice else
             "OPEN BROADCAST  ·  Act as dealer. Other stations can discover and join."
             if hosted else
@@ -1091,6 +1727,10 @@ class ArcadeWindow(QMainWindow):
                 border: 1px solid rgba(100, 160, 240, 0.16);
                 border-radius: 14px;
             }
+            QMenu#tableActionsMenu { background:#111d2a; color:#e2e8f0; border:1px solid #38536a; padding:5px; }
+            QMenu#tableActionsMenu::item { padding:9px 18px; }
+            QMenu#tableActionsMenu::item:selected { background:#245268; color:#ffffff; }
+            QMenu#tableActionsMenu::item:disabled { color:#64748b; }
             QFrame#statusPill {
                 background: rgba(255, 255, 255, 0.04);
                 border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1143,10 +1783,9 @@ class ArcadeWindow(QMainWindow):
                 color: #00f5c4;
                 border: 1px solid rgba(0, 245, 196, 0.35);
                 border-radius: 10px;
-                padding: 10px 14px;
-                font-weight: 800;
-                font-size: 12px;
-                letter-spacing: 0.5px;
+                padding: 5px 9px;
+                font-weight: 750;
+                font-size: 11px;
             }
             QLabel#turnBadge[turn="mine"] {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #043d34, stop:1 #065548);
@@ -1187,7 +1826,7 @@ class ArcadeWindow(QMainWindow):
                 font-size: 11px;
                 font-weight: 600;
             }
-            QLabel { color: #d7dfeb; }
+            QLabel, QCheckBox { color: #d7dfeb; }
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a2638, stop:1 #131c2a);
                 color: #e2e8f0;
@@ -1244,11 +1883,12 @@ class ArcadeWindow(QMainWindow):
                 border-radius: 10px;
                 padding: 9px 18px;
             }
-            QPushButton#primaryButton:hover {
+            QPushButton#primaryButton:disabled { background:#1d2b39; color:#8b9db0; border:1px solid #34495e; }
+            QPushButton#primaryButton:hover:enabled {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #38ffd9, stop:1 #22e6b2);
                 color: #011412;
             }
-            QPushButton#primaryButton:pressed {
+            QPushButton#primaryButton:pressed:enabled {
                 background: #00d9ae;
             }
             QLineEdit, QComboBox, QSpinBox {
@@ -1367,6 +2007,10 @@ class ArcadeWindow(QMainWindow):
             QScrollBar::handle:horizontal { background:#1e2c3e; border-radius:3px; min-width:25px; }
             QScrollBar::handle:horizontal:hover { background:#00f5c4; }
             QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal { height:0; }
+            QDialog#arcadeInfoDialog, QScrollArea#arcadeInfoScroll, QWidget#arcadeInfoViewport, QWidget#arcadeInfoHost, QWidget#gameLibrary { background:#101926; color:#e2e8f0; border:0; }
+            QFrame#libraryCard { background:#172638; border:1px solid #315064; border-radius:10px; }
+            QWidget#gameLibrary QLabel, QWidget#arcadeInfoHost QLabel { background:transparent; color:#e4edf5; }
+            QWidget#gameLibrary QLabel#muted, QWidget#arcadeInfoHost QLabel#muted { color:#a9bacd; }
             QDialog { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #121c2d,stop:1 #0a111c); }
             QDialog#settingsDialog { background:qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #121c2d,stop:1 #0a111c); color:#f1f5f9; border:1px solid rgba(100,160,240,0.2); border-radius:18px; }
             QDialog#settingsDialog QScrollArea#settingsFormScroll,
@@ -1387,6 +2031,10 @@ class ArcadeWindow(QMainWindow):
             self.setStyleSheet(self.styleSheet() + """
                 QWidget#root { background:#eaf0f4; color:#17212d; }
                 QDialog { background:#ffffff; color:#17212d; }
+                QDialog#arcadeInfoDialog,QScrollArea#arcadeInfoScroll,QWidget#arcadeInfoViewport,QWidget#arcadeInfoHost,QWidget#gameLibrary { background:#f5f8fb; color:#17212d; }
+                QFrame#libraryCard {background:#ffffff;border-color:#bccbd8;}
+                QWidget#gameLibrary QLabel,QWidget#arcadeInfoHost QLabel {color:#1b2936;}
+                QWidget#gameLibrary QLabel#muted,QWidget#arcadeInfoHost QLabel#muted {color:#52677b;}
                 QDialog#settingsDialog { background:#f5f8fb; color:#17212d; }
                 QDialog#settingsDialog QScrollArea#settingsFormScroll,
                 QDialog#settingsDialog QWidget#settingsFormHost,
@@ -1407,6 +2055,8 @@ class ArcadeWindow(QMainWindow):
                 QLabel#players,QListWidget#chatList { background:#f2f6f8; color:#27394a; }
                 QPushButton { background:#f2f5f7; color:#223243; border-color:#c4d1dc; }
                 QPushButton:hover { background:#e3edf1; }
+                QCheckBox { color:#243649; }
+                QPushButton#primaryButton:disabled { background:#e4eaf0; color:#657689; border-color:#c4d1dc; }
                 QLineEdit,QComboBox,QSpinBox { background:#ffffff; color:#1c2a38; border-color:#c3d0da; }
                 QListWidget::item { color:#33485c; }
                 QListWidget::item:selected { background:#d7eee9; color:#075f57; }
@@ -1422,11 +2072,16 @@ class ArcadeWindow(QMainWindow):
             """)
         elif self.settings.color_scheme == "monochrome":
             self.setStyleSheet(self.styleSheet() + """
+                QDialog#arcadeInfoDialog,QScrollArea#arcadeInfoScroll,QWidget#arcadeInfoViewport,QWidget#arcadeInfoHost,QWidget#gameLibrary {background:#111111;color:#eeeeee;}
+                QFrame#libraryCard {background:#222222;border-color:#888888;}
+                QWidget#gameLibrary QLabel,QWidget#arcadeInfoHost QLabel {color:#eeeeee;}
+                QWidget#gameLibrary QLabel#muted,QWidget#arcadeInfoHost QLabel#muted {color:#c4c4c4;}
                 QWidget#root, QFrame#card { background:#111111; color:#eeeeee; border-color:#777777; }
                 QLabel, QLabel#brand, QLabel#gameTitle, QLabel#cardTitle, QLabel#eyebrow,
                 QLabel#turnBadge, QLabel#players { color:#eeeeee; background:#222222; border-color:#888888; }
                 QPushButton, QPushButton#primaryButton { background:#333333; color:#ffffff; border:1px solid #aaaaaa; }
-                QPushButton:disabled { background:#222222; color:#777777; }
+                QPushButton:disabled, QPushButton#primaryButton:disabled { background:#222222; color:#999999; }
+                QCheckBox { color:#eeeeee; }
                 QLineEdit, QComboBox, QSpinBox { background:#111111; color:#ffffff; border-color:#888888; }
                 QListWidget::item:selected { background:#555555; color:#ffffff; }
             """)
@@ -1442,7 +2097,12 @@ class ArcadeWindow(QMainWindow):
             self.unsubscribe(); self.unsubscribe = None
         if self.engine:
             self.engine.close(); self.engine = None
+        self._connecting = True
+        self._delivery_status.clear(); self._action_errors.clear(); self._move_jobs.clear()
+        self.settings_button.setEnabled(False)
         self._update_status("Connecting…", False)
+        self._show_session(None)
+        self._apply_workspace_visibility()
         self.service_worker = ServiceWorker(self.settings, self)
         self.service_worker.ready.connect(self._service_ready)
         self.service_worker.failed.connect(self._connection_failed)
@@ -1450,12 +2110,14 @@ class ArcadeWindow(QMainWindow):
 
     @Slot(object)
     def _service_ready(self, engine: ArcadeService):
+        self._connecting = False
+        self.settings_button.setEnabled(True)
         self.engine = engine
         engine.set_tx_enabled(self.settings.tx_enabled if self.settings.transport != "practice" else True)
         self._board_signature = None
         self.unsubscribe = engine.subscribe(lambda event: self._event_bridge.received.emit(event))
         offline = hasattr(engine.transport, "closed") and engine.transport.closed.is_set()
-        status_text = ("Offline · reconnect in settings" if offline else "Local practice"
+        status_text = ("Offline · reconnect in settings" if offline else "Local practice · No RF"
                        if self.settings.transport == "practice" else "Data2G ready")
         if not offline and self.settings.transport != "practice":
             status_text += " · CWID" if engine.cwid_active else " · app ID"
@@ -1484,7 +2146,7 @@ class ArcadeWindow(QMainWindow):
         self.disconnect_button.setVisible(self.settings.transport == "connected")
         self._populate_games()
         self._refresh_cq()
-        self.tx_toggle.setEnabled(self.settings.transport != "practice")
+        self._apply_workspace_visibility()
         self._refresh_sessions()
 
     @Slot(bool)
@@ -1493,7 +2155,7 @@ class ArcadeWindow(QMainWindow):
             enabled = True
         self.settings.tx_enabled = enabled
         self.settings.save()
-        self.tx_toggle.setText("TX ENABLED" if enabled else "TX DISABLED")
+        self.tx_toggle.setText("NO RF" if self.settings.transport == "practice" else "TX ENABLED" if enabled else "TX DISABLED")
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or enabled)
         for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,
                         self.cq_choice, self.cq_send, self.cq_answer,
@@ -1515,6 +2177,20 @@ class ArcadeWindow(QMainWindow):
         if answer == QMessageBox.StandardButton.Yes:
             self._run(partial(self.engine.forfeit_game, sid))
 
+    def _archive_selected(self):
+        if not self.engine or not self.selected_id:
+            return
+        sid=self.selected_id
+        session=self.engine.session(sid)
+        if session["status"] not in ("finished","cancelled"):
+            return
+        def done(_):
+            if self.selected_id == sid:
+                self.selected_id = None
+                self._preserve_empty_selection = False
+                self._refresh_sessions()
+        self._run(partial(self.engine.archive_game,sid),done)
+
     def _delete_game(self):
         if not self.engine or not self.selected_id:
             return
@@ -1535,7 +2211,7 @@ class ArcadeWindow(QMainWindow):
         for game in catalog:
             if "desktop" not in game.clients or not self.settings.can_offer_game(game.key):
                 continue
-            self.game_choice.addItem(f"{game.name} · {game.min_players}–{game.max_players}", game.key)
+            self.game_choice.addItem(f"{game.name} · {player_count_label(game)}", game.key)
         index = self.game_choice.findData(current)
         if index >= 0: self.game_choice.setCurrentIndex(index)
         selected_cq_game = self.cq_choice.currentData()
@@ -1582,8 +2258,12 @@ class ArcadeWindow(QMainWindow):
 
     @Slot(str)
     def _connection_failed(self, error: str):
-        self._update_status("Offline", False)
+        self._connecting = False
+        self.settings_button.setEnabled(True)
+        self._update_status("Offline · check settings", False)
         self.mode_label.setText(error)
+        self.status_pill.setToolTip(error)
+        self._show_session(None)
 
     def _open_notification(self):
         if self._notification_cq:
@@ -1610,6 +2290,23 @@ class ArcadeWindow(QMainWindow):
             self._tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 6000)
 
     def _on_event(self, event: EngineEvent):
+        if not self.engine or getattr(self.engine, "_closed", False):
+            return
+        if event.name == "delivery" and event.session and event.data.get("kind") in ("ACTION", "COMMIT", "RESIGN"):
+            records = self._delivery_status.setdefault(event.session, {})
+            key = (event.data.get("sequence"), event.data.get("kind"), event.data.get("target"))
+            records[key] = dict(event.data)
+            newest = max((k[0] or 0 for k in records), default=0)
+            for old in tuple(records):
+                if (old[0] or 0) < newest - 2:
+                    del records[old]
+        elif event.name == "session_deleted" and event.session:
+            for key in tuple(self._word_drafts):
+                if key[0] == event.session: self._word_drafts.pop(key, None)
+            self._scorched_camera.pop(event.session, None)
+            self._battleship_drafts.pop(event.session, None)
+            self._delivery_status.pop(event.session, None)
+            self._action_errors.pop(event.session, None)
         if event.name == "cq_request":
             self._refresh_cq()
             self._notification_cq = True
@@ -1623,7 +2320,7 @@ class ArcadeWindow(QMainWindow):
             self._notify_activity("Game invitation", f"{event.data.get('sender')} · {event.data.get('game')}", event.session)
         elif event.name == "chat_message" and event.data.get("message", {}).get("sender") != self.settings.callsign:
             message = event.data["message"]
-            chat_visible = (self.layout_stack.currentWidget() is self.desktop_splitter or
+            chat_visible = ((self.layout_stack.currentWidget() is self.desktop_splitter and self.panes[2].isVisible()) or
                             (self.layout_stack.currentWidget() is self.compact_tabs and
                              self.compact_tabs.currentWidget() is self.panes[2]))
             if event.session and (event.session != self.selected_id or not chat_visible):
@@ -1634,11 +2331,15 @@ class ArcadeWindow(QMainWindow):
                 QApplication.beep()
         if event.name == "transmitting":
             self.tx_activity.setText(f"TX · {event.data.get('kind')} → {event.data.get('destination')} · {event.data.get('reason')}")
-            QTimer.singleShot(6000, lambda: self.tx_activity.setText(""))
+            message = self.tx_activity.text()
+            QTimer.singleShot(6000, lambda: self.tx_activity.clear() if self.tx_activity.text() == message else None)
+        elif event.name == "transmission_complete":
+            if self.tx_activity.text() == f"TX · {event.data.get('kind')} → {event.data.get('destination')} · {event.data.get('reason')}":
+                self.tx_activity.clear()
         elif event.name == "tx_state":
             self.tx_toggle.blockSignals(True)
             self.tx_toggle.setChecked(bool(event.data.get("enabled")))
-            self.tx_toggle.setText("TX ENABLED" if event.data.get("enabled") else "TX DISABLED")
+            self.tx_toggle.setText("NO RF" if self.settings.transport == "practice" else "TX ENABLED" if event.data.get("enabled") else "TX DISABLED")
             self.tx_toggle.blockSignals(False)
         if self.settings.sound_enabled and (event.name == "invitation" or
                 (event.name == "session_updated" and event.data.get("committed") and
@@ -1655,11 +2356,17 @@ class ArcadeWindow(QMainWindow):
             self.footer_label.setText(f"Opaque game state synchronized from {event.data['sender']} · content hidden")
         elif event.name == "delivery" and event.data.get("state") == "unconfirmed":
             self.footer_label.setText("No acknowledgement yet · waiting for the other station")
+        elif event.name == "transport_send_error":
+            self.footer_label.setText(f"Data2G send failed · {event.data.get('error', '')}")
+            if self.selected_id in self._move_jobs:
+                self._action_errors[self.selected_id] = "Data2G send failed · check connection"
         elif event.name == "protocol_error":
             self.footer_label.setText(f"Ignored malformed frame · {event.data.get('error','')}")
         elif event.name == "unsupported_game":
             self.footer_label.setText(f"Unsupported game ID {event.data['game_id']} from {event.data['sender']}")
-        if event.name in ("session_updated", "invitation", "delivery", "session_deleted", "chat_message"):
+        if event.name == "session_updated" and event.data.get("committed"):
+            self._action_errors.pop(event.session, None)
+        if event.name in ("session_updated", "invitation", "delivery", "session_deleted", "chat_message", "transport_send_error"):
             self._refresh_sessions()
             if event.session and event.session == self.selected_id:
                 self._show_session(event.session)
@@ -1671,19 +2378,19 @@ class ArcadeWindow(QMainWindow):
         scroll_position = self.session_list.verticalScrollBar().value()
         self.session_list.blockSignals(True); self.session_list.clear()
         supported = {game.game_id for game in self.engine.catalog() if "desktop" in game.clients}
-        all_sessions = [s for s in self.engine.sessions() if s["game_id"] in supported]
+        all_sessions = [s for s in self.engine.sessions()
+                        if s["game_id"] in supported and not s.get("archived")]
         query = self.session_search.text().strip().casefold()
         filter_mode = self.session_filter.currentData()
         if not self._table_list_initialized:
-            self.new_game_toggle.setChecked(not bool(all_sessions))
+            self.new_game_toggle.setChecked(False)
             self._toggle_new_game_setup(self.new_game_toggle.isChecked())
             self._table_list_initialized = True
         sessions = []
         for session in all_sessions:
             pending = session.get("sync_requested_at", 0) > session.get("sync_at", 0)
             needs_sync = pending or any(word in (session.get("error") or "").lower() for word in ("missed moves", "state conflict", "awaiting snapshot"))
-            practice_turn = self.settings.transport == "practice" and session["status"] == "active"
-            own_turn = practice_turn or session.get("current_player") == self.settings.callsign
+            own_turn = not self.settings.observer_mode and session.get("current_player") == self.settings.callsign
             last = session.get("last_move") or {}
             other = next((p for p in session["players"] if p != self.settings.callsign), session["coordinator"])
             searchable = " ".join((session["game"], other, session["id"], session["status"],
@@ -1693,12 +2400,13 @@ class ArcadeWindow(QMainWindow):
             if filter_mode == "waiting" and not (session["status"] == "active" and not own_turn and not needs_sync and not session["pending_action"]): continue
             if filter_mode == "resync" and not needs_sync: continue
             if filter_mode == "unread" and not self._unread_by_session.get(session["id"], 0): continue
+            if filter_mode in ("finished","invited") and session["status"]!=filter_mode:continue
             sessions.append(session)
         def priority(s):
             pending = s.get("sync_requested_at", 0) > s.get("sync_at", 0)
             if s["status"] == "invited": return 0
             if pending: return 1
-            if s["status"] == "active" and (self.settings.transport == "practice" or s.get("current_player") == self.settings.callsign): return 2
+            if s["status"] == "active" and s.get("current_player") == self.settings.callsign: return 2
             if s["status"] == "active": return 3
             return 4
         sessions.sort(key=lambda s: (priority(s), -s.get("updated", 0)))
@@ -1706,7 +2414,7 @@ class ArcadeWindow(QMainWindow):
             opponent = (" / ".join(session["players"]) or session["coordinator"]) if self.settings.observer_mode else next((p for p in session["players"] if p != self.settings.callsign), "Open lobby")
             pending = session.get("sync_requested_at", 0) > session.get("sync_at", 0)
             needs_sync = pending or any(word in (session.get("error") or "").lower() for word in ("missed moves", "state conflict", "awaiting snapshot"))
-            own_turn = session["status"] == "active" and not self.settings.observer_mode and (self.settings.transport == "practice" or session.get("current_player") == self.settings.callsign)
+            own_turn = session["status"] == "active" and not self.settings.observer_mode and session.get("current_player") == self.settings.callsign
             turn = "resync requested" if pending else "needs resync" if needs_sync else "your move" if own_turn else "waiting" if session["status"] == "active" else session["status"]
             last = session.get("last_move")
             activity = f"Last: {last['actor']} {last['description']}" if last else "No moves yet"
@@ -1716,7 +2424,7 @@ class ArcadeWindow(QMainWindow):
             item = QListWidgetItem()
             card = SessionListCard(session["game"], turn, opponent, len(session["players"]),
                                    activity_text, unread, status_kind)
-            item.setSizeHint(card.sizeHint())
+            item.setSizeHint(QSize(card.sizeHint().width(), max(card.minimumHeight(), card.sizeHint().height()) + 12))
             item.setData(Qt.ItemDataRole.AccessibleTextRole,
                          f"{session['game']}. {opponent}. {turn}. {activity_text}. {unread} unread messages.")
             item.setToolTip(card.toolTip())
@@ -1727,7 +2435,7 @@ class ArcadeWindow(QMainWindow):
                 self.session_list.setCurrentItem(item)
         self.session_list.blockSignals(False)
         if not sessions:
-            self.session_list.addItem(QListWidgetItem("No tables match this search or filter." if all_sessions else "No tables yet. Start a game or accept an invitation."))
+            self.session_list.addItem(QListWidgetItem("No matching tables" if all_sessions else "No saved games yet"))
         self.delete_button.setEnabled(bool(self.engine and self.engine.sessions()))
         current_item = self.session_list.currentItem()
         current_id = current_item.data(Qt.ItemDataRole.UserRole) if current_item else None
@@ -1767,7 +2475,7 @@ class ArcadeWindow(QMainWindow):
 
     def _toggle_new_game_setup(self, expanded: bool):
         self.tools_scroll.setVisible(expanded)
-        self.new_game_toggle.setText("−  Hide game setup" if expanded else "＋  Start a new game")
+        self.new_game_toggle.setText("Game setup ▾" if expanded else "Game setup ▸")
 
     def _toggle_cq_panel(self, expanded: bool):
         available = self.settings.transport == "broadcast" and not self.settings.observer_mode
@@ -1798,9 +2506,10 @@ class ArcadeWindow(QMainWindow):
             pending_sync = session.get("sync_requested_at", 0) > session.get("sync_at", 0)
             needs_sync = pending_sync or any(word in (session.get("error") or "").lower() for word in ("missed moves", "state conflict", "awaiting snapshot"))
             session["resync_pending"] = needs_sync
+            self._refresh_table_feedback(session)
             signature = (sid, session["status"], session["revision"], session["sequence"],
                          session["pending_action"], tuple(session["players"]), tuple(session["invited"]),
-                         repr(session["view"]), repr(session.get("last_move")), session.get("error"), pending_sync, self.settings.transport, self.settings.tx_enabled)
+                         repr(session["view"]), repr(session.get("private_fleet")), repr(session.get("private_hits")), repr(session.get("last_move")), session.get("error"), pending_sync, self.settings.transport, self.settings.tx_enabled)
             if signature == self._board_signature:
                 return
             self._board_signature = signature
@@ -1825,11 +2534,28 @@ class ArcadeWindow(QMainWindow):
             self.scoreboard_layout.addWidget(Scoreboard(session))
         announce = self._completion_tracker.observe(session) if session else False
         self._clear_board()
-        self.forfeit_button.setVisible(bool(session and session["status"] == "active" and not self.settings.observer_mode))
+        self.forfeit_button.hide()
+        self.forfeit_menu_action.setVisible(bool(session and session["status"] == "active" and not self.settings.observer_mode))
         self.forfeit_button.setEnabled(bool(session and session["pending_action"] is None and
             (self.settings.transport == "practice" or self.settings.tx_enabled)))
         self.delete_button.setEnabled(bool(session))
-        self.delete_button.setVisible(bool(session))
+        self.delete_button.hide()
+        self.table_menu_button.setVisible(bool(session))
+        self.archive_menu_action.setVisible(bool(session and session["status"] in ("finished","cancelled") and not session.get("archived")))
+        self.again_menu_action.setVisible(bool(session and session["status"]=="finished" and not self.settings.observer_mode))
+        self.again_menu_action.setEnabled(self.settings.transport=="practice" or self.settings.tx_enabled)
+        cue = session.get("last_opponent_cue") if session else None
+        can_replay=bool(cue and session["view"] and session["view"].get("kind")!="scorched-earth")
+        self.replay_move_button.setVisible(can_replay)
+        self.animate_menu_action.setVisible(can_replay)
+        self.delete_menu_action.setEnabled(bool(session))
+        self.forfeit_menu_action.setEnabled(self.forfeit_button.isEnabled())
+        self.lobby_invite.hide()
+        self.sync_button.hide()
+        self.sync_menu_action.setVisible(False)
+        for action in (self.announce_menu_action, self.cancel_invite_menu_action,
+                       self.order_menu_action, self.spot_menu_action):
+            action.setVisible(False)
         self.accept_button.setVisible(False); self.start_button.setVisible(False); self.invite_button.setVisible(False); self.cancel_invite_button.setVisible(False)
         self.join_button.setVisible(False); self.announce_button.setVisible(False); self.retry_button.setVisible(False)
         self.spot_button.setVisible(False)
@@ -1837,14 +2563,23 @@ class ArcadeWindow(QMainWindow):
         self.chat_list.clear()
         if not self.engine or not sid:
             self.delete_button.setEnabled(False)
-            self.game_heading.setText("Welcome to the airwaves")
+            self.game_heading.setText("Game library")
             self.game_subtitle.setText("Start a game or accept an invitation to take a seat.")
+            self.turn_badge.hide()
             self.turn_badge.setText("NO GAME SELECTED")
             self.turn_badge.setProperty("turn", "neutral")
             self.turn_badge.style().unpolish(self.turn_badge)
             self.turn_badge.style().polish(self.turn_badge)
             self.players_label.setText("Stations appear here when a lobby opens.")
-            self.board_layout.addWidget(HeroWelcomeWidget(parent=self.board_host))
+            self.board_layout.addWidget(GameLibrary(self._library_catalog(), self.settings.transport == "practice",
+                                                   self._library_select,
+                                                   enabled=not self.settings.observer_mode,
+                                                   parent=self.board_host))
+            if not self.engine and self.settings.transport != "practice":
+                practice_button = QPushButton("Play offline instead"); practice_button.setObjectName("primaryButton")
+                practice_button.clicked.connect(self._start_practice)
+                practice_button.setEnabled(not self._connecting)
+                self.board_layout.addWidget(practice_button)
             return
         game = session["game"]; players = session["players"]
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
@@ -1865,73 +2600,70 @@ class ArcadeWindow(QMainWindow):
         self.game_subtitle.setText(f"Game {sid}  ·  revision {session['revision']}  ·  {session['status'].title()}{suffix}")
         state = session["view"]
         current = session["current_player"]
-        self.sync_button.setVisible(self.settings.observer_mode or session["status"] in ("active", "finished"))
+        sync_available = self.settings.transport != "practice" and (self.settings.observer_mode or session["status"] in ("active", "finished"))
+        self.sync_button.setVisible(sync_available and needs_sync)
+        self.sync_menu_action.setVisible(sync_available)
+        self.sync_menu_action.setText(self._sync_label_for_session(session).replace("↻  ", ""))
         self.retry_button.setVisible(not self.settings.observer_mode and session.get("hosted", False) and session["pending_action"] is not None)
         self.sync_button.setText(self._sync_label_for_session(session))
         self.sync_button.setToolTip("Resynchronization is always available. Your moves are held until the latest table state arrives." if needs_sync else "Request or send the latest shared table state.")
         self.sync_button.setEnabled((self.settings.transport == "practice" or self.settings.tx_enabled) and not pending_sync)
-        turn_kind = "neutral"
-        if self.settings.observer_mode:
-            self.turn_badge.setText("OBSERVING · RX ONLY" if state else "OBSERVING · AWAITING SNAPSHOT")
-        elif session["status"] == "invited":
-            self.turn_badge.setText("INVITATION RECEIVED")
-            self.accept_button.setVisible(True)
-            turn_kind = "waiting"
-        elif session["status"] == "lobby":
-            turn_kind = "waiting"
-            if session.get("hosted"):
+        self.sync_menu_action.setEnabled(self.sync_button.isEnabled())
+        self.retry_button.setText("Retry move")
+        self.lobby_invite.setVisible(session["status"] == "lobby" and not session.get("hosted") and session["coordinator"] == self.settings.callsign and not self.settings.observer_mode)
+        self.lobby_invite.setEnabled(can_transmit)
+        self.start_button.setText("Start game")
+        if not self.settings.observer_mode:
+            if session["status"] == "invited":
+                self.accept_button.setVisible(True)
+            elif session["status"] == "lobby":
                 owner = session["coordinator"] == self.settings.callsign
-                self.turn_badge.setText("DEALER · WAITING FOR JOIN REQUESTS" if owner else "HOSTED TABLE · JOIN TO PLAY")
-                self.announce_button.setVisible(owner)
-                self.order_input.setVisible(owner)
-                self.order_button.setVisible(owner)
-                self.join_button.setVisible(not owner and self.settings.callsign not in players and not self.settings.observer_mode)
+                if session.get("hosted"):
+                    self.announce_button.setVisible(owner)
+                    self.order_input.setVisible(owner)
+                    self.order_button.setVisible(owner)
+                    self.join_button.setVisible(not owner and self.settings.callsign not in players)
+                else:
+                    self.invite_button.setVisible(owner)
+                    self.cancel_invite_button.setVisible(bool(session["invited"]))
                 self.start_button.setVisible(owner)
-            else:
-                self.turn_badge.setText("LOBBY · add players, then start")
-                self.invite_button.setVisible(session["coordinator"] == self.settings.callsign)
-                self.cancel_invite_button.setVisible(bool(session["invited"]))
-                self.start_button.setVisible(session["coordinator"] == self.settings.callsign)
-        elif session["status"] == "joining":
-            self.turn_badge.setText("JOIN REQUEST SENT · WAIT FOR DEALER" if session.get("hosted") else "WAITING FOR THE HOST TO START")
-            self.join_button.setVisible(bool(session.get("hosted")))
-            turn_kind = "waiting"
-        elif session["status"] == "cancelled":
-            self.turn_badge.setText("INVITATION CANCELLED")
-            turn_kind = "alert"
-        elif session["status"] == "finished":
-            winner = state.get("winner") if state else None
-            self.turn_badge.setText(f"{session['forfeited_by']} FORFEITED" if session.get("forfeited_by") else f"{winner} WINS" if winner else "GAME OVER · DRAW")
-            turn_kind = "finished"
-        elif needs_sync:
-            self.turn_badge.setText("RESYNC REQUESTED · WAITING FOR TABLE" if pending_sync else "TABLE MAY BE OUT OF DATE · RESYNC BEFORE MOVING")
-            turn_kind = "alert"
-        elif session["pending_action"]:
-            self.turn_badge.setText("MOVE SENT · WAITING FOR COMMIT")
-            turn_kind = "waiting"
-        else:
-            is_my_turn = self.settings.transport == "practice" or current == self.settings.callsign
-            self.turn_badge.setText(f"LOCAL PRACTICE · {current}'s turn" if self.settings.transport == "practice" else f"YOUR TURN · {players.index(current)+1} of {len(players)}" if is_my_turn else f"{current or 'Game'} is thinking")
-            turn_kind = "mine" if is_my_turn else "waiting"
-        if session.get("error"):
-            self.turn_badge.setText(f"MOVE REJECTED · {session['error']}")
-            turn_kind = "alert"
-        self.turn_badge.setProperty("turn", turn_kind)
-        self.turn_badge.style().unpolish(self.turn_badge)
-        self.turn_badge.style().polish(self.turn_badge)
+                if owner:
+                    game_info = self.engine.registry.by_id(session["game_id"])
+                    ready = len(players) >= game_info.min_players and not session["invited"]
+                    self.start_button.setEnabled(can_transmit and ready)
+                    self.start_button.setToolTip("Start playing" if ready else
+                                                 "Wait for pending invitations or cancel them" if session["invited"] else
+                                                 f"Wait for at least {game_info.min_players} players to join")
+            elif session["status"] == "joining":
+                self.join_button.setVisible(bool(session.get("hosted")))
+                self.join_button.setText("Retry join request")
+        if session["status"] != "joining":
+            self.join_button.setText("Join table")
+        for action, button in ((self.announce_menu_action, self.announce_button),
+                               (self.cancel_invite_menu_action, self.cancel_invite_button),
+                               (self.order_menu_action, self.order_button),
+                               (self.spot_menu_action, self.spot_button)):
+            action.setVisible(not button.isHidden())
+            action.setEnabled(button.isEnabled())
+        self._refresh_table_feedback(session)
         player_lines = []
         for p in players:
             active = p == current and session["status"] == "active"
             bullet = "● " if active else "○ "
             role = "  ·  HOST" if p == session["coordinator"] else ""
             my_tag = "  (YOU)" if p == self.settings.callsign else ""
-            signal = "  ▂▃▄▅" if p == self.settings.callsign else "  ▂▃▄"
-            player_lines.append(f"{bullet}{p:<7}{signal}{role}{my_tag}")
+            player_lines.append(f"{bullet}{p}{role}{my_tag}")
         for p in session["invited"]:
             player_lines.append(f"◌ {p:<7}  ·  invited")
         self.players_label.setText("\n".join(player_lines) if player_lines else "No stations yet")
         if state:
             self._render_state(session)
+            cue=session.get("last_opponent_cue")
+            if cue and state.get("kind")!="scorched-earth":
+                QTimer.singleShot(0, lambda sid=sid, cue=cue: self._animate_last_move(cue=cue,force=False)
+                                  if self.selected_id == sid else None)
+        else:
+            self._render_lobby_summary(session)
         self._refresh_chat(sid)
         if announce:
             if state and state.get("kind") == "scorched-earth" and state.get("impact") and not session.get("forfeited_by"):
@@ -1942,6 +2674,82 @@ class ArcadeWindow(QMainWindow):
                 self._completion_timer.start(1100)
             else:
                 self._view_result()
+
+    def _render_lobby_summary(self, session):
+        host = QWidget(); layout = QVBoxLayout(host); layout.setContentsMargins(18, 12, 18, 12); layout.setSpacing(12)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status = session["status"]
+        title = QLabel("Ready to play?" if status == "invited" else "Table lobby" if status in ("lobby", "joining") else "Table not active")
+        title.setObjectName("gameTitle"); title.setAlignment(Qt.AlignmentFlag.AlignCenter); title.setWordWrap(True); layout.addWidget(title)
+        definition = self.engine.registry.by_id(session["game_id"])
+        roster = QLabel(f"{len(session['players'])} joined · {player_count_label(definition)}")
+        roster.setObjectName("eyebrow"); roster.setAlignment(Qt.AlignmentFlag.AlignCenter); roster.setWordWrap(True); layout.addWidget(roster)
+        for player in session["players"]:
+            label = QLabel(f"●  {player}" + ("  (you)" if player == self.settings.callsign else "") + ("  ·  Host" if player == session["coordinator"] else ""))
+            label.setTextFormat(Qt.TextFormat.PlainText); label.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(label)
+        for player in session["invited"]:
+            label = QLabel(f"○  {player} · Invitation pending"); label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setObjectName("muted"); label.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(label)
+        if status == "lobby" and session["coordinator"] == self.settings.callsign:
+            hint = "Wait for stations to join, then start when ready." if session.get("hosted") else "Invite a station. Start the game once the required players have joined."
+        elif status == "joining":
+            hint = "The host will begin the game after accepting players."
+        elif status == "invited":
+            hint = "Accept the invitation below to take your seat."
+        else:
+            hint = "Game state will appear here when it is available."
+        label = QLabel(hint); label.setWordWrap(True); label.setObjectName("muted"); label.setAlignment(Qt.AlignmentFlag.AlignCenter); layout.addWidget(label)
+        self.board_layout.addWidget(host)
+
+    def _refresh_table_feedback(self, session):
+        if not session or session["id"] != self.selected_id:
+            return
+        sid = session["id"]
+        practice = self.settings.transport == "practice"
+        outstanding = 0
+        if self.engine and not getattr(self.engine, "_closed", False) and not practice and not session.get("hosted") and session.get("coordinator") == self.settings.callsign:
+            outstanding = self.engine.store.count_outgoing(sid, int(Kind.COMMIT), session["sequence"])
+        text, tone = table_feedback(session, self.settings.callsign, practice=practice,
+                                    observer=self.settings.observer_mode, tx_enabled=self.settings.tx_enabled,
+                                    submitting=sid in self._move_jobs,
+                                    delivery=tuple(self._delivery_status.get(sid, {}).values()),
+                                    outstanding=outstanding)
+        if sid in self._action_errors:
+            text, tone = self._action_errors[sid], "alert"
+        self.turn_badge.setText(text); self.turn_badge.setVisible(True)
+        self.turn_badge.setProperty("turn", tone)
+        self.turn_badge.style().unpolish(self.turn_badge); self.turn_badge.style().polish(self.turn_badge)
+
+    def _invite_from_table(self):
+        if not self.engine or not self.selected_id:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        peer, accepted = QInputDialog.getText(self, "Invite a station", "Opponent callsign")
+        if accepted and peer.strip():
+            self.peer_input.setText(peer.strip().upper())
+            self._invite_player()
+
+    def _cancel_invite_from_table(self):
+        if not self.engine or not self.selected_id:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        session = self.engine.session(self.selected_id)
+        if not session["invited"]:
+            return
+        peer, ok = QInputDialog.getItem(self, "Cancel invitation", "Pending station",
+                                       session["invited"], 0, False)
+        if ok:
+            self._run(partial(self.engine.cancel_invitation, session["id"], peer))
+
+    def _order_from_table(self):
+        if not self.engine or not self.selected_id:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        session = self.engine.session(self.selected_id)
+        order, ok = QInputDialog.getText(self, "Set player order", "Station callsigns, in turn order, separated by commas",
+                                        text=", ".join(session["players"]))
+        if ok and order.strip():
+            self._run(partial(self.engine.set_reply_order, session["id"], order))
 
     def _sync_label_for_session(self, session: dict) -> str:
         requested = float(session.get("sync_requested_at", 0))
@@ -1970,11 +2778,21 @@ class ArcadeWindow(QMainWindow):
             can_retry = time.time() - requested >= 30
             self.sync_button.setText(self._sync_label_for_session(session))
             self.sync_button.setEnabled(can_retry and (self.settings.transport == "practice" or self.settings.tx_enabled))
+            self.sync_menu_action.setText(self.sync_button.text().replace("↻  ", ""))
+            self.sync_menu_action.setEnabled(self.sync_button.isEnabled())
 
     def _finish_scorched_result(self):
         if self.isVisible() and self.selected_id == self._pending_result_id:
             self._view_result()
         self._pending_result_id = None
+
+    def _play_again(self):
+        if not self.engine or not self.selected_id or self.settings.observer_mode:
+            return
+        session=self.engine.session(self.selected_id)
+        if session["status"]=="finished":
+            key=self.engine.registry.by_id(session["game_id"]).key
+            self._library_select(key)
 
     def _view_result(self):
         self._completion_timer.stop()
@@ -1986,7 +2804,7 @@ class ArcadeWindow(QMainWindow):
             return
         if self._result_dialog:
             self._result_dialog.close()
-        self._result_dialog = ResultDialog(session, self.settings, self)
+        self._result_dialog = ResultDialog(session, self.settings, self, play_again=lambda: self._play_again() if self.selected_id == session["id"] else None)
         self._result_dialog.finished.connect(lambda: setattr(self, "_result_dialog", None))
         self._result_dialog.open()
 
@@ -2144,6 +2962,7 @@ class ArcadeWindow(QMainWindow):
                 for col in range(7):
                     mark = view["cells"][row * 7 + col]
                     disc = QLabel()
+                    disc.setObjectName(f"connectFourCell{row*7+col}")
                     disc.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     disc.setFixedSize(54, 52)
                     if self.settings.color_scheme == "monochrome":
@@ -2165,78 +2984,90 @@ class ArcadeWindow(QMainWindow):
         elif view["kind"] == "battleship":
             from .games.battleship import FLEET
             host = QWidget(); box = QVBoxLayout(host); box.setSpacing(10)
-            active = not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"] and not session.get("resync_pending") and (self.settings.transport == "practice" or (self.settings.tx_enabled and session["current_player"] == self.settings.callsign))
-            phase_pill = QLabel(f"◈ {session['current_player']}  ·  {view['phase'].upper()}")
+            active = not self.settings.observer_mode and session["status"] == "active" and not session["pending_action"] and not session.get("resync_pending") and (session["current_player"] == self.settings.callsign and (self.settings.transport == "practice" or self.settings.tx_enabled))
+            phase_pill = QLabel(f"◈ {session['current_player'] or view.get('winner') or 'GAME OVER'}  ·  {view['phase'].upper() if session['status'] != 'finished' else 'FINISHED'}")
             phase_pill.setStyleSheet("background: rgba(0, 245, 196, 0.08); border: 1px solid rgba(0, 245, 196, 0.25); border-radius: 8px; padding: 6px 12px; color: #00f5c4; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
             box.addWidget(phase_pill)
-            if view["phase"] == "setup" and not session.get("private_fleet"):
-                draft = self._battleship_drafts.setdefault(session["id"], [])
-                vertical = QCheckBox("Place vertically")
-                vertical.setStyleSheet("color: #cbd5e1; font-size: 12px; font-weight: 600;")
-                prompt = QLabel(f"Place vessel {len(draft)+1} of 5 · length {FLEET[len(draft)]}")
-                prompt.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: 700;")
-                box.addWidget(prompt); box.addWidget(vertical)
-                board = QWidget(); grid = QGridLayout(board); grid.setSpacing(2); grid.setContentsMargins(8, 8, 8, 8)
-                board.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                board.setStyleSheet("QWidget { background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, fx:0.5, fy:0.5, stop:0 #0a1b28, stop:0.7 #06121c, stop:1 #030a10); border: 1px solid rgba(0, 245, 196, 0.22); border-radius: 12px; }")
-                _add_radar_coordinates(grid)
-                for i in range(100):
-                    val = "■" if i in sum(draft, []) else "□"
-                    button = QPushButton(val)
-                    _style_naval_button(button, val, enabled=True)
-                    def place(_checked=False, cell=i):
-                        size=FLEET[len(draft)]; row,col=divmod(cell,10); vert=vertical.isChecked()
-                        cells=[(row+j)*10+col if vert else row*10+col+j for j in range(size)]
-                        if (vert and row+size>10) or (not vert and col+size>10) or set(cells)&set(sum(draft, [])): return
-                        draft.append(cells)
-                        if len(draft)==5:
-                            self.engine.place_battleship_fleet(session["id"], draft); self._battleship_drafts.pop(session["id"], None)
-                        self._board_signature = None
-                        self._refresh_sessions()
-                    button.clicked.connect(place); grid.addWidget(button, (i//10) + 1, (i%10) + 1)
-                box.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
+            if view["phase"] == "setup" and not session.get("private_fleet") and not self.settings.observer_mode and self.settings.callsign in session["players"]:
+                self._render_classic_fleet_setup(session, box)
             elif view["phase"] == "setup":
-                msg = QLabel("Fleet saved privately · waiting for both stations")
-                msg.setStyleSheet("color: #94a3b8; font-size: 12px; padding: 10px 0;")
-                box.addWidget(msg)
-            elif view["phase"] == "reply":
-                msg = QLabel("Sending the result from your private fleet.")
+                msg = QLabel("Fleet saved privately · waiting for both stations" if session.get("private_fleet") else "Waiting for both fleets to be deployed")
                 msg.setStyleSheet("color: #94a3b8; font-size: 12px; padding: 10px 0;")
                 box.addWidget(msg)
             else:
+                if session["status"] == "finished":
+                    status = f"{view.get('winner') or 'No station'} wins"
+                elif view["phase"] == "reply":
+                    status = f"Awaiting {session['current_player']}'s report for {chr(65 + view['pending'] % 10)}{view['pending'] // 10 + 1}"
+                elif active:
+                    status = "Your turn · select an uncalled coordinate"
+                else:
+                    status = f"Waiting for {session['current_player']} to fire"
+                box.addWidget(QLabel(status))
+                boards = QBoxLayout(QBoxLayout.Direction.LeftToRight if self.width() >= 1180 else QBoxLayout.Direction.TopToBottom)
+                boards.setSpacing(12)
+                box.addLayout(boards)
+                cell_size = 26 if self.width() >= 1180 else max(18, min(28, (self.width() - 104) // 11))
+                def make_board(title, cells, fleet=None, firing=False, revealed=None):
+                    panel = QWidget(); panel_layout = QVBoxLayout(panel)
+                    panel_layout.setContentsMargins(0, 0, 0, 0)
+                    header = QLabel(title)
+                    header.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 800;")
+                    panel_layout.addWidget(header)
+                    board = QWidget(); grid = QGridLayout(board)
+                    grid.setSpacing(2); grid.setContentsMargins(6, 6, 6, 6)
+                    board.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                    _add_radar_coordinates(grid, cell_size)
+                    occupied = set(sum(fleet or [], []))
+                    sunk_cells = {c for ship in (fleet or []) if all(cells[c] >= 2 for c in ship) for c in ship}
+                    for i, value in enumerate(cells):
+                        if i in sunk_cells:
+                            value = 3
+                        text = "○" if value == 1 else "✕" if value == 2 else ("S" if fleet else f"S{value-2}") if value >= 3 else "■" if i in occupied else "□"
+                        enabled = firing and active and view["phase"] == "call" and value == 0
+                        button = QPushButton(text)
+                        button.setObjectName(f"navalEnemy{i}" if firing else f"navalIncoming{i}")
+                        _style_naval_button(button, value if value else text, enabled=enabled, cell_size=cell_size)
+                        button.setStyleSheet(button.styleSheet().replace("QPushButton {", "QPushButton, QPushButton:disabled {"))
+                        button.setEnabled(enabled)
+                        button.setToolTip(f"{chr(65+i%10)}{i//10+1}: " + ("sunk" if value >= 3 else "hit" if value == 2 else "miss" if value == 1 else "ship" if i in occupied else "uncalled"))
+                        if firing:
+                            button.clicked.connect(lambda _=False, cell=i: self._submit_action(bytes((cell,))))
+                        grid.addWidget(button, i//10 + 1, i%10 + 1)
+                    _draw_naval_fleet(grid, fleet, cell_size, 2, classic=True)
+                    if revealed:
+                        revealed_fleet = [[] for _ in FLEET]
+                        for ship in revealed:
+                            revealed_fleet[ship["id"]] = ship["cells"]
+                        _draw_naval_fleet(grid, revealed_fleet, cell_size, 2, classic=True)
+                        for ship in revealed:
+                            for cell in ship["cells"]:
+                                _naval_shot_overlay(grid, cell, "S", color="#fbbf24")
+                    # Marks above the ship artwork must remain visible, too.
+                    for i in occupied:
+                        value = 3 if i in sunk_cells else cells[i]
+                        if value:
+                            _naval_shot_overlay(grid, i, "S" if value >= 3 else "✕" if value == 2 else "○",
+                                                color="#fbbf24" if value >= 3 else "#ff6475" if value == 2 else "#ffffff")
+                    panel_layout.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
+                    if fleet:
+                        remaining = sum(not all(cells[c] >= 2 for c in ship) for ship in fleet)
+                        summary = QLabel(f"{remaining} / {len(FLEET)} ships afloat")
+                        summary.setObjectName("muted"); panel_layout.addWidget(summary)
+                        names = QLabel(" · ".join(f"{name}: {'sunk' if all(cells[c] >= 2 for c in ship) else 'afloat'}"
+                                                for name, ship in zip(CLASSIC_NAMES, fleet)))
+                        names.setWordWrap(True); names.setObjectName("fleetRemaining"); panel_layout.addWidget(names)
+                    elif firing:
+                        sunk = len({v for v in cells if v >= 3})
+                        summary = QLabel(f"{len(FLEET) - sunk} / {len(FLEET)} enemy ships afloat")
+                        summary.setObjectName("muted"); panel_layout.addWidget(summary)
+                    boards.addWidget(panel)
                 if session.get("private_fleet"):
-                    own_header = QLabel("YOUR HARBOR · PRIVATE ON THIS STATION")
-                    own_header.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-                    box.addWidget(own_header)
-                    own = QWidget(); own_grid = QGridLayout(own); own_grid.setSpacing(2); own_grid.setContentsMargins(6, 6, 6, 6)
-                    own.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                    own.setStyleSheet("QWidget { background: #07121b; border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 10px; }")
-                    _add_radar_coordinates(own_grid)
-                    own_cells = set(sum(session["private_fleet"], []))
-                    for i in range(100):
-                        lbl = QLabel("■" if i in own_cells else "□")
-                        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                        lbl.setFixedSize(28, 28)
-                        if i in own_cells:
-                            lbl.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a3c4d, stop:1 #0c202b); color: #38bdf8; border: 1px solid #38bdf8; border-radius: 4px; font-weight: 900; font-size: 13px;")
-                        else:
-                            lbl.setStyleSheet("background: #06111b; color: #152738; border: 1px solid rgba(255, 255, 255, 0.04); border-radius: 4px; font-size: 11px;")
-                        own_grid.addWidget(lbl, (i//10) + 1, (i%10) + 1)
-                    box.addWidget(own, 0, Qt.AlignmentFlag.AlignHCenter)
-                enemy_header = QLabel("ENEMY WATERS · CALLED COORDINATES")
-                enemy_header.setStyleSheet("color: #f43f5e; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-                box.addWidget(enemy_header)
-                board = QWidget(); grid = QGridLayout(board); grid.setSpacing(2); grid.setContentsMargins(8, 8, 8, 8)
-                board.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                board.setStyleSheet("QWidget { background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, fx:0.5, fy:0.5, stop:0 #0a1b28, stop:0.7 #06121c, stop:1 #030a10); border: 1px solid rgba(0, 245, 196, 0.22); border-radius: 12px; }")
-                _add_radar_coordinates(grid)
-                for i, value in enumerate(view["shots"]):
-                    txt = "·" if value==1 else "✕" if value==2 else f"S{value-3}" if value>=3 else "□"
-                    button = QPushButton(txt)
-                    _style_naval_button(button, value if value else txt, enabled=bool(active and value==0))
-                    button.setEnabled(active and value==0); button.clicked.connect(lambda _=False, cell=i: self._submit_action(bytes((cell,))))
-                    grid.addWidget(button, (i//10) + 1, (i%10) + 1)
-                box.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
+                    make_board("YOUR FLEET · INCOMING FIRE", view["incoming_shots"], session["private_fleet"])
+                make_board("ENEMY WATERS · YOUR SHOTS" if view.get("shot_owner") == self.settings.callsign else f"{view.get('shot_owner', '')} · CALLED COORDINATES", view["shots"], firing=True, revealed=session.get("revealed_enemy_ships", []))
+                legend = QLabel("○ White: miss    ✕ Red: hit    S Amber: sunk")
+                legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                box.addWidget(legend)
             self.board_layout.addWidget(host)
         elif view["kind"] == "sea-warfare":
             self._render_sea_warfare(session, view)
@@ -2246,14 +3077,14 @@ class ArcadeWindow(QMainWindow):
             title = QLabel(f"SIGNAL SIEGE   ·   WAVE {view['wave']}/3")
             title.setStyleSheet("color:#e5b9ff;font-size:18px;font-weight:800;letter-spacing:1px")
             box.addWidget(title)
-            
+
             boss_frame = QWidget()
             boss_layout = QVBoxLayout(boss_frame); boss_layout.setContentsMargins(12, 10, 12, 10); boss_layout.setSpacing(6)
             boss_frame.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #250938, stop:1 #13041d); border: 1px solid #a855f7; border-radius: 12px;")
             boss_label = QLabel(f"◈ CORE BOSS   ·   {view['boss_hp']} / {view['boss_max_hp']} HP")
             boss_label.setStyleSheet("color: #f5d0fe; font-size: 12px; font-weight: 800; letter-spacing: 0.8px;")
             boss_layout.addWidget(boss_label)
-            
+
             hp_bar = QProgressBar()
             hp_bar.setRange(0, view['boss_max_hp'])
             hp_bar.setValue(view['boss_hp'])
@@ -2261,7 +3092,7 @@ class ArcadeWindow(QMainWindow):
             hp_bar.setFixedHeight(8)
             hp_bar.setStyleSheet("QProgressBar { background: #0c0413; border: none; border-radius: 4px; } QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #d946ef, stop:1 #f43f5e); border-radius: 4px; }")
             boss_layout.addWidget(hp_bar)
-            
+
             pulse_lbl = QLabel(f"⚡ Pulse: {view['pulse_damage']} dmg · in {view['rounds_until_pulse']} round(s) · Jam {view['jam']}")
             pulse_lbl.setStyleSheet("color: #cbd5e1; font-size: 11px; font-weight: 600;")
             boss_layout.addWidget(pulse_lbl)
@@ -2322,6 +3153,7 @@ class ArcadeWindow(QMainWindow):
             card_layout = QVBoxLayout(piles_card); card_layout.setSpacing(10)
             for index, count in enumerate(view["piles"]):
                 row = QHBoxLayout(); label = QLabel(f"PILE {index+1:02d}")
+                label.setObjectName(f"pileRow{index}")
                 label.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 800; letter-spacing: 1.5px;")
                 row.addWidget(label); row.addSpacing(16)
                 for _ in range(count):
@@ -2353,56 +3185,169 @@ class ArcadeWindow(QMainWindow):
         elif view["kind"] == "word-tiles":
             host = QWidget(); box = QVBoxLayout(host); box.setContentsMargins(0, 0, 0, 0); box.setSpacing(8)
             current = session["current_player"]
-            header_bar = QLabel(f"BAG {view['bag']}  ·  {view['lexicon'].upper()}  ·  OPEN RACKS")
-            header_bar.setStyleSheet("background: rgba(0, 245, 196, 0.06); border: 1px solid rgba(0, 245, 196, 0.18); border-radius: 8px; padding: 6px 12px; color: #00f5c4; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-            box.addWidget(header_bar)
-            grid_host = QWidget(); grid = QGridLayout(grid_host); grid.setSpacing(2); grid.setContentsMargins(6, 6, 6, 6)
-            grid_host.setStyleSheet("background: #070d16; border: 1px solid rgba(100, 160, 240, 0.18); border-radius: 12px;")
-            grid.addWidget(QLabel("   "), 0, 0)
+            actor = self.settings.callsign
+            enabled = (not self.settings.observer_mode and current == actor and session["status"] == "active"
+                       and not session["pending_action"] and not session.get("resync_pending")
+                       and (self.settings.transport == "practice" or self.settings.tx_enabled))
+            key = (session["id"],session["revision"],actor)
+            draft = self._word_drafts.setdefault(key, {"start":"H8","direction":"H","word":"","rack":list(view["racks"].get(actor,[]))})
+            for old in tuple(self._word_drafts):
+                if old[0]==session["id"] and old!=key:
+                    del self._word_drafts[old]
+            header = QLabel(f"Bag: {view['bag']} · {view['lexicon']} · Open racks")
+            header.setObjectName("muted");box.addWidget(header)
+            draft_status=QLabel();draft_status.setObjectName("wordDraftStatus")
+            draft_status.setTextFormat(Qt.TextFormat.PlainText)
+            draft_status.setWordWrap(True);box.addWidget(draft_status)
+            stages=QHBoxLayout();stages.setSpacing(6)
+            draft_key=QLabel("◇  TEAL DASHED = DRAFT · NOT SENT")
+            draft_key.setObjectName("wordDraftLegend")
+            draft_key.setStyleSheet("color:#92f2cd;font-weight:700;font-size:10px;")
+            committed_key=QLabel("■  TAN SOLID = ON BOARD")
+            committed_key.setObjectName("wordCommittedLegend")
+            committed_key.setStyleSheet("color:#f4ddac;font-weight:700;font-size:10px;")
+            stages.addWidget(draft_key);stages.addWidget(committed_key)
+            stages.addStretch(1);box.addLayout(stages)
+            grid_host = QWidget();grid=QGridLayout(grid_host);grid.setSpacing(1);grid.setContentsMargins(3,3,3,3)
+            grid_host.setStyleSheet("background:#070d16;border:1px solid #315064;border-radius:8px")
+            size=max(16,min(28,(self.width()-58)//16))
+            grid.addWidget(QLabel(""),0,0)
             for x in range(15):
-                lbl = QLabel(chr(65 + x))
-                lbl.setStyleSheet("color: #486581; font-size: 9px; font-weight: 800; font-family: monospace;")
-                grid.addWidget(lbl, 0, x + 1, alignment=Qt.AlignmentFlag.AlignCenter)
-            premium_colors = {"TW": "#7f1d1d", "DW": "#831843", "TL": "#0369a1", "DL": "#0284c7", "..": "#0d1726"}
+                lbl=QLabel(chr(65+x));lbl.setStyleSheet("color:#a0b3c6;font-size:9px")
+                grid.addWidget(lbl,0,x+1,alignment=Qt.AlignmentFlag.AlignCenter)
+            premium_colors={"TW":"#7f1d1d","DW":"#831843","TL":"#0369a1","DL":"#245677","..":"#0d1726"}
+            cells=[]
             for y in range(15):
-                row_lbl = QLabel(str(y + 1))
-                row_lbl.setStyleSheet("color: #486581; font-size: 9px; font-weight: 800; font-family: monospace;")
-                grid.addWidget(row_lbl, y + 1, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+                row=QLabel(str(y+1));row.setStyleSheet("color:#a0b3c6;font-size:9px");grid.addWidget(row,y+1,0)
                 for x in range(15):
-                    index = y * 15 + x
-                    tile = view["cells"][index]
-                    text = tile or ("★" if index == 112 else view["premiums"][index])
-                    button = QPushButton(text)
-                    button.setObjectName(f"wordCell{index}")
-                    button.setFixedSize(28, 27)
-                    if tile:
-                        button.setStyleSheet("QPushButton { padding:0; font-size:12px; font-weight:800; background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #fef9c3, stop:1 #fde047); color: #0f172a; border: 1px solid #ca8a04; border-radius: 4px; }")
+                    i=y*15+x
+                    button=WordBoardCell(i);button.setObjectName(f"wordCell{i}");button.setFixedSize(size,size)
+                    button.setAccessibleName(f"{chr(65+x)}{y+1}")
+                    button.clicked.connect(lambda _=False,x=x,y=y:select_square(x,y))
+                    button.dropped.connect(lambda slot,i:add_tile(slot,i))
+                    grid.addWidget(button,y+1,x+1);cells.append(button)
+            box.addWidget(grid_host,alignment=Qt.AlignmentFlag.AlignHCenter)
+            legend=QLabel("★ Center · TW triple word · DW double word · TL triple letter · DL double letter")
+            legend.setObjectName("muted");legend.setWordWrap(True);box.addWidget(legend)
+            rack_label=QLabel("Your rack · click or drag tiles");rack_label.setObjectName("cardTitle");box.insertWidget(1,rack_label)
+            rack_row=QHBoxLayout();rack_row.setSpacing(3);rack_buttons=[]
+            for slot in range(7):
+                button=WordRackTile(slot);button.setObjectName(f"wordRack{slot}");button.setMinimumWidth(25)
+                button.setStyleSheet("QPushButton{padding:4px;background:#e8d8b7;color:#263043;font-weight:800;border:1px solid #bbaa82;border-radius:4px} QPushButton:disabled{background:#263444;color:#8393a6}")
+                button.clicked.connect(lambda _=False,slot=slot:add_tile(slot));rack_row.addWidget(button);rack_buttons.append(button)
+            box.insertLayout(2,rack_row)
+            for player,rack in view["racks"].items():
+                if player!=actor:
+                    label=QLabel(f"{player} · "+ "  ".join(rack));label.setWordWrap(True);label.setObjectName("muted");box.addWidget(label)
+            form=QGridLayout()
+            start=QLineEdit(draft["start"]);start.setObjectName("wordStart");start.setMaxLength(3)
+            direction=QComboBox();direction.setObjectName("wordDirection");direction.addItem("Across","H");direction.addItem("Down","V");direction.setCurrentIndex(direction.findData(draft["direction"]))
+            word=QLineEdit(draft["word"]);word.setObjectName("wordText");word.setPlaceholderText("Word · {A} for blank")
+            place=QPushButton("Submit word");place.setObjectName("wordPlace")
+            place.setToolTip("This is the step that submits your proposed word to the table")
+            form.addWidget(start,0,0);form.addWidget(direction,0,1);form.addWidget(word,1,0,1,2);form.addWidget(place,2,0,1,2);box.addLayout(form)
+            options=QHBoxLayout()
+            undo=QPushButton("Undo tile");undo.setObjectName("wordUndo")
+            clear=QPushButton("Clear");clear.setObjectName("wordClear")
+            shuffle=QPushButton("Shuffle rack");shuffle.setObjectName("wordShuffle")
+            for button in (undo,clear,shuffle):
+                button.setStyleSheet("padding:5px");options.addWidget(button)
+            box.addLayout(options)
+            note=QLabel();note.setObjectName("wordPreview");note.setWordWrap(True);note.setTextFormat(Qt.TextFormat.PlainText);box.addWidget(note)
+            for control in (start,direction,word,undo,clear,shuffle):
+                control.setEnabled(enabled)
+            def update():
+                draft.update(start=start.text(),direction=direction.currentData(),word=word.text())
+                preview=positions(start.text(),direction.currentData(),word.text())
+                selected=positions(start.text(),direction.currentData(),"A")
+                for i,button in enumerate(cells):
+                    tile=view["cells"][i];token=preview.get(i)
+                    letter=token.strip("{}") if token else ""
+                    conflict=bool(token and tile and (tile.upper()!=letter or token.startswith("{")))
+                    color="#e8d8b7" if tile else premium_colors[view["premiums"][i]]
+                    fg="#263043" if tile else "#d2deeb"
+                    border="#394758"
+                    ghost=bool(token and not tile)
+                    if token:
+                        border="#fb7185" if conflict else "#34d399"
+                        if ghost:color="#164b44";fg="#f3fffa"
+                    elif i in selected:border="#38bdf8"
+                    button.setText(tile or (letter.lower() if token and token.startswith("{") else letter) or ("★" if i==112 else view["premiums"][i]))
+                    border_kind="dashed" if ghost else "solid"
+                    button.setStyleSheet(f"QPushButton{{padding:0;font-size:{11 if size>=24 else 8}px;font-weight:700;background:{color};color:{fg};border:{2 if ghost or conflict or i in selected else 1}px {border_kind} {border};border-radius:3px}}")
+                    button.setToolTip(("DRAFT — not submitted" if ghost else "Committed tile — on the board" if tile else "Empty square"))
+                    button.setEnabled(enabled)
+                remaining=used_tiles(start.text(),direction.currentData(),word.text(),view["cells"])
+                for i,button in enumerate(rack_buttons):
+                    letter=draft["rack"][i] if i<len(draft["rack"]) else "·"
+                    consumed=letter in remaining
+                    if consumed:remaining.remove(letter)
+                    button.setText(letter);button.setEnabled(enabled and not consumed and letter!="·")
+                place.setEnabled(False)
+                place.setText("Submit word")
+                draft_tiles=sum(not view["cells"][i] for i in preview)
+                if not word.text().strip():
+                    confirmed=session.get("last_confirmed_word")
+                    if confirmed:
+                        draft_status.setText(f"✓ COMMITTED TO BOARD · Revision {confirmed['revision']}")
+                        draft_status.setStyleSheet("background:#353025;color:#f6dfb4;border:1px solid #b69b6b;border-radius:7px;padding:9px;font-weight:700;")
+                        note.setText(f"Your last confirmed word: {confirmed['description']}. Tan tiles are permanent.")
                     else:
-                        color = "#343a40" if self.settings.color_scheme == "monochrome" else premium_colors[view["premiums"][index]]
-                        foreground = "#eeeeee" if self.settings.color_scheme == "monochrome" else "#94a3b8" if view["premiums"][index] == ".." else "#ffffff"
-                        button.setStyleSheet(f"QPushButton {{ padding:0; font-size:9px; font-weight:700; background:{color}; color:{foreground}; border:1px solid rgba(255, 255, 255, 0.08); border-radius:3px; }} QPushButton:hover {{ border-color: #00f5c4; }}")
-                    button.clicked.connect(lambda _checked=False, x=x, y=y: start.setText(f"{chr(65 + x)}{y + 1}"))
-                    grid.addWidget(button, y + 1, x + 1)
-            box.addWidget(grid_host, alignment=Qt.AlignmentFlag.AlignHCenter)
-            for player, rack in view["racks"].items():
-                rack_card = QLabel(f"◈ {player} RACK   " + "   ".join(rack))
-                rack_card.setStyleSheet("color: #7dd3fc; font-weight: 700; font-size: 11px; background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 6px; padding: 6px 12px;")
-                box.addWidget(rack_card)
-            enabled = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled) and (self.settings.transport == "practice" or current == self.settings.callsign) and session["status"] == "active" and not session["pending_action"] and not session.get("resync_pending")
-            form = QHBoxLayout(); start = QLineEdit(); start.setObjectName("wordStart"); start.setPlaceholderText("H8")
-            direction = QComboBox(); direction.setObjectName("wordDirection"); direction.addItem("Across", "H"); direction.addItem("Down", "V")
-            word = QLineEdit(); word.setObjectName("wordText"); word.setPlaceholderText("Word · use {A} for a blank tile")
-            place = QPushButton("Place word"); place.setObjectName("wordPlace"); place.setEnabled(enabled)
-            place.clicked.connect(lambda: self._submit_word_placement(session, start.text(), direction.currentData(), word.text()))
-            form.addWidget(start); form.addWidget(direction); form.addWidget(word, 1); form.addWidget(place)
-            box.addLayout(form)
-            extras = QHBoxLayout(); exchange_text = QLineEdit(); exchange_text.setObjectName("wordExchangeTiles"); exchange_text.setPlaceholderText("Exchange letters; ? = blank")
-            exchange = QPushButton("Exchange"); exchange.setObjectName("wordExchange"); exchange.setEnabled(enabled and view["bag"] >= 7)
-            exchange.clicked.connect(lambda: self._submit_word_exchange(session, exchange_text.text()))
-            pass_turn = QPushButton("Pass"); pass_turn.setEnabled(enabled)
-            pass_turn.clicked.connect(lambda: self._submit_action(b"\x01"))
-            extras.addWidget(exchange_text, 1); extras.addWidget(exchange); extras.addWidget(pass_turn)
-            box.addLayout(extras)
+                        draft_status.setText("NO DRAFT · Choose a square and build a word")
+                        draft_status.setStyleSheet("background:#172638;color:#d4e1ec;border:1px solid #456076;border-radius:7px;padding:9px;font-weight:700;")
+                        note.setText("Click or drag rack tiles, or type a word. Nothing transmits until you press Submit word.")
+                    return
+                draft_status.setText(f"◇ DRAFT — NOT SUBMITTED · {draft_tiles} proposed tile{'s' if draft_tiles!=1 else ''}")
+                draft_status.setStyleSheet("background:#12372f;color:#acffdf;border:2px dashed #35d1a4;border-radius:7px;padding:9px;font-weight:800;")
+                if not enabled:
+                    note.setText("Draft only · Waiting for your turn. Nothing has been sent.")
+                    return
+                try:
+                    game=self.engine.registry.by_id(session["game_id"])
+                    result=preview_word(game,self._word_state(session),tuple(session["players"]),actor,start.text(),direction.currentData(),word.text())
+                    note.setText(f"Legal word · {result['score']} points available. Submit to lock these tiles onto the board.")
+                    place.setText(f"Submit word · +{result['score']} points")
+                    place.setEnabled(True)
+                except ValueError as exc:
+                    note.setText(f"Not ready to submit: {exc}. Keep editing; draft tiles are not on the board.")
+            def select_square(x,y):
+                start.setText(f"{chr(65+x)}{y+1}")
+            def add_tile(slot,target=None):
+                if not enabled or not 0<=slot<len(draft["rack"]) or not rack_buttons[slot].isEnabled():return
+                letter=draft["rack"][slot]
+                if letter=="?":
+                    from PySide6.QtWidgets import QInputDialog
+                    letter,ok=QInputDialog.getText(self,"Blank tile","Assign a letter A–Z")
+                    letter=letter.strip().upper()
+                    if not ok or len(letter)!=1 or not "A"<=letter<="Z":return
+                    letter="{"+letter+"}"
+                if target is not None:
+                    try:
+                        origin,placed=drop_rack_tile(start.text(),direction.currentData(),word.text(),letter,view["cells"],target)
+                    except ValueError as exc:note.setText(str(exc));return
+                    start.setText(origin);word.setText(placed)
+                else:word.setText(append_rack_tile(start.text(),direction.currentData(),word.text(),letter,view["cells"]))
+            def undo_tile():
+                import re
+                tokens=re.findall(r"\{[A-Z]\}|[A-Z]",word.text().upper())
+                while tokens:
+                    before=positions(start.text(),direction.currentData(),"".join(tokens))
+                    last=next(reversed(before),None)
+                    tokens.pop()
+                    if last is not None and not view["cells"][last]:break
+                word.setText("".join(tokens))
+            def shuffle_rack():
+                random.shuffle(draft["rack"]);update()
+            undo.clicked.connect(undo_tile);clear.clicked.connect(word.clear);shuffle.clicked.connect(shuffle_rack)
+            for control,signal in ((start,start.textChanged),(word,word.textChanged),(direction,direction.currentIndexChanged)):
+                signal.connect(update)
+            place.clicked.connect(lambda:self._submit_word_placement(session,start.text(),direction.currentData(),word.text()))
+            extras=QGridLayout();exchange_text=QLineEdit();exchange_text.setObjectName("wordExchangeTiles");exchange_text.setPlaceholderText("Exchange letters · ? blank")
+            exchange=QPushButton("Exchange");exchange.setObjectName("wordExchange");exchange.setEnabled(enabled and view["bag"]>=7)
+            exchange.clicked.connect(lambda:self._submit_word_exchange(session,exchange_text.text()))
+            pass_turn=QPushButton("Pass");pass_turn.setEnabled(enabled);pass_turn.clicked.connect(lambda:self._submit_action(b"\x01"))
+            extras.addWidget(exchange_text,0,0,1,2);extras.addWidget(exchange,1,0);extras.addWidget(pass_turn,1,1);box.addLayout(extras)
+            update()
             self.board_layout.addWidget(host)
         else:
             panel = QWidget(); box = QVBoxLayout(panel)
@@ -2414,12 +3359,129 @@ class ArcadeWindow(QMainWindow):
             send.clicked.connect(lambda: self._submit_hex_action(raw.text()))
             box.addWidget(raw); box.addWidget(send); self.board_layout.addWidget(panel)
 
+    def _render_classic_fleet_setup(self, session, box):
+        from .games.battleship import FLEET
+        sid = session["id"]
+        draft = self._battleship_drafts.setdefault(sid, FleetDraft())
+        if isinstance(draft, list):
+            draft = FleetDraft(ships=[ship[:] for ship in draft])
+            self._battleship_drafts[sid] = draft
+        editable = (session["status"] == "active" and not session.get("resync_pending")
+                    and not session.get("pending_action") and
+                    (self.settings.transport == "practice" or self.settings.tx_enabled))
+        host = QWidget(); host.setObjectName("classicFleetSetup")
+        layout = QVBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(6)
+        prompt = QLabel(); prompt.setObjectName("fleetPrompt"); prompt.setWordWrap(True)
+        prompt.setStyleSheet("font-size:14px;font-weight:700;color:#7dd3fc")
+        layout.addWidget(prompt)
+        orientation = QPushButton(); orientation.setObjectName("fleetRotate"); orientation.setCheckable(True)
+        orientation.setChecked(draft.vertical); orientation.setToolTip("Rotate the next ship (R)")
+        undo = QPushButton("Undo"); undo.setObjectName("fleetUndo")
+        randomize = QPushButton("Randomize"); randomize.setObjectName("fleetRandomize")
+        clear = QPushButton("Clear"); clear.setObjectName("fleetClear")
+        controls = QGridLayout(); controls.setSpacing(5)
+        for i, button in enumerate((orientation, undo, randomize, clear)):
+            controls.addWidget(button, i // 2, i % 2)
+        layout.addLayout(controls)
+        board = QWidget(); grid = QGridLayout(board); grid.setSpacing(2); grid.setContentsMargins(5, 5, 5, 5)
+        board.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        board.setStyleSheet("QWidget {background:#07141e;border:1px solid #244456;border-radius:6px}")
+        # Fit the entire grid horizontally even in the compact Table tab.
+        cell_size = max(18, min(28, (self.width() - 104) // 11))
+        _add_radar_coordinates(grid, cell_size)
+        layout.addWidget(board, 0, Qt.AlignmentFlag.AlignHCenter)
+        roster = QLabel(); roster.setObjectName("fleetRoster"); roster.setWordWrap(True); roster.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(roster)
+        tip = QLabel("Green preview: fits · Red: blocked. Your ship positions stay private.")
+        tip.setObjectName("muted"); tip.setWordWrap(True); layout.addWidget(tip)
+        deploy = QPushButton("Deploy fleet"); deploy.setObjectName("fleetDeploy")
+        deploy.setProperty("primaryButton", True); deploy.setStyleSheet(
+            "QPushButton:enabled{background:#00cfa5;color:#062620;font-weight:800}"
+            "QPushButton:disabled{background:#1d2b39;color:#8b9db0}")
+        layout.addWidget(deploy)
+        buttons = []; hovered = [None]; saving = [sid in self._fleet_deployments]
+        sprites = []
+        def paint(cell=None):
+            hovered[0] = cell
+            footprint, valid = draft.preview(cell) if cell is not None else ([], False)
+            occupied = {c for ship in draft.ships for c in ship}
+            for i, btn in enumerate(buttons):
+                val = "■" if i in occupied else "□"
+                btn.setText(val)
+                _style_naval_button(btn, val, enabled=editable and not draft.complete, cell_size=cell_size)
+                btn.setProperty("preview", "")
+                if i in footprint:
+                    color = "#38e8b0" if valid else "#fb6475"
+                    bg = "#17483e" if valid else "#592331"
+                    btn.setProperty("preview", "valid" if valid else "invalid")
+                    btn.setStyleSheet(f"QPushButton{{background:{bg};color:{color};border:2px solid {color};border-radius:4px;padding:0;}}")
+                btn.setEnabled(editable and not draft.complete and not saving[0])
+            for sprite in sprites:
+                sprite.raise_()
+            if not valid:
+                for i in footprint:
+                    buttons[i].raise_()
+        def redraw():
+            for sprite in sprites:
+                grid.removeWidget(sprite); sprite.setParent(None); sprite.deleteLater()
+            sprites.clear()
+            _draw_naval_fleet(grid, draft.ships, cell_size, 2, classic=True)
+            sprites.extend(board.findChildren(QLabel, "navalShipSprite"))
+            n = len(draft.ships)
+            prompt.setText(f"Place {CLASSIC_NAMES[n]} · {FLEET[n]} squares ({n+1}/5)" if not draft.complete else "Fleet ready — deploy when you're happy with it")
+            orientation.setText(("Vertical" if draft.vertical else "Horizontal") + " · R")
+            orientation.setEnabled(editable and not draft.complete and not saving[0])
+            undo.setEnabled(editable and draft.can_undo and not saving[0])
+            randomize.setEnabled(editable and not saving[0]); clear.setEnabled(editable and bool(draft.ships) and not saving[0])
+            deploy.setEnabled(editable and draft.complete and not saving[0])
+            roster.setText("  ·  ".join(f"{'✓' if i < n else '○'} {name} ({length})" for i, (name, length) in enumerate(zip(CLASSIC_NAMES, FLEET))))
+            paint(hovered[0])
+        def place(cell):
+            if editable and not saving[0] and draft.place(cell):
+                redraw()
+        def rotate(value):
+            draft.vertical = value
+            orientation.setText(("Vertical" if value else "Horizontal") + " · R")
+            paint(hovered[0])
+        for i in range(100):
+            button = FleetPlacementCell(i); buttons.append(button)
+            button.setToolTip(f"{chr(65+i%10)}{i//10+1}")
+            button.hovered.connect(paint); button.departed.connect(lambda: paint(None))
+            button.clicked.connect(lambda _=False, cell=i: place(cell))
+            grid.addWidget(button, i//10+1, i%10+1)
+        orientation.toggled.connect(rotate)
+        shortcut = QShortcut(QKeySequence("R"), host)
+        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        shortcut.activated.connect(lambda: orientation.click() if orientation.isEnabled() else None)
+        undo.clicked.connect(lambda: (draft.undo(), redraw()))
+        randomize.clicked.connect(lambda: (draft.randomize(), redraw()))
+        clear.clicked.connect(lambda: (draft.clear(), redraw()))
+        def save():
+            if saving[0] or sid in self._fleet_deployments or not draft.complete or not editable:
+                return
+            saving[0] = True; self._fleet_deployments.add(sid); redraw()
+            ships = [s[:] for s in draft.ships]
+            def done(_):
+                self._fleet_deployments.discard(sid)
+                self._battleship_drafts.pop(sid, None)
+                self._board_signature = None
+            def failed(error):
+                self._fleet_deployments.discard(sid)
+                saving[0] = False
+                if self.selected_id == sid:
+                    self._board_signature = None; self._show_session(sid)
+                    QMessageBox.warning(self, "Fleet placement", error)
+            self._run(partial(self.engine.place_battleship_fleet, sid, ships), done, failed)
+        deploy.clicked.connect(save)
+        redraw()
+        box.addWidget(host)
+
     def _render_sea_warfare(self, session: dict, view: dict):
         host = QWidget(); box = QVBoxLayout(host); box.setSpacing(4)
         active = (not self.settings.observer_mode and session["status"] == "active"
+                  and view["phase"] == "call" and session["current_player"] == self.settings.callsign
                   and not session["pending_action"] and not session.get("resync_pending")
-                  and (self.settings.transport == "practice" or
-                       (self.settings.tx_enabled and session["current_player"] == self.settings.callsign)))
+                  and (self.settings.transport == "practice" or self.settings.tx_enabled))
         rules = QLabel("⚓ CARRIER: 50% block roll  ·  BATTLESHIP: adjacent double shot\n"
                        "⚓ CRUISER: one free move  ·  DESTROYER: disarms one mine\n"
                        "⚓ SUBMARINE: one sonar row  ·  PATROL BOAT: optional hidden mine")
@@ -2439,13 +3501,15 @@ class ArcadeWindow(QMainWindow):
 
         # Size the 10x10 playfield against the actual available viewport so
         # setup instructions cannot push it below the fold on short windows.
-        naval_cell_size = max(18, min(28, (self.board_scroll.viewport().height() - 110) // 11))
+        wide = self.width() >= 1180
+        naval_cell_size = 26 if wide else max(18, min(28, (self.width() - 95) // 11,
+                                                       (self.board_scroll.viewport().height() - 110) // 11))
 
         def refresh_board():
             self._board_signature = None
             self._show_session(session["id"])
 
-        def grid_widget(cells, enabled=False, handler=None, marks=None, fleet=None):
+        def grid_widget(cells, enabled=False, handler=None, marks=None, fleet=None, board_role=""):
             board = QWidget(); grid = QGridLayout(board); grid.setSpacing(1); grid.setContentsMargins(4, 4, 4, 4)
             board.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             board.setStyleSheet("QWidget { background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, fx:0.5, fy:0.5, stop:0 #0a1b28, stop:0.7 #06121c, stop:1 #030a10); border: 1px solid rgba(0, 245, 196, 0.22); border-radius: 12px; }")
@@ -2454,6 +3518,7 @@ class ArcadeWindow(QMainWindow):
                 mark = (marks or {}).get(index)
                 txt = "■" if index in cells else "□"
                 button = QPushButton(txt); button.setFixedSize(naval_cell_size, naval_cell_size)
+                if board_role:button.setObjectName(f"naval{board_role.title()}{index}")
                 button.setProperty("adaptiveRadarCell", True)
                 _style_naval_button(button, txt, enabled=bool(enabled and handler is not None),
                                     cell_size=naval_cell_size)
@@ -2461,28 +3526,10 @@ class ArcadeWindow(QMainWindow):
                 if handler is not None:
                     button.clicked.connect(lambda _=False, cell=index: handler(cell))
                 grid.addWidget(button, (index // 10) + 1, (index % 10) + 1)
-            assets = Path(__file__).with_name("web_assets")
-            sprites = ("battleship-carrier.png", "battleship-hull.png", "battleship-cruiser.png",
-                       "battleship-destroyer.png", "battleship-submarine.png", "battleship-patrol.png")
-            for ship_id, ship in enumerate(fleet or []):
-                if not ship: continue
-                first = min(ship); row, col = divmod(first, 10)
-                vertical_ship = len(ship) > 1 and ship[1] - ship[0] == 10
-                name = sprites[ship_id] + ("" if vertical_ship else "")
-                if not vertical_ship: name = name.replace(".png", "-horizontal.png")
-                sprite = QPixmap(str(assets / name))
-                if sprite.isNull(): continue
-                length = len(ship)
-                width, height = (naval_cell_size, length*naval_cell_size+(length-1)) if vertical_ship else (length*naval_cell_size+(length-1), naval_cell_size)
-                image = QLabel(); image.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                image.setPixmap(sprite.scaled(width, height, Qt.AspectRatioMode.IgnoreAspectRatio,
-                                              Qt.TransformationMode.SmoothTransformation))
-                grid.addWidget(image, row + 1, col + 1, length if vertical_ship else 1,
-                               1 if vertical_ship else length)
+            _draw_naval_fleet(grid, fleet, naval_cell_size, 1)
             for index, mark in (marks or {}).items():
                 token = QLabel(mark); token.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                token.setStyleSheet("color:#ffd080;font-size:17px;font-weight:800;background:transparent")
+                token.setStyleSheet(f"color:{'#ffffff' if mark == '○' else '#ff6475' if mark == '×' else '#ffd080'};font-size:17px;font-weight:800;background:transparent")
                 token.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 grid.addWidget(token, (index // 10) + 1, (index % 10) + 1)
             return board
@@ -2557,11 +3604,12 @@ class ArcadeWindow(QMainWindow):
                               0, Qt.AlignmentFlag.AlignHCenter)
         elif view["phase"] == "setup":
             box.addWidget(QLabel("Fleet and optional extras are saved privately · waiting for both stations."))
-        elif view["phase"] == "reply":
-            box.addWidget(QLabel("Resolving the call against your private fleet."))
         else:
+            if view["phase"] == "reply":
+                box.addWidget(QLabel("Resolving the call against the defender's private fleet."))
             own = set(sum(session.get("private_fleet") or [], []))
-            own_marks = {cell: "×" for cell in session.get("private_hits", [])}
+            own_marks = {cell: "○" for cell, value in enumerate(view.get("incoming_shots", [])) if value == 1}
+            own_marks.update({cell: "×" for cell in session.get("private_hits", [])})
             if session.get("private_deploy"):
                 for cell in session["private_deploy"].get("mines", []): own_marks[cell] = "✹"
                 for cell in session["private_deploy"].get("decoys", []): own_marks[cell] = "◉"
@@ -2569,10 +3617,22 @@ class ArcadeWindow(QMainWindow):
             plane = QLabel(status)
             pixmap = QPixmap(str(Path(__file__).with_name("web_assets") / "battleship-fighter.png"))
             if not pixmap.isNull(): plane.setPixmap(pixmap.scaled(32, 38, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            box.addWidget(plane)
-            box.addWidget(QLabel("Your fleet · private on this station"))
-            box.addWidget(grid_widget(own, marks=own_marks, fleet=session.get("private_fleet")),
-                          0, Qt.AlignmentFlag.AlignHCenter)
+            boards_host = QWidget(); boards_host.setObjectName("seaBoards")
+            boards = QBoxLayout(QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom, boards_host)
+            boards.setContentsMargins(0, 0, 0, 0); boards.setSpacing(12)
+            box.addWidget(boards_host)
+            own_panel = QWidget(); own_panel.setObjectName("seaOwnPanel")
+            own_column = QVBoxLayout(own_panel); own_column.setContentsMargins(0, 0, 0, 0); own_column.setSpacing(5)
+            own_heading = QLabel("YOUR FLEET · INCOMING FIRE")
+            own_heading.setObjectName("seaOwnHeading")
+            own_heading.setStyleSheet("color:#38bdf8;font-size:11px;font-weight:800")
+            own_column.addWidget(own_heading)
+            own_column.addWidget(plane)
+            own_column.addWidget(grid_widget(own, marks=own_marks, fleet=session.get("private_fleet"), board_role="incoming"),
+                                 0, Qt.AlignmentFlag.AlignHCenter)
+            if session.get("private_fleet"):
+                own_column.addWidget(QLabel(f"{sum(not set(ship) <= set(session.get('private_hits',[])) for ship in session['private_fleet'])} / 6 ships afloat"))
+            boards.addWidget(own_panel)
 
             mode = QComboBox(); mode.addItem("One shot", "shot")
             seat = session["players"].index(self.settings.callsign) if self.settings.callsign in session["players"] else 0
@@ -2598,7 +3658,7 @@ class ArcadeWindow(QMainWindow):
                         enabled = enabled and col < 9 and view["shots"][index+1] == 0
                     item.setEnabled(enabled)
                     if view["shots"][index] == 0:
-                        _style_naval_button(item, "□", enabled=enabled)
+                        _style_naval_button(item, "□", enabled=enabled, cell_size=naval_cell_size)
             mode.currentIndexChanged.connect(update_mode); update_mode()
             if any(value != 255 for value in view.get("sonar", [])):
                 sonar_text = " · ".join(f"Row {i+1}: {('clear','faint','strong')[value]}" for i, value in enumerate(view["sonar"]) if value != 255)
@@ -2617,34 +3677,66 @@ class ArcadeWindow(QMainWindow):
             move.clicked.connect(lambda: self._submit_action(bytes((200 + vessel.currentIndex()*4 + direction.currentIndex(),))))
             move_row.addWidget(vessel); move_row.addWidget(direction); move_row.addWidget(move); box.addLayout(move_row)
 
-            enemy_header = QLabel("ENEMY WATERS · HITS DO NOT IDENTIFY SUNK SHIPS")
-            enemy_header.setStyleSheet("color: #f43f5e; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-            box.addWidget(enemy_header)
-            enemy = QWidget(); grid = QGridLayout(enemy); grid.setSpacing(2); grid.setContentsMargins(8, 8, 8, 8)
-            enemy.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            enemy.setStyleSheet("QWidget { background: qradialgradient(cx:0.5, cy:0.5, radius:0.8, fx:0.5, fy:0.5, stop:0 #0a1b28, stop:0.7 #06121c, stop:1 #030a10); border: 1px solid rgba(0, 245, 196, 0.22); border-radius: 12px; }")
-            _add_radar_coordinates(grid)
-            for cell, value in enumerate(view["shots"]):
-                row, col = divmod(cell, 10)
-                txt = "·" if value == 1 else "×" if value == 2 else "□"
-                button = QPushButton(txt); button.setFixedSize(28, 28)
-                _style_naval_button(button, value if value else txt, enabled=True)
-                def fire(_=False, cell=cell):
-                    action_mode = mode.currentData()
-                    if action_mode == "sonar": return
-                    if action_mode == "double":
-                        if cell % 10 > 8 or view["shots"][cell+1] != 0: return
-                        code = 100 + (cell//10)*9 + cell%10
-                    else: code = cell
-                    self._submit_action(bytes((code,)))
-                button.clicked.connect(fire); grid.addWidget(button, row + 1, col + 1); enemy_buttons.append(button)
+            enemy_panel = QWidget(); enemy_panel.setObjectName("seaEnemyPanel")
+            enemy_column = QVBoxLayout(enemy_panel)
+            enemy_column.setContentsMargins(0, 0, 0, 0); enemy_column.setSpacing(5)
+            enemy_header = QLabel("ENEMY WATERS · YOUR SHOTS")
+            enemy_header.setStyleSheet("color:#f43f5e;font-size:11px;font-weight:800;letter-spacing:1px")
+            enemy_column.addWidget(enemy_header)
+            def fire(cell):
+                action_mode = mode.currentData()
+                if action_mode == "sonar": return
+                if action_mode == "double":
+                    if cell % 10 > 8 or view["shots"][cell+1] != 0: return
+                    code = 100 + (cell//10)*9 + cell%10
+                else: code = cell
+                self._submit_action(bytes((code,)))
+            marked = {i: "○" if v == 1 else "×" for i,v in enumerate(view["shots"]) if v}
+            revealed = session.get("revealed_enemy_ships", [])
+            enemy_fleet = [[] for _ in range(6)]
+            for ship in revealed:
+                enemy_fleet[ship["id"]] = ship["cells"]
+                for cell in ship["cells"]:
+                    marked[cell] = "S"
+            enemy_board = grid_widget(set(), active and view["phase"] == "call", fire,
+                                      marks=marked, fleet=enemy_fleet, board_role="enemy")
+            enemy_buttons[:] = [enemy_board.findChild(QPushButton, f"navalEnemy{i}") for i in range(100)]
+            enemy_column.addWidget(enemy_board, 0, Qt.AlignmentFlag.AlignHCenter)
+            enemy_column.addWidget(QLabel(f"{len(revealed)} confirmed enemy ship(s) sunk · ○ miss · × hit · S sunk"))
+            boards.addWidget(enemy_panel)
             update_mode()
-            box.addWidget(enemy, 0, Qt.AlignmentFlag.AlignHCenter)
+            box.addWidget(QLabel(f"Supplies: {supplies} · Sonar and salvo are single-use abilities"))
         self.board_layout.addWidget(host)
+
+    def _fit_sea_layout(self):
+        pair=self.board_scroll.findChild(QWidget,"seaBoards") if hasattr(self,"board_scroll") else None
+        if not pair or not pair.layout():return
+        desired=QBoxLayout.Direction.LeftToRight if self.width()>=1180 else QBoxLayout.Direction.TopToBottom
+        if pair.layout().direction()!=desired:
+            pair.layout().setDirection(desired)
+            pair.layout().invalidate()
+            pair.adjustSize()
+
+    def _fit_scorched_layout(self):
+        host = self.board_scroll.findChild(QWidget, "scorchedHost")
+        if not host:
+            return
+        compact = self.board_scroll.viewport().width() < 620
+        layout = host.layout()
+        column = host.findChild(QWidget, "scorchedMapColumn")
+        scroll = host.findChild(QScrollArea, "scorchedControlsScroll")
+        if not column or not scroll:
+            return
+        layout.setDirection(QBoxLayout.Direction.TopToBottom if compact else QBoxLayout.Direction.LeftToRight)
+        column.setMinimumHeight(290 if compact else 0)
+        column.setMaximumHeight(320 if compact else 16777215)
+        scroll.setMinimumHeight(scroll.widget().sizeHint().height()+8 if compact else 0)
+        layout.setStretch(0, 1 if compact else 4)
+        layout.setStretch(1, 0 if compact else 2)
 
     def _render_scorched(self, session: dict, view: dict):
         """Native artillery controls; only two-byte moves enter the shared engine."""
-        host = QWidget(); host.setObjectName("scorchedHost"); layout = QHBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0)
+        host = QWidget(); host.setObjectName("scorchedHost"); layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, host); layout.setContentsMargins(0, 0, 0, 0)
         view = session.get("animation_view", view)
         shot_key = (session["id"], session.get("animation_revision", session["revision"]))
         animate = bool(view.get("impact") and self._last_scorched_animation_key != shot_key)
@@ -2657,19 +3749,74 @@ class ArcadeWindow(QMainWindow):
             battlefield.replay(started=started)
         # Maintain a consistent, readable vertical view while letting the
         # extra horizontal world extend beyond the desktop viewport.
-        scene_scale = 14
+        camera_key = session["id"]
+        camera = self._scorched_camera.setdefault(camera_key, {"scale":14, "center":None, "follow":True})
+        scene_scale = camera["scale"]
         battlefield.setFixedSize(view["width"] * scene_scale, view["sky_height"] * scene_scale)
         map_scroll = BattleMapScroll(); map_scroll.setObjectName("battlefieldScroll")
         map_scroll.viewport().setObjectName("scorchedViewport")
         map_scroll.setWidgetResizable(False); map_scroll.setWidget(battlefield)
         map_scroll.setFrameShape(QFrame.Shape.NoFrame)
         map_scroll.setToolTip("WASD / arrows to pan · click to center · drag to explore")
-        battlefield.shot_position.connect(lambda x, y: map_scroll.ensureVisible(int(x * scene_scale + 12),
-            int((battlefield.view["sky_height"] - y) * scene_scale + 12), max(1, map_scroll.viewport().width() // 3), max(1, map_scroll.viewport().height() // 3)) if map_scroll.follow_shot else None)
+        map_scroll.follow_shot = camera["follow"]
+        def save_camera():
+            if not map_scroll.viewport().width() or not battlefield.width():
+                return
+            camera["center"] = ((map_scroll.horizontalScrollBar().value()+map_scroll.viewport().width()/2)/battlefield.width(),
+                                (map_scroll.verticalScrollBar().value()+map_scroll.viewport().height()/2)/battlefield.height())
+            camera["follow"] = map_scroll.follow_shot
+
+        def follow_position(x, y):
+            if map_scroll.follow_shot:
+                map_scroll.ensureVisible(int(x * camera["scale"]),
+                    int((battlefield.view["sky_height"] - y) * camera["scale"]),
+                    max(1, map_scroll.viewport().width() // 3), max(1, map_scroll.viewport().height() // 3))
+        battlefield.shot_position.connect(follow_position)
         map_column = QWidget(); map_column.setObjectName("scorchedMapColumn"); map_layout = QVBoxLayout(map_column); map_layout.setContentsMargins(0, 0, 0, 0)
-        map_layout.addWidget(ScorchedMinimap(view, map_scroll))
-        hint = QLabel("WASD / arrows · click to center · drag to pan"); hint.setObjectName("muted")
-        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); map_layout.addWidget(hint)
+        mini = ScorchedMinimap(view, map_scroll)
+        map_layout.addWidget(mini)
+        nav = QHBoxLayout(); nav.setSpacing(4)
+        own = QPushButton("My tank"); own.setObjectName("scorchedCenterOwn")
+        enemy = QPushButton("Opponent"); enemy.setObjectName("scorchedCenterEnemy")
+        zoom_out = QPushButton("−"); zoom_out.setObjectName("scorchedZoomOut"); zoom_out.setMaximumWidth(38)
+        zoom_in = QPushButton("+"); zoom_in.setObjectName("scorchedZoomIn"); zoom_in.setMaximumWidth(38)
+        zoom_label = QLabel(f"{round(scene_scale/14*100)}%"); zoom_label.setObjectName("scorchedZoomLabel")
+        for button in (own, enemy, zoom_out, zoom_in):
+            button.setStyleSheet("padding:5px 7px")
+        zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        zoom_label.setFixedWidth(43)
+        for button in (own, enemy, zoom_out, zoom_label, zoom_in):
+            nav.addWidget(button)
+        map_layout.addLayout(nav)
+        follow = QCheckBox("Follow shots"); follow.setObjectName("scorchedFollow"); follow.setChecked(map_scroll.follow_shot)
+        hint = QLabel("Drag map / minimap · WASD to pan"); hint.setObjectName("muted"); hint.setWordWrap(True)
+        nav_help = QHBoxLayout(); nav_help.addWidget(follow); nav_help.addWidget(hint, 1); map_layout.addLayout(nav_help)
+        def set_follow(value):
+            map_scroll.follow_shot = value; camera["follow"] = value
+        follow.toggled.connect(set_follow)
+        def manual():
+            follow.setChecked(False); camera["follow"] = False
+        map_scroll.manual_pan.connect(manual)
+        def center_tank(target):
+            if target:
+                map_scroll.center_fraction(target["x"]/battlefield.view["width"],
+                    (battlefield.view["sky_height"]-target["world_y"])/battlefield.view["sky_height"])
+                save_camera()
+        own_tank = next((t for t in view["tanks"] if t["player"] == self.settings.callsign), None)
+        opponent = next((t for t in view["tanks"] if t["player"] != self.settings.callsign), None)
+        if not own_tank:
+            own.setText("Tank 1"); enemy.setText("Tank 2")
+            own_tank, opponent = view["tanks"]
+        own.clicked.connect(lambda: center_tank(own_tank)); enemy.clicked.connect(lambda: center_tank(opponent))
+        def zoom(delta):
+            save_camera()
+            center = camera["center"]
+            camera["scale"] = max(8, min(24, camera["scale"]+delta))
+            battlefield.setFixedSize(battlefield.view["width"]*camera["scale"], battlefield.view["sky_height"]*camera["scale"])
+            zoom_label.setText(f"{round(camera['scale']/14*100)}%")
+            if center: map_scroll.center_fraction(*center)
+            save_camera()
+        zoom_out.clicked.connect(lambda: zoom(-2)); zoom_in.clicked.connect(lambda: zoom(2))
         map_layout.addWidget(map_scroll, 1)
         layout.addWidget(map_column, 4)
         scroll = QScrollArea(); scroll.setObjectName("scorchedControlsScroll")
@@ -2687,9 +3834,9 @@ class ArcadeWindow(QMainWindow):
         box.addWidget(wind_lbl)
         can_play = (not self.settings.observer_mode and session["status"] == "active"
                     and not session["pending_action"] and not session.get("resync_pending") and
-                    (self.settings.transport == "practice" or
-                     (self.settings.tx_enabled and session["current_player"] == self.settings.callsign)))
-        actor = session["current_player"] if self.settings.transport == "practice" else self.settings.callsign
+                    session["current_player"] == self.settings.callsign and
+                    (self.settings.transport == "practice" or self.settings.tx_enabled))
+        actor = self.settings.callsign
         tank = next((item for item in view["tanks"] if item["player"] == actor), None)
         for item in view["tanks"]:
             is_actor = item["player"] == actor
@@ -2711,34 +3858,77 @@ class ArcadeWindow(QMainWindow):
         weapon.currentIndexChanged.connect(
             lambda: self._scorched_weapons.__setitem__(weapon_key, int(weapon.currentData())))
         box.addWidget(weapon)
-        angle_label = QLabel("Angle: 45°")
-        angle_label.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 700;")
+        weapon_info = QLabel(); weapon_info.setObjectName("scorchedWeaponInfo"); weapon_info.setWordWrap(True)
+        box.addWidget(weapon_info)
+        aim = self._scorched_aim.setdefault(weapon_key, (45, view["max_power"] // view["power_step"]))
+        angle_label = QLabel("Angle"); angle_label.setStyleSheet("color:#7dd3fc;font-weight:700")
         angle = QSlider(Qt.Orientation.Horizontal); angle.setObjectName("scorchedAngle")
-        angle.setRange(view["min_angle"], view["max_angle"]); angle.setValue(45)
-        box.addWidget(angle_label); box.addWidget(angle)
-        power_label = QLabel("Power: 100%")
-        power_label.setStyleSheet("color: #00f5c4; font-size: 11px; font-weight: 700;")
+        angle.setRange(view["min_angle"], view["max_angle"]); angle.setValue(aim[0])
+        angle_number = QSpinBox(); angle_number.setObjectName("scorchedAngleNumber")
+        angle_number.setRange(angle.minimum(), angle.maximum()); angle_number.setSuffix("°"); angle_number.setValue(angle.value())
+        angle_row = QHBoxLayout(); angle_row.addWidget(angle_label); angle_row.addStretch(); angle_row.addWidget(angle_number)
+        box.addLayout(angle_row); box.addWidget(angle)
+        power_label = QLabel("Power"); power_label.setStyleSheet("color:#00f5c4;font-weight:700")
         power = QSlider(Qt.Orientation.Horizontal); power.setObjectName("scorchedPower")
-        power.setRange(view["min_power"] // view["power_step"], view["max_power"] // view["power_step"])
-        power.setValue(view["max_power"] // view["power_step"])
-        box.addWidget(power_label); box.addWidget(power)
+        step = view["power_step"]
+        power.setRange(view["min_power"] // step, view["max_power"] // step); power.setValue(aim[1])
+        power_number = QSpinBox(); power_number.setObjectName("scorchedPowerNumber")
+        power_number.setRange(view["min_power"],view["max_power"]); power_number.setSingleStep(step)
+        power_number.setSuffix("%"); power_number.setValue(power.value()*step)
+        power_number.setKeyboardTracking(False)
+        power_row = QHBoxLayout(); power_row.addWidget(power_label); power_row.addStretch(); power_row.addWidget(power_number)
+        box.addLayout(power_row); box.addWidget(power)
+        angle_number.valueChanged.connect(angle.setValue)
+        angle.valueChanged.connect(angle_number.setValue)
+        def edit_power(value):
+            bounded = max(power.minimum(),min(power.maximum(),(value+step//2)//step))
+            power.setValue(bounded)
+            power_number.blockSignals(True);power_number.setValue(bounded*step);power_number.blockSignals(False)
+        power_number.valueChanged.connect(edit_power)
+        power.valueChanged.connect(lambda v: power_number.setValue(v*step))
+        for control in (weapon, angle, power, angle_number, power_number):
+            control.setEnabled(bool(can_play and tank))
+        preview_status = QLabel(); preview_status.setObjectName("scorchedPreviewStatus"); preview_status.setWordWrap(True)
+        preview_status.setStyleSheet("color:#92a8bc;font-size:11px")
+        box.addWidget(preview_status)
         def preview():
-            power_label.setText(f"Power: {power.value() * view['power_step']}%")
-            angle_label.setText(f"Angle: {angle.value()}°")
+            self._scorched_aim[weapon_key] = (angle.value(),power.value())
+            item = view["weapons"][int(weapon.currentData())]
+            stock = tank["ammo"][item["id"]] if tank else 0
+            weapon_info.setText(f"{item['tag'].capitalize()} · {item['damage']} damage · {item['radius']:g} blast radius · " + ("Unlimited" if item["id"] == 0 else f"{stock} in stock"))
             if not can_play or not tank:
-                battlefield.set_preview([]); return
+                battlefield.set_preview([]); preview_status.setText("Waiting for your turn"); return
+            if battlefield._flight_timer.isActive():
+                battlefield.set_preview([]); preview_status.setText("Shot replay in progress"); return
             game = self.engine.registry.by_id(session["game_id"])
             saved = game.decode_state(session["state"])
             shot = _trace_shot(saved["terrain"], saved["x"], saved["turn"],
-                               int(weapon.currentData()), angle.value(), _wind(saved["map"], saved["round"]), power.value() * view["power_step"])
+                               int(weapon.currentData()), angle.value(), _wind(saved["map"], saved["round"]), power.value() * step)
             battlefield.set_preview(shot["path"], angle.value(), actor)
+            preview_status.setText("Predicted: "+{"tank":"direct hit","terrain":"terrain impact","edge":"leaves battlefield"}[shot["kind"]])
         battlefield.animation_finished.connect(preview)
         power.valueChanged.connect(preview)
         angle.valueChanged.connect(preview)
         weapon.currentIndexChanged.connect(preview)
+        def adjust_aim(delta_angle,delta_power):
+            if angle.isEnabled():
+                angle.setValue(angle.value()+delta_angle)
+                power.setValue(power.value()+delta_power)
+        map_scroll.aim_adjust.connect(adjust_aim)
+        for key, slider, amount in (("Shift+Left",angle,-1),("Shift+Right",angle,1),
+                                    ("Shift+Down",power,-1),("Shift+Up",power,1)):
+            shortcut=QShortcut(QKeySequence(key),host)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda slider=slider,amount=amount:slider.setValue(slider.value()+amount) if slider.isEnabled() else None)
+        aim_hint=QLabel("Shift + ←/→ angle · Shift + ↑/↓ power"); aim_hint.setObjectName("muted");aim_hint.setWordWrap(True);box.addWidget(aim_hint)
         fire = QPushButton("Fire weapon"); fire.setObjectName("scorchedFire")
         fire.setEnabled(can_play and bool(tank))
         def fire_now():
+            if not self.engine or self.selected_id != session["id"] or session["id"] in self._move_jobs:
+                return
+            live = self.engine.session(session["id"])
+            if live["revision"] != session["revision"] or live["current_player"] != actor or live.get("pending_action"):
+                return
             action = pack_shot(int(weapon.currentData()), angle.value(), power.value() * view["power_step"])
             game = self.engine.registry.by_id(session["game_id"])
             saved = game.decode_state(session["state"])
@@ -2746,7 +3936,7 @@ class ArcadeWindow(QMainWindow):
             predicted_view = game.view_model(predicted, tuple(session["players"]))
             self._last_scorched_animation_key = (session["id"], session["revision"] + 1)
             self._scorched_started = time.monotonic()
-            battlefield.setFixedSize(predicted_view["width"] * scene_scale, predicted_view["sky_height"] * scene_scale)
+            battlefield.setFixedSize(predicted_view["width"] * camera["scale"], predicted_view["sky_height"] * camera["scale"])
             battlefield.replay(predicted_view, self._scorched_started)
             fire.setEnabled(False)
             self._submit_action(action)
@@ -2756,8 +3946,9 @@ class ArcadeWindow(QMainWindow):
         replay.setEnabled(bool(view.get("impact")))
         def replay_last():
             self._scorched_started = time.monotonic()
-            map_scroll.follow_shot = True
+            follow.setChecked(True)
             battlefield.replay(started=self._scorched_started)
+            preview_status.setText("Shot replay in progress")
         replay.clicked.connect(replay_last)
         box.addWidget(replay)
         movement = QHBoxLayout()
@@ -2777,25 +3968,53 @@ class ArcadeWindow(QMainWindow):
         shield.setEnabled(bool(can_play and tank and not tank["shielded"]))
         shield.clicked.connect(lambda: self._submit_action(bytes((view["actions"]["shield"], 0))))
         box.addWidget(repair); box.addWidget(shield)
-        armory_hdr = QLabel("ARMORY · BUYING USES YOUR TURN")
-        armory_hdr.setStyleSheet("color: #fbbf24; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; margin-top: 4px;")
-        box.addWidget(armory_hdr)
-        for item in view["weapons"][1:]:
-            buy = QPushButton(f"{item['name']} · ¤{item['cost']}")
-            buy.setEnabled(bool(can_play and tank and tank["credits"] >= item["cost"] and tank["ammo"][item["id"]] < 254))
-            buy.setToolTip(f"Buy one {item['name']} round · {item['tag']}")
-            buy.clicked.connect(lambda _checked=False, i=item["id"]: self._submit_action(bytes((view["actions"]["buy"], i))))
-            box.addWidget(buy)
+        armory = QPushButton(f"Armory · {tank['credits']} credits" if tank else "Armory")
+        armory.setObjectName("scorchedArmory"); armory.setEnabled(bool(tank))
+        def open_armory():
+            dialog = QDialog(self); dialog.setWindowTitle("Scorched Earth · Armory")
+            dialog.resize(min(580,self.width()-16),min(600,self.height()-16))
+            body = QVBoxLayout(dialog)
+            intro = QLabel(f"{tank['credits']} credits available · Purchasing one round uses your turn.")
+            intro.setWordWrap(True); body.addWidget(intro)
+            shop_scroll=QScrollArea();shop_scroll.setWidgetResizable(True)
+            shop=QWidget();cards=QVBoxLayout(shop)
+            for item in view["weapons"]:
+                stock=tank["ammo"][item["id"]]
+                row=QFrame();row.setObjectName("card");content=QVBoxLayout(row)
+                title=QLabel(item["name"]+"  ·  "+("Unlimited" if item["id"]==0 else f"{stock} rounds"));title.setObjectName("cardTitle");content.addWidget(title)
+                details=QLabel(f"{item['tag'].capitalize()} · damage {item['damage']} · radius {item['radius']:g} · speed {item['speed']:g}")
+                details.setWordWrap(True);details.setObjectName("muted");content.addWidget(details)
+                if item["id"]:
+                    buy=QPushButton(f"Buy one round · {item['cost']} credits");buy.setObjectName(f"scorchedBuy{item['id']}")
+                    buy.setEnabled(can_play and tank["credits"]>=item["cost"] and stock<254)
+                    def purchase(_=False,i=item["id"]):
+                        if self.selected_id!=session["id"] or not self.engine:return
+                        live=self.engine.session(session["id"])
+                        if live["revision"]!=session["revision"] or live["current_player"]!=actor:return
+                        dialog.accept();self._submit_action(bytes((view["actions"]["buy"],i)))
+                    buy.clicked.connect(purchase);content.addWidget(buy)
+                cards.addWidget(row)
+            cards.addStretch(1);shop_scroll.setWidget(shop);body.addWidget(shop_scroll,1)
+            close=QPushButton("Close");close.clicked.connect(dialog.reject);body.addWidget(close);dialog.exec()
+        armory.clicked.connect(open_armory);box.insertWidget(box.indexOf(weapon),armory)
         box.addStretch(1)
         scroll.setWidget(controls); layout.addWidget(scroll, 2)
-        if tank:
-            map_scroll.horizontalScrollBar().setValue(max(0, int(tank["x"] * scene_scale - map_scroll.viewport().width() / 2)))
         self.board_layout.addWidget(host)
-        if tank:
-            def initial_camera():
-                map_scroll.horizontalScrollBar().setValue(max(0, int(tank["x"] * scene_scale - map_scroll.viewport().width() / 2)))
-                map_scroll.verticalScrollBar().setValue(max(0, int((view["sky_height"] - tank["world_y"]) * scene_scale - map_scroll.viewport().height() * .65)))
-            QTimer.singleShot(0, map_scroll, initial_camera)
+        self._fit_scorched_layout()
+        saved_center=camera["center"]
+        def initial_camera():
+            if saved_center:
+                # Retain user-selected camera without altering the follow setting.
+                x,y=saved_center
+                map_scroll.horizontalScrollBar().setValue(round(x*battlefield.width()-map_scroll.viewport().width()/2))
+                map_scroll.verticalScrollBar().setValue(round(y*battlefield.height()-map_scroll.viewport().height()/2))
+            elif own_tank:
+                map_scroll.horizontalScrollBar().setValue(round(own_tank["x"]*camera["scale"]-map_scroll.viewport().width()/2))
+                map_scroll.verticalScrollBar().setValue(round((view["sky_height"]-own_tank["world_y"])*camera["scale"]-map_scroll.viewport().height()*.65))
+            save_camera()
+            map_scroll.horizontalScrollBar().valueChanged.connect(save_camera)
+            map_scroll.verticalScrollBar().valueChanged.connect(save_camera)
+        QTimer.singleShot(0,map_scroll,initial_camera)
         preview()
 
     def _refresh_chat(self, sid: str | None):
@@ -2843,27 +4062,55 @@ class ArcadeWindow(QMainWindow):
             # QSS item padding/margin takes 22 px before the row is laid out.
             item.setSizeHint(QSize(available, height + 30))
 
-    def _run(self, fn: Callable, on_done: Callable | None = None):
+    def _run(self, fn: Callable, on_done: Callable | None = None, on_error: Callable | None = None):
         task = Task(fn)
         self._tasks.add(task)
+        action_sid = self.selected_id
         def done(value):
             self._tasks.discard(task)
+            if action_sid and not on_error:
+                self._action_errors.pop(action_sid, None)
             if on_done: on_done(value)
             self._refresh_sessions()
         task.signals.done.connect(done)
         def failed(err):
             self._tasks.discard(task)
             self.footer_label.setText(err)
-            if self.layout_stack.currentWidget() is self.compact_tabs:
+            if on_error:
+                on_error(err)
+            elif self.layout_stack.currentWidget() is self.compact_tabs:
                 QMessageBox.warning(self, "Action failed", err)
+            elif self.selected_id and self.engine:
+                self._action_errors[self.selected_id] = f"Action not accepted · {err}"
+                try: self._refresh_table_feedback(self.engine.session(self.selected_id))
+                except KeyError: pass
         task.signals.failed.connect(failed)
         self._pool.start(task)
 
     def _new_game(self):
-        if not self.engine: return
+        if not self.engine:
+            QMessageBox.information(self, "Station unavailable", "Connect in Settings, or choose Play offline instead from the game library.")
+            return
         game = self.game_choice.currentData(); peer = self.peer_input.text().strip().upper() or None
-        hosted = self.hosted_checkbox.isChecked()
-        self._run(partial(self.engine.create_game, game, None if hosted else peer, hosted=hosted), self._created_game)
+        hosted = self.hosted_checkbox.isChecked() and self.settings.transport == "broadcast"
+        self._create_table(game, None if hosted else peer, hosted)
+
+    def _create_table(self, game, peer, hosted):
+        if not self.engine or game is None or self.settings.observer_mode or self._creating_table:
+            return
+        if self.settings.transport != "practice" and not self.settings.tx_enabled:
+            return
+        self._creating_table = True
+        self.library_button.setEnabled(False)
+        def created(sid):
+            self._creating_table = False
+            self.library_button.setEnabled(True)
+            self._created_game(sid)
+        def failed(error):
+            self._creating_table = False
+            self.library_button.setEnabled(True)
+            QMessageBox.warning(self, "Couldn't create table", error)
+        self._run(partial(self.engine.create_game, game, peer, hosted=hosted), created, failed)
 
     def _join_game(self):
         if self.engine and self.selected_id: self._run(partial(self.engine.join_game, self.selected_id))
@@ -2911,6 +4158,8 @@ class ArcadeWindow(QMainWindow):
     def _created_game(self, sid: str):
         self._preserve_empty_selection = False
         self.selected_id = sid
+        if self.settings.transport != "practice":
+            self.focus_toggle.setChecked(False)
         if self.layout_stack.currentWidget() is self.compact_tabs:
             self.compact_tabs.setCurrentIndex(1)
 
@@ -2948,7 +4197,27 @@ class ArcadeWindow(QMainWindow):
             if session.get("sync_requested_at", 0) > session.get("sync_at", 0) or any(word in (session.get("error") or "").lower() for word in ("missed moves", "state conflict", "awaiting snapshot")):
                 self.footer_label.setText("Resync this table before sending your move.")
                 return
-            sid = self.selected_id; self._run(partial(self.engine.legal_action, sid, action))
+            sid = self.selected_id
+            if sid in self._move_jobs or session.get("pending_action") is not None:
+                return
+            self._action_errors.pop(sid, None)
+            self._move_jobs.add(sid); self._refresh_table_feedback(session)
+            def done(_):
+                self._move_jobs.discard(sid)
+            def failed(error):
+                self._move_jobs.discard(sid)
+                self._action_errors[sid] = f"Move not accepted · {error}"
+                if self.engine and self.selected_id == sid:
+                    try:
+                        current = self.engine.session(sid)
+                        if current.get("view", {}).get("kind") == "scorched-earth":
+                            self._board_signature = None
+                            self._last_scorched_animation_key = (sid,current["revision"])
+                            self._scorched_started = 0
+                            self._show_session(sid)
+                        self._refresh_table_feedback(current)
+                    except KeyError: pass
+            self._run(partial(self.engine.legal_action, sid, action), done, failed)
 
     def _submit_hex_action(self, text: str):
         try: action = bytes.fromhex(text.strip())
@@ -2964,7 +4233,12 @@ class ArcadeWindow(QMainWindow):
 
     def _submit_word_placement(self, session: dict, start: str, direction: str, word: str):
         try:
-            action = make_placement(self._word_state(session), session["current_player"], start, direction, word)
+            if not self.engine or self.selected_id != session["id"]:
+                return
+            live = self.engine.session(session["id"])
+            if live["revision"] != session["revision"] or live["current_player"] != self.settings.callsign:
+                raise ValueError("Table changed; refresh your draft")
+            action = make_placement(self._word_state(live), self.settings.callsign, start, direction, word)
             self._submit_action(action)
         except Exception as exc:
             self.footer_label.setText(str(exc))
@@ -3004,8 +4278,13 @@ class ArcadeWindow(QMainWindow):
             sid = self.selected_id; self._run(partial(self.engine.request_sync, sid))
 
     def _edit_settings(self):
+        previous_mode = self.settings.transport
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            if previous_mode != self.settings.transport:
+                self.chat_toggle.setChecked(self.settings.transport != "practice")
+                self.selected_id = None
+                self._table_list_initialized = False
             self.connect_button.setVisible(self.settings.transport == "connected")
             self.disconnect_button.setVisible(self.settings.transport == "connected")
             if self.settings.transport != "broadcast":
@@ -3017,8 +4296,11 @@ class ArcadeWindow(QMainWindow):
             self.connect_service()
 
     def closeEvent(self, event):
-        if self.unsubscribe: self.unsubscribe()
-        if self.engine: self.engine.close()
+        if self.unsubscribe:
+            self.unsubscribe(); self.unsubscribe = None
+        engine, self.engine = self.engine, None
+        if engine:
+            engine.close()
         event.accept()
 
 
@@ -3035,14 +4317,27 @@ def main():
     if args.transport: settings.transport = args.transport
     if args.observer: settings.observer_mode = True
     app = QApplication([sys.argv[0], *qt_args]); app.setApplicationName("Radio Arcade")
-    window = ArcadeWindow(settings)
     if not settings.callsign:
-        dialog = SettingsDialog(settings, window)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        # The first-run dialog edits settings before a service exists. Refresh
-        # local choices now so offline startup still reflects the checkbox.
-        window._populate_games()
+        if args.transport == "practice":
+            settings.callsign = "PLAYER"
+        else:
+            welcome = OnboardingDialog()
+            if welcome.exec() != QDialog.DialogCode.Accepted:
+                return
+            if welcome.mode == "practice":
+                settings.transport = "practice"; settings.observer_mode = False
+                settings.callsign = "PLAYER"
+                settings.save()
+            else:
+                settings.transport = "broadcast" if welcome.mode == "observer" else args.transport or "broadcast"; settings.observer_mode = welcome.mode == "observer"
+                settings.tx_enabled = welcome.mode != "observer"
+                setup_window = ArcadeWindow(settings)
+                dialog = SettingsDialog(settings, setup_window)
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    setup_window.close()
+                    return
+                setup_window.close(); setup_window.deleteLater()
+    window = ArcadeWindow(settings)
     window.show(); window.connect_service()
     sys.exit(app.exec())
 

@@ -27,7 +27,7 @@ const canAct = () => true;
 let sent, elements;
 const submitAction = bytes => {sent = bytes;};
 function element(attrs = {}) {
- const el = {attrs, events: {}, append() {}, classList: {toggle() {}}, addEventListener(name, cb) {this.events[name] = cb;}};
+ const el = {attrs, events: {}, dataset: {}, append() {}, classList: {toggle() {}}, addEventListener(name, cb) {this.events[name] = cb;}};
  if (attrs.role === 'button') elements.push(el);
  return el;
 }

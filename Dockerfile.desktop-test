@@ -1,0 +1,18 @@
+ARG RADIO_STREAM_BASE=ghcr.io/tcarwash/radio-stream:novnc-dev
+FROM ${RADIO_STREAM_BASE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-venv libegl1 libgl1 libdbus-1-3 libfontconfig1 libfreetype6 \
+    libglib2.0-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+    libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+    libxcb-xkb1 libxkbcommon-x11-0 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/radio-arcade
+COPY pyproject.toml ./
+COPY radio_arcade ./radio_arcade
+RUN python3 -m venv /opt/arcade-venv \
+    && /opt/arcade-venv/bin/pip install --no-cache-dir '.[desktop]' \
+    && mkdir -p /state/arcade && chown radio:radio /state/arcade
+ENV DESKTOP_ONLY=1 NOVNC_ENABLED=1 RADIO_ARCADE_HOME=/state/arcade \
+    APP_COMMAND="/opt/arcade-venv/bin/radio-arcade --callsign N0TEST --transport practice"
+USER radio

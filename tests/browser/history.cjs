@@ -1,0 +1,37 @@
+// Disposable local practice server only.
+const {chromium}=require("playwright");
+(async()=>{
+ const browser=await chromium.launch({headless:true,args:["--no-sandbox"]});
+ const page=await browser.newPage({viewport:{width:1366,height:768}});
+ const errors=[];page.on("pageerror",e=>errors.push(e.message));
+ await page.goto("http://127.0.0.1:8765/");
+ await page.waitForFunction(()=>state.snapshot?.ready&&state.snapshot.transport==="practice");
+ const card=page.locator("#arena-body .game-library-card").filter({hasText:"Tic-tac-toe"});
+ await card.getByRole("button",{name:"How to play"}).click();
+ await page.locator(".game-guide li").first().waitFor();
+ if(!await page.locator("#info-content").textContent().then(t=>t.includes("three in a row")))throw Error("rules unavailable");
+ await page.locator('#info-dialog button[data-close-dialog]').last().click();
+ await card.getByRole("button",{name:"Play vs computer"}).click();
+ await page.waitForFunction(()=>state.session?.status==="active");
+ const sid=await page.evaluate(()=>state.session.id);
+ await page.evaluate(sid=>sendCommand("legal_action",{session_id:sid,action:"00"}),sid);
+ await page.waitForFunction(()=>state.session?.revision>=2);
+ await page.locator("#session-actions summary").click();
+ await page.getByRole("button",{name:"Move history",exact:true}).click();
+ await page.locator("#info-content .history-card").first().waitFor();
+ if(await page.locator("#info-content .history-card").count()<2)throw Error("missing committed moves");
+ await page.locator('#info-dialog button[data-close-dialog]').last().click();
+ await page.evaluate(sid=>sendCommand("forfeit_game",{session_id:sid}),sid);
+ await page.waitForFunction(()=>state.session?.status==="finished");
+ const result=page.locator("#match-result");
+ if(await result.isVisible())await result.getByRole("button",{name:"Back to board"}).click();
+ await page.locator("#history-open").click();
+ await page.locator("#info-content .history-stats").waitFor();
+ const stats=await page.locator(".history-stats strong").allTextContents();
+ if(stats.join(",")!=="1,0,1,0")throw Error("wrong totals "+stats);
+ await page.getByRole("button",{name:"View table"}).click();
+ if(await page.locator("#info-dialog").isVisible())throw Error("history did not close");
+ if(errors.length)throw Error(errors.join("\n"));
+ await browser.close();
+ console.log("PASS: shared game guide, committed moves, finished match statistics, view saved table");
+})().catch(e=>{console.error(e);process.exit(1)});

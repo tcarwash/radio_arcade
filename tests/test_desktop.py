@@ -152,7 +152,7 @@ class DesktopScenarios(unittest.TestCase):
                 removed = window.selected_id
                 engine.send_chat(removed, "Delete this saved chat too")
                 with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-                    window.delete_button.click()
+                    window.delete_menu_action.trigger()
                     wait_for(lambda: window.selected_id is None and not window._tasks)
                 self.assertEqual([row["id"] for row in engine.sessions()], [first])
                 self.assertEqual([row["id"] for row in engine.store.load_sessions()], [first])
@@ -163,6 +163,7 @@ class DesktopScenarios(unittest.TestCase):
                 window.session_list.setCurrentRow(0)
                 self.assertEqual(window.selected_id, first)
                 self.assertTrue(window.delete_button.isEnabled())
+                window.new_game_toggle.setChecked(True); app.processEvents()
                 for width, height in ((360, 400), (500, 450), (800, 560), (1024, 680), (2048, 1152)):
                     window.resize(width, height); app.processEvents()
                     self.assertEqual(window.size().width(), width)
@@ -198,6 +199,7 @@ class DesktopScenarios(unittest.TestCase):
             window._service_ready(engine); sid = engine.create_game("tic-tac-toe")
             window.selected_id = sid; window._show_session(sid); window.show(); app.processEvents()
             try:
+                window.chat_toggle.setChecked(True); app.processEvents()
                 window.chat_input.setText("Hello <friend> & good luck!")
                 window.chat_send.click()
                 deadline = time.monotonic() + 3
@@ -221,9 +223,10 @@ class DesktopScenarios(unittest.TestCase):
                         self.assertLessEqual(bubble.geometry().right(), row.width())
                         self.assertLessEqual(bubble.geometry().bottom(), row.height())
                         self.assertGreaterEqual(bubble.height(), bubble.heightForWidth(bubble.width()))
-                self.assertTrue(window.forfeit_button.isVisible())
+                self.assertTrue(window.forfeit_menu_action.isVisible())
+                self.assertTrue(window.table_menu_button.isVisible())
                 with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
-                    window.forfeit_button.click()
+                    window.forfeit_menu_action.trigger()
                     while window._tasks and time.monotonic() < deadline:
                         app.processEvents(); time.sleep(.01)
                 self.assertEqual(engine.session(sid)["status"], "finished")

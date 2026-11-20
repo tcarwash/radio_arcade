@@ -70,7 +70,7 @@ class Scoreboard(QFrame):
 
 
 class ResultDialog(QDialog):
-    def __init__(self, session, settings, parent):
+    def __init__(self, session, settings, parent, play_again=None):
         super().__init__(parent)
         self.setWindowTitle('Match complete · Radio Arcade')
         self.setWindowModality(Qt.WindowModality.WindowModal)
@@ -106,6 +106,10 @@ class ResultDialog(QDialog):
         close.setMinimumHeight(40)
         close.clicked.connect(self.accept)
         layout.addWidget(close)
+        if play_again and not settings.observer_mode and (settings.transport=="practice" or settings.tx_enabled):
+            again=QPushButton("Play again");again.setMinimumHeight(40)
+            again.clicked.connect(lambda: (self.accept(),play_again()))
+            layout.addWidget(again)
         effect = QGraphicsOpacityEffect(title); title.setGraphicsEffect(effect)
         self.animation = QPropertyAnimation(effect, b'opacity', self)
         self.animation.setDuration(650); self.animation.setStartValue(0.1); self.animation.setEndValue(1.0)

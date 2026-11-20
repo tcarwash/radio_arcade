@@ -21,6 +21,7 @@ class Settings:
     broadcast_mode: str = ""
     color_scheme: str = "midnight"
     sound_enabled: bool = False
+    ai_difficulty: str = "standard"  # casual, standard, challenging; practice only
     experimental_games: bool = False
     observer_mode: bool = False
     tx_enabled: bool = True

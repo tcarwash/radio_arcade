@@ -149,7 +149,7 @@ class SettingsScreen(ModalScreen[Settings | None]):
             yield Label("DATA2G HOST", classes="setting-label")
             yield Input(self.settings.host, placeholder="127.0.0.1", id="host")
             yield Label("TRANSPORT", classes="setting-label")
-            yield Select((("Broadcast · KISS", "broadcast"), ("Connected · VARA-like", "connected"), ("Local practice · play both sides", "practice")),
+            yield Select((("Broadcast · KISS", "broadcast"), ("Connected · VARA-like", "connected"), ("Local practice · vs computer", "practice")),
                          value=self.settings.transport, allow_blank=False, id="transport")
             yield Label("BROADCAST GROUP", classes="setting-label")
             yield Input(self.settings.group, placeholder="RAGAMES", id="group")

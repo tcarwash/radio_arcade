@@ -1,0 +1,33 @@
+// Run only against an isolated word_fixture_server.py (seed 2).
+const {chromium}=require("playwright");
+(async()=>{
+  const browser=await chromium.launch({headless:true,args:["--no-sandbox"]});
+  const page=await browser.newPage({viewport:{width:1366,height:900}});
+  page.setDefaultTimeout(12000);
+  const errors=[];page.on("pageerror",e=>errors.push(e.message));
+  await page.goto("http://127.0.0.1:8765/");
+  if((await page.evaluate(()=>state.snapshot?.transport))!=="practice")throw Error("Not a practice fixture");
+  await page.evaluate(()=>sendCommand("create_game",{game:"open-word-tiles"}));
+  await page.locator(".word-cell").first().waitFor();
+  const startRevision=await page.evaluate(()=>state.session.revision);
+  console.log("ready",startRevision);
+  const input=page.locator("#word-text");
+  await input.fill("QXZQ");
+  if(!(await page.locator("#word-draft-state").textContent()).includes("DRAFT — NOT SUBMITTED"))throw Error("Invalid draft not identified");
+  if(await page.locator(".word-controls button[type=submit]").isEnabled().catch(()=>false))throw Error("Invalid draft submit enabled");
+  await input.fill("IN");
+  await page.waitForFunction(()=>document.querySelector(".word-live-score")?.textContent.includes("Legal word"),null,{timeout:8000});
+  const proposed=page.locator(".word-cell.draft-tile");
+  if(await proposed.count()!==2)throw Error("Expected two proposed tiles");
+  if(await proposed.first().evaluate(el=>getComputedStyle(el).borderTopStyle)!=="dashed")throw Error("Proposed tiles aren't dashed");
+  if(startRevision!==(await page.evaluate(()=>state.session.revision)))throw Error("Editing draft changed game revision");
+  console.log("draft preview verified");
+  await page.getByRole("button",{name:/Submit word/}).click();
+  await page.waitForFunction(before=>state.session?.revision>before,startRevision,{timeout:9000});
+  await page.waitForFunction(()=>document.querySelector("#word-draft-state")?.textContent.includes("COMMITTED TO BOARD"),null,{timeout:9000});
+  if(await page.locator(".word-cell.filled").count()<2)throw Error("Committed board didn't change");
+  console.log("confirmed",await page.locator("#word-draft-state").textContent());
+  if(errors.length)throw Error(errors.join("\n"));
+  await browser.close();
+  console.log("PASS: invalid unsubmitted draft, dashed preview, unchanged state, successful Submit, committed tan tiles");
+})().catch(e=>{console.error(e);process.exit(1)});
