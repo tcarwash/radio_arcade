@@ -47,6 +47,7 @@ class Kind(IntEnum):
     HOST_CHAT = 17
     STATION_ID = 18
     CQ_REQUEST = 19
+    ROLL_CALL = 20  # versioned, opt-in Data2G Hand round; older peers ignore it
 
 
 # Compact control's two-bit kind: ACTION, COMMIT, ACK of ACTION, ACK of COMMIT.

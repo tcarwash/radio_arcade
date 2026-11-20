@@ -28,6 +28,10 @@ class Settings:
     dx_cluster_url: str = ""
     station_id_mode: str = "auto"  # auto: Data2G CWID, with application packet fallback
     cw_wpm: int = 20
+    discovery_auto_reply: bool = False  # opt in; never auto-TX before operator enables
+    discovery_status: str = "looking"   # not_looking, looking, in_game, busy
+    discovery_games: list[str] | None = None  # None = default built-in multiplayer choices
+    discovery_legacy_cq: bool = True  # also broadcast original CQ for older clients
 
     def can_offer_game(self, key: str) -> bool:
         """Limit outgoing game choices without affecting received invitations."""

@@ -5,6 +5,8 @@ from __future__ import annotations
 import socket
 import threading
 import re
+from queue import Queue, Empty
+import time
 
 from .connected import ConnectedConnection
 from .kiss import KissConnection
@@ -34,6 +36,14 @@ class BroadcastConnection(KissConnection):
             raise ValueError("a callsign is required for Data2G CWID")
         self.cwid_active = False
         self.cwid_warning: str | None = None
+        self.supports_hands = False
+        self.hand_channels = 40
+        self._hand_handler = lambda _event, _payload: None
+        self._active_hand_round = None
+        self._ack_tag = 0
+        self._command_send_lock = threading.Lock()
+        self._command_reply = Queue()
+        self._command_pending = None
         self._command = socket.create_connection((host, command_port), timeout=5)
         self._command_buffer = bytearray()
         try:
@@ -47,6 +57,17 @@ class BroadcastConnection(KissConnection):
                     self.cwid_warning = f"Data2G CWID unavailable ({exc}); using Radio Arcade IDs"
                 else:
                     self.cwid_active = True
+            try:
+                version = self._command_exchange("VERSION",prefix="VERSION Data2G ")
+                parts = version.rsplit(" ",1)[-1].split(".")
+                self.supports_hands = tuple(int(p) for p in parts[:3]) >= (0,5,0)
+                if self.supports_hands:
+                    self._command_exchange("DATA2G ON")
+                    if modem_mode.strip().lower().startswith(("n4-","n10-","fsk16r25-","fsk8r50-")):
+                        self._command_exchange("BW500")
+                        self.hand_channels = 8
+            except (RuntimeError,ValueError):
+                self.supports_hands = False
             line = self._command_exchange(f"BCAST OPEN {group}", prefix="BCAST PORT ")
             group_port = int(line.rsplit(" ", 1)[1])
             if modem_mode:
@@ -56,6 +77,8 @@ class BroadcastConnection(KissConnection):
                 self._command_exchange(f"BCAST MODE {group_port} {modem_mode}")
             self._command.settimeout(None)
             super().__init__(host, kiss_port, group_port)
+            if self.supports_hands:
+                self.enable_refs()
             self._command_thread = threading.Thread(target=self._drain_commands, daemon=True)
             self._command_thread.start()
         except Exception:
@@ -92,16 +115,93 @@ class BroadcastConnection(KissConnection):
             # MYCALL can emit REGISTERED after OK. Ignore asynchronous notices.
         raise RuntimeError(f"No {prefix!r} reply for {line!r}")
 
+    def set_hand_handler(self, callback):
+        self._hand_handler = callback or (lambda _event, _payload: None)
+
+    def _hand_status(self, line: str) -> None:
+        pieces=line.split()
+        if not pieces or pieces[0] != "HAND":return
+        try:
+            if len(pieces)>=5 and pieces[1].isdigit() and all(c in "0123456789abcdefABCDEF" for c in pieces[2]):
+                payload={"round":self._active_hand_round,"channels":self.hand_channels,
+                         "channel":int(pieces[1]),"payload":int(pieces[2],16),
+                         "snr":float(pieces[3]),"dt":float(pieces[4])}
+                self._hand_handler("heard",payload)
+            elif len(pieces)>=2 and pieces[1] == "END":
+                round_id=self._active_hand_round
+                self._active_hand_round=None
+                self._hand_handler("end",{"round":round_id})
+            elif len(pieces)>=3 and pieces[1] in ("SENT","DROPPED"):
+                self._hand_handler(pieces[1].lower(),{"channel":int(pieces[2])})
+        except (ValueError,TypeError):
+            return
+
     def _drain_commands(self):
         try:
-            while self._command.recv(4096):
-                pass
-        except OSError:
+            while not self.closed.is_set():
+                line=self._command_line()
+                if line in ("OK","WRONG"):
+                    # The lock serializes issued commands, so each response
+                    # belongs to the single in-flight command (if any).
+                    pending=self._command_pending
+                    if pending is not None:
+                        self._command_pending = None
+                        pending.put_nowait(line)
+                elif line.startswith("HAND "):
+                    self._hand_status(line)
+        except (OSError,RuntimeError):
             pass
         finally:
+            pending=self._command_pending
+            if pending is not None:
+                self._command_pending=None
+                pending.put_nowait("CLOSED")
             if not self.closed.is_set():
                 self.closed.set()
                 self.on_status("offline", None)
+
+    def _hand_command(self, line: str, *, timeout: float = 2.0) -> bool:
+        if not self.supports_hands or self.closed.is_set():
+            return False
+        with self._command_send_lock:
+            result=Queue(maxsize=1)
+            self._command_pending = result
+            try:
+                self._command.sendall(line.encode("ascii")+b"\r")
+                return result.get(timeout=timeout) == "OK"
+            except (OSError,Empty):
+                return False
+            finally:
+                self._command_pending = None
+
+    def send_hand(self, ref: int, tag: int, delay_s: float, channel: int, payload: int) -> bool:
+        if not 0 <= channel < self.hand_channels or not 0 <= payload < 1<<63:
+            return False
+        return self._hand_command(
+            f"HAND SEND {ref} {tag} {delay_s:.1f} {channel} {payload:016x}", timeout=1.0)
+
+    def send_roll_call(self, frame: bytes, tag: int, channels: int, *, delay_s: float = 3.0) -> None:
+        from .wire import decode
+        packet = decode(frame)
+        if not self.supports_hands or self._active_hand_round is not None:
+            raise RuntimeError("Data2G Hand listening is unavailable or already in use")
+        if channels > self.hand_channels or channels not in (8,20,40):
+            raise ValueError("invalid Hand channel map")
+        self._ack_tag = (self._ack_tag % 65535) + 1
+        ack=self._ack_tag
+        # HAND LISTEN must be armed *before* sending the KISS frame. The
+        # ACKMODE tag ties it to the correct burst even when TX is queued.
+        cmd=f"HAND LISTEN {delay_s:.1f} {tag} {ack:04x} " + " ".join(map(str,range(channels)))
+        self._active_hand_round=packet.sequence
+        if not self._hand_command(cmd,timeout=2.0):
+            self._active_hand_round=None
+            raise RuntimeError("Data2G would not open a Hand listening window")
+        try:
+            self.send_ackmode(frame,ack)
+        except Exception:
+            self._hand_command("HAND CANCEL")
+            self._active_hand_round=None
+            raise
 
     def close(self) -> None:
         super().close()
@@ -138,7 +238,11 @@ def create_service(settings: Settings) -> ArcadeService:
         raise ValueError(f"unsupported transport {settings.transport!r}")
     try:
         return ArcadeService(call, transport, observer_mode=settings.observer_mode,
-                             tx_enabled=settings.tx_enabled)
+                             tx_enabled=settings.tx_enabled,
+                             discovery_auto_reply=settings.discovery_auto_reply,
+                             discovery_status=settings.discovery_status,
+                             discovery_games=settings.discovery_games,
+                             discovery_legacy_cq=settings.discovery_legacy_cq)
     except Exception:
         transport.close()
         raise

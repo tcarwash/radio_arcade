@@ -76,7 +76,25 @@
             <label class="field-label" for="cq-game">Call for a game</label>
             <select id="cq-game" class="field"><option value="">Any game</option></select>
             <button id="cq-send" class="button full" type="button">Call CQ to all stations</button>
-            <p class="micro-copy">CQ broadcasts a request; it does not open a table. To answer an “Any game” call, choose a game above first. Recent calls:</p>
+            <p id="cq-explainer" class="micro-copy">Find players by CQ. On newer Data2G hosts, listening stations can answer together in a single Hand window. Older hosts use conventional CQ.</p>
+            <details class="discovery-prefs" id="discovery-prefs">
+              <summary>My availability &amp; games</summary>
+              <label class="field-label" for="discovery-status">Status</label>
+              <select id="discovery-status" class="field">
+                <option value="looking">Looking to play</option>
+                <option value="not_looking">Not looking</option>
+                <option value="in_game">In a game</option>
+                <option value="busy">Busy</option>
+              </select>
+              <label class="discovery-choice"><input type="checkbox" id="discovery-auto-reply"> Automatically answer roll calls (transmits)</label>
+              <p class="micro-copy">Only answer when TX is enabled. When Looking, an active table automatically shows In game.</p>
+              <div id="discovery-games" class="discovery-games" role="group" aria-label="Games I want to play"></div>
+              <label class="discovery-choice"><input type="checkbox" id="discovery-legacy-cq" checked> Also send classic CQ for older clients</label>
+              <button id="discovery-save" type="button" class="button secondary full">Save discovery preferences</button>
+            </details>
+            <h3 class="discovery-heading">Stations answering my call</h3>
+            <div id="discovery-nearby" class="cq-list" aria-live="polite"></div>
+            <h3 class="discovery-heading">Recent CQ requests</h3>
             <div id="cq-list" class="cq-list" aria-live="polite"></div>
         </details>
       </aside>

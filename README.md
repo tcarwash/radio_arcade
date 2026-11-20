@@ -87,6 +87,29 @@ selected CQ** to create a direct table invitation; for an Any game call, choose
 the game first. The web client has the same controls under **Tables → Find a
 game · CQ**, and the terminal client has them in its lobby.
 
+### Finding other players with Show of Hands
+
+In **broadcast mode**, open **Find a game · CQ**, select a game, then choose
+**Call CQ · discover players**. On Data2G hosts that support Hands, decoded
+stations appear in a list with their availability, game interests and
+reception S/N. **Available stations bounce into the list** as their responses
+arrive (the effect respects reduced-motion settings); select one to send the
+normal game invitation. Busy or uninterested stations remain visible but
+cannot be invited directly from that list.
+
+**Availability & game interests** lets you choose Looking, Not looking, In
+game or Busy, and which games you would enjoy playing. When Looking, being
+in an active radio table automatically reports In game. **Automatic replies
+are off by default** because they transmit. Observer mode and TX Disabled
+never send automatic Hands. Check **Also send classic CQ** for mixed-version
+stations. All discovery information is public and unencrypted.
+
+The browser and desktop share the same response format and discovery policy.
+Discovery currently covers game IDs 1–16; older Data2G hosts keep the
+traditional CQ workflow. The hardware side of Hands still needs on-air
+validation before relying on it for scheduled games; see
+[protocol details](PROTOCOL.md#show-of-hands-player-discovery-experimental).
+
 All three clients provide TX enable/disable, a transmission reason indicator, and local game deletion. For Broadcast · KISS, **Broadcast modem mode** applies a Data2G mode to this station's port; leave it blank for Data2G's default. Games may optionally declare `ui_clients = ("web",)` when their frontend is only available in the browser; by default, games appear in all three clients.
 
 ## Radio use

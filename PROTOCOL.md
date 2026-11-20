@@ -39,6 +39,7 @@ Callsign fields are 1–15 ASCII bytes; the full header uses **one byte total fo
 | HOST_CHAT | 17 | actor and UTF-8 text; dealer broadcast of participant chat |
 | STATION_ID | 18 | ASCII `ID ` followed by the station's full callsign; always full envelope |
 | CQ_REQUEST | 19 | empty; broadcast game request, game ID 255 means any game |
+| ROLL_CALL | 20 | 3-byte versioned Hand discovery request; no session, sequence is a nonzero round ID |
 
 ## CQ game requests
 
@@ -51,6 +52,58 @@ For an any-game call, the answerer chooses the game. A CQ does not create a
 table, reserve a seat, or automatically transmit a response. It has no ACK or
 retry; the caller may send another CQ. Older v6 clients that do not know kind
 19 ignore the request as an unknown packet.
+
+## Show of Hands player discovery (experimental)
+
+In KISS broadcast mode, `call_cq(game)` retains the v6 `CQ_REQUEST` packet as a
+fallback for older peers. With a compatible Data2G host, it additionally sends
+a `ROLL_CALL` packet to `*` with `session=0`, `revision=0`, a random nonzero
+`sequence` (round ID), and a three-byte payload:
+
+- Byte 0: discovery format version `1`.
+- Byte 1: Hand response offset, in tenths of a second (`30` = 3 seconds).
+- Byte 2: number of channels requested (`8`, `20` or `40`).
+
+The host first arms `HAND LISTEN 3.0 tag ack channels...`, then the tagged
+request goes out as a KISS ACKMODE frame on the broadcast port. The host
+decodes simultaneous 10.56-second Hands in the listed channels. A responding
+station uses KISS `REFS ON` to receive the reference ID for the decoded
+request, then issues `HAND SEND ref tag 3.0 channel hex16`. The Hand response
+does not create a game session or reserve a seat. The caller must explicitly
+send an ordinary direct invitation after selecting a station.
+
+The lower 63 bits of each Hand carry a **different, versioned format from
+Ragtime's**. High to low:
+
+| Field | Bits | Meaning |
+|---|---:|---|
+| Version | 3 | `001` for this Radio Arcade Hand format |
+| Callsign | 28 | Canonical packed standard call or a 22-bit hashed nonstandard call |
+| Heard S/N | 6 | 0 unknown, else approximate SNR + 31, clamped to 1..63 |
+| Availability | 2 | `00` not looking, `01` looking, `10` in a game, `11` busy |
+| Game interests | 16 | Bit `game_id - 1` for built-in IDs 1..16; all other IDs omitted |
+| Flags | 8 | Bit 0: automatic response enabled; other bits reserved/zero |
+
+The caller validates the Hand version and known flags and that the decoded
+station is assigned to the channel derived from SHA-256(callsign + NUL +
+round-ID); the request's 8-bit Hand tag also comes from the caller and
+round ID. A Hand provides *presence*, not authentication. Collision, loss,
+bandwidth restrictions and reception failure are normal; no answer is
+**unknown**, never a declined invitation. A station may answer even when
+busy or uninterested: its two-bit status and interests carry that fact.
+
+**Safety:** Auto-reply is opt-in, off by default, forbidden in observer mode,
+and gated by TX Enabled. An operator's **Looking** status changes to **In
+game** when a live table is active; Busy and Not looking override it. All
+status and game-interest data is sent in the clear. An older host still
+sends ordinary CQ; a failed Hand-window request uses the same fallback.
+Discovery advertisements expire after 15 minutes and do not alter the game
+acknowledgement, state or replay formats.
+
+**Hardware validation:** The synthetic KISS + command-host tests validate
+serialization and command ordering, but actual Data2G version support,
+bandwidth/window timing, and RF reception remain to be tested with radios.
+No automated test should key a transmitter.
 
 ## Compact established-session turns (v6)
 

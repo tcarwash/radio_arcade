@@ -11,7 +11,7 @@ import sys
 import time
 from typing import Callable
 
-from PySide6.QtCore import QObject, QPoint, QPointF, QMimeData, QRectF, QRunnable, QSettings, QSize, Qt, QThread, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QPoint, QPointF, QEasingCurve, QMimeData, QRectF, QRunnable, QSettings, QSize, Qt, QThread, QThreadPool, QTimer, QVariantAnimation, Signal, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QLinearGradient, QPainter, QPainterPath, QRadialGradient, QPen, QPixmap, QPolygonF, QKeySequence, QShortcut, QDrag
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QGridLayout, QBoxLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -1143,8 +1143,10 @@ class ArcadeWindow(QMainWindow):
         cq_layout.addWidget(self.cq_heading)
         self.cq_choice = QComboBox(); self.cq_choice.setObjectName("field")
         self.cq_choice.addItem("Any game", None)
+        self.cq_choice.currentIndexChanged.connect(self._refresh_cq)
         cq_layout.addWidget(self.cq_choice)
-        self.cq_send = QPushButton("Call CQ to all stations")
+        self.cq_send = QPushButton("Call CQ · find players")
+        self.cq_send.setToolTip("Data2G Hands discover available stations in parallel when supported; classic CQ remains available")
         self.cq_send.clicked.connect(self._call_cq)
         cq_layout.addWidget(self.cq_send)
         self.cq_list = QListWidget(); self.cq_list.setMinimumHeight(55)
@@ -1153,7 +1155,26 @@ class ArcadeWindow(QMainWindow):
         self.cq_answer = QPushButton("Answer selected CQ")
         self.cq_answer.clicked.connect(self._answer_cq)
         cq_layout.addWidget(self.cq_answer)
-        self.cq_widgets = (self.cq_heading, self.cq_choice, self.cq_send, self.cq_list, self.cq_answer)
+        self.discovery_heading = QLabel("STATIONS ANSWERING MY CQ")
+        self.discovery_heading.setObjectName("eyebrow")
+        cq_layout.addWidget(self.discovery_heading)
+        self.discovery_list = QListWidget()
+        self.discovery_list.setObjectName("discoveryStations")
+        self.discovery_list.setMinimumHeight(60)
+        self.discovery_list.setToolTip("Stations heard in your recent Hand windows; does not indicate a confirmed connection")
+        self._discovery_animations=[]
+        self._discovery_seen_rounds=set()
+        cq_layout.addWidget(self.discovery_list)
+        self.discovery_invite = QPushButton("Invite selected station")
+        self.discovery_invite.clicked.connect(self._invite_discovered)
+        cq_layout.addWidget(self.discovery_invite)
+        self.discovery_preferences = QPushButton("Availability & game interests…")
+        self.discovery_preferences.setObjectName("discoveryPreferences")
+        self.discovery_preferences.clicked.connect(self._edit_discovery)
+        cq_layout.addWidget(self.discovery_preferences)
+        self.cq_widgets = (self.cq_heading, self.cq_choice, self.cq_send, self.cq_list,
+                           self.cq_answer, self.discovery_heading, self.discovery_list,
+                           self.discovery_invite, self.discovery_preferences)
         for control in self.cq_widgets:
             control.setVisible(True)
         self._update_cq_visibility()
@@ -2127,7 +2148,7 @@ class ArcadeWindow(QMainWindow):
         self.mode_label.setText(f"{self.settings.callsign}  ·  {'OBSERVER · RX' if self.settings.observer_mode else self.settings.transport.title()}")
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or self.settings.tx_enabled)
         for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,
-                        self.cq_choice, self.cq_send, self.cq_answer,
+                        self.cq_choice, self.cq_send, self.cq_answer, self.discovery_invite,
                         self.invite_button, self.cancel_invite_button, self.start_button, self.chat_input,
                         self.chat_send, self.join_button, self.announce_button, self.order_input,
                         self.order_button, self.retry_button, self.connect_button,
@@ -2135,7 +2156,7 @@ class ArcadeWindow(QMainWindow):
             control.setEnabled(can_transmit)
         self.hosted_checkbox.setEnabled(can_transmit and self.settings.transport == "broadcast")
         self._update_cq_visibility()
-        for control in (self.cq_choice, self.cq_send, self.cq_answer):
+        for control in (self.cq_choice, self.cq_send, self.cq_answer, self.discovery_invite):
             control.setEnabled(can_transmit and self.settings.transport == "broadcast")
         if self.settings.transport != "broadcast":
             self.hosted_checkbox.setChecked(False)
@@ -2158,7 +2179,7 @@ class ArcadeWindow(QMainWindow):
         self.tx_toggle.setText("NO RF" if self.settings.transport == "practice" else "TX ENABLED" if enabled else "TX DISABLED")
         can_transmit = not self.settings.observer_mode and (self.settings.transport == "practice" or enabled)
         for control in (self.game_choice, self.hosted_checkbox, self.peer_input, self.new_button,
-                        self.cq_choice, self.cq_send, self.cq_answer,
+                        self.cq_choice, self.cq_send, self.cq_answer, self.discovery_invite,
                         self.invite_button, self.cancel_invite_button, self.start_button, self.chat_input,
                         self.chat_send, self.join_button, self.announce_button, self.order_input,
                         self.order_button, self.retry_button, self.connect_button, self.disconnect_button):
@@ -2229,6 +2250,42 @@ class ArcadeWindow(QMainWindow):
         selected = self.cq_list.currentItem()
         selected_key = selected.data(Qt.ItemDataRole.UserRole) if selected else None
         self.cq_list.clear()
+        game=self.cq_choice.currentData()
+        stations=self.engine.nearby_players(game)
+        listed={self.discovery_list.item(i).data(Qt.ItemDataRole.UserRole):
+                self.discovery_list.item(i) for i in range(self.discovery_list.count())}
+        current_calls={station["callsign"] for station in stations}
+        for i in reversed(range(self.discovery_list.count())):
+            item=self.discovery_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) not in current_calls:
+                self.discovery_list.takeItem(i)
+        for station in stations:
+            call=station["callsign"]
+            ready=station["interested"] and station["available"]
+            label=f"{call} · {station['status']}"
+            if station["interested"]:label+=" · interested"
+            if station["rx_snr"] is not None:label+=f" · {station['rx_snr']:.1f} dB"
+            item=listed.get(call)
+            if item is None:
+                item=QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole,call)
+                self.discovery_list.addItem(item)
+            else:
+                item.setText(label)
+            item.setToolTip("Ready for invitation" if ready else "Not looking for this game")
+            item.setForeground(QColor("#3adcb7") if ready else QColor("#9eafc2"))
+            key=(call,station["round"])
+            if key not in self._discovery_seen_rounds:
+                self._discovery_seen_rounds.add(key)
+                if ready:
+                    self._bounce_discovery_item(item)
+        # Keep the cache bounded over long operating sessions.
+        if len(self._discovery_seen_rounds)>256:
+            self._discovery_seen_rounds={
+                (station["callsign"],station["round"]) for station in stations}
+
+        self.cq_send.setText("Call CQ · discover players" if getattr(self.engine.transport,"supports_hands",False)
+                             else "Call CQ · conventional broadcast")
         for request in self.engine.cq_requests():
             item = QListWidgetItem(f"{request['callsign']} · {request['game']}")
             item.setData(Qt.ItemDataRole.UserRole, (request["callsign"], request["game_id"]))
@@ -2236,9 +2293,108 @@ class ArcadeWindow(QMainWindow):
             if item.data(Qt.ItemDataRole.UserRole) == selected_key:
                 self.cq_list.setCurrentItem(item)
 
+    def _bounce_discovery_item(self,item):
+        """Animate *only* a newly decoded available Hand, never a refresh."""
+        base_foreground=QColor("#3adcb7")
+        item.setSizeHint(QSize(0,8))
+        item.setBackground(QColor("#14544b"))
+        animation=QVariantAnimation(self.discovery_list)
+        animation.setStartValue(0.0)
+        animation.setEndValue(1.0)
+        animation.setDuration(650)
+        animation.setEasingCurve(QEasingCurve.Type.OutBack)
+        def frame(value):
+            # The OutBack curve overshoots before settling for a visible bounce.
+            factor=max(0.0,float(value))
+            item.setSizeHint(QSize(0,max(8,round(8+25*factor))))
+            self.discovery_list.viewport().update()
+        def complete():
+            item.setSizeHint(QSize(0,33))
+            item.setBackground(QColor(0,0,0,0))
+            item.setForeground(base_foreground)
+            if animation in self._discovery_animations:
+                self._discovery_animations.remove(animation)
+            animation.deleteLater()
+        animation.valueChanged.connect(frame)
+        animation.finished.connect(complete)
+        self._discovery_animations.append(animation)
+        animation.start()
+
+
     def _call_cq(self):
         if self.engine:
             self._run(partial(self.engine.call_cq, self.cq_choice.currentData()))
+
+    def _invite_discovered(self):
+        if not self.engine or not self.discovery_list.currentItem():
+            return
+        peer=self.discovery_list.currentItem().data(Qt.ItemDataRole.UserRole)
+        game=self.cq_choice.currentData()
+        if not game:
+            QMessageBox.information(self,"Choose a game","Select a game before inviting a station.")
+            return
+        matching=next((row for row in self.engine.nearby_players(game)
+                       if row["callsign"]==peer),None)
+        if not matching or not matching["available"] or not matching["interested"]:
+            QMessageBox.information(self,"Station unavailable","That station is not currently looking for this game.")
+            return
+        self._run(partial(self.engine.create_game,game,peer),self._created_game)
+
+    def _edit_discovery(self):
+        if not self.engine:return
+        dialog=QDialog(self);dialog.setObjectName("discoveryDialog")
+        dialog.setWindowTitle("Game availability · Radio Arcade")
+        dialog.resize(480,540)
+        layout=QVBoxLayout(dialog)
+        heading=QLabel("Who wants to play?");heading.setObjectName("dialogTitle");layout.addWidget(heading)
+        subtitle=QLabel("Stations can answer a game roll call with one short Hand. Status and interests are public.")
+        subtitle.setWordWrap(True);subtitle.setObjectName("muted");layout.addWidget(subtitle)
+        reply=QCheckBox("Automatically answer roll calls (transmits)")
+        reply.setObjectName("discoveryAutoReply")
+        reply.setChecked(self.engine.discovery_auto_reply)
+        layout.addWidget(reply)
+        status=QComboBox();status.setObjectName("discoveryStatus")
+        for value,label in (("looking","Looking to play"),("not_looking","Not looking"),
+                            ("in_game","In a game"),("busy","Busy")):
+            status.addItem(label,value)
+        status.setCurrentIndex(max(0,status.findData(self.engine.discovery_status)))
+        layout.addWidget(status)
+        notice=QLabel("Looking changes to In game automatically while a table is active. Busy takes precedence.")
+        notice.setObjectName("muted");notice.setWordWrap(True);layout.addWidget(notice)
+        layout.addWidget(QLabel("GAMES I AM INTERESTED IN"))
+        scroll=QScrollArea();scroll.setWidgetResizable(True)
+        holder=QWidget();options=QVBoxLayout(holder)
+        checks=[]
+        for game in self.engine.catalog():
+            if game.max_players<2 or not 1<=game.game_id<=16 or "desktop" not in game.clients:
+                continue
+            option=QCheckBox(game.name)
+            option.setObjectName("discoveryGame"+str(game.game_id))
+            option.setChecked(game.key in self.engine.discovery_games)
+            options.addWidget(option);checks.append((game.key,option))
+        options.addStretch(1);scroll.setWidget(holder);layout.addWidget(scroll,1)
+        legacy=QCheckBox("Also broadcast classic CQ for older Radio Arcade clients")
+        legacy.setChecked(self.engine.discovery_legacy_cq)
+        layout.addWidget(legacy)
+        buttons=QHBoxLayout();buttons.addStretch(1)
+        cancel=QPushButton("Cancel");cancel.clicked.connect(dialog.reject);buttons.addWidget(cancel)
+        save=QPushButton("Save preferences");save.setObjectName("primaryButton")
+        save.clicked.connect(dialog.accept);buttons.addWidget(save);layout.addLayout(buttons)
+        if dialog.exec()!=QDialog.DialogCode.Accepted:return
+        try:
+            selected=[key for key,option in checks if option.isChecked()]
+            self.engine.configure_discovery(auto_reply=reply.isChecked(),
+                                            status=status.currentData(),games=selected,
+                                            legacy_cq=legacy.isChecked())
+            self.settings.discovery_auto_reply=reply.isChecked()
+            self.settings.discovery_status=status.currentData()
+            self.settings.discovery_games=selected
+            self.settings.discovery_legacy_cq=legacy.isChecked()
+            self.settings.save()
+        except ValueError as exc:
+            QMessageBox.warning(self,"Check discovery preferences",str(exc))
+            return
+        self._refresh_cq()
 
     def _answer_cq(self):
         if not self.engine or not self.cq_list.currentItem():
@@ -2307,8 +2463,9 @@ class ArcadeWindow(QMainWindow):
             self._battleship_drafts.pop(event.session, None)
             self._delivery_status.pop(event.session, None)
             self._action_errors.pop(event.session, None)
-        if event.name == "cq_request":
+        if event.name in ("cq_request","rollcall_response","rollcall_finished"):
             self._refresh_cq()
+        if event.name == "cq_request":
             self._notification_cq = True
             self.notification_button.setText(f"CQ · {event.data['callsign']} · {event.data['game']} · View requests")
             self.notification_button.show()

@@ -254,6 +254,91 @@ function populateGames(catalog) {
   updateGamePreview();
 }
 
+function renderDiscovery(snapshot){
+  $("#cq-send").textContent = snapshot.supports_hands ? "Call CQ · discover players" : "Call CQ to all stations";
+  $("#cq-explainer").textContent = snapshot.supports_hands ?
+    "Data2G Hands available · One CQ opens a short listening window for parallel station replies. Stations respond only if they enabled automatic answers." :
+    "Hands unavailable on this host. CQ still works normally with directed invitations.";
+  const keys=JSON.stringify([snapshot.discovery_auto_reply,snapshot.discovery_status,snapshot.discovery_games,
+                              snapshot.discovery_legacy_cq,snapshot.catalog?.map(g=>[g.game_id,g.key])]);
+  if(state.discoverySettingsKey!==keys){
+    state.discoverySettingsKey=keys;
+    $("#discovery-status").value=snapshot.discovery_status||"looking";
+    $("#discovery-auto-reply").checked=Boolean(snapshot.discovery_auto_reply);
+    $("#discovery-legacy-cq").checked=Boolean(snapshot.discovery_legacy_cq);
+    const selected=new Set(snapshot.discovery_games||[]);
+    const grid=$("#discovery-games");grid.replaceChildren();
+    for(const game of (snapshot.catalog||[]).filter(g=>g.max_players>=2 && g.game_id<=16)){
+      const label=node("label","discovery-choice");
+      const check=node("input","");check.type="checkbox";check.value=game.key;
+      check.checked=selected.has(game.key);
+      label.append(check,document.createTextNode(" "+game.name));
+      grid.append(label);
+    }
+  }
+  const list=$("#discovery-nearby");
+  const gameKey=$("#cq-game").value;
+  const gameId=snapshot.catalog?.find(g=>g.key===gameKey)?.game_id||null;
+  const nearby=snapshot.nearby_players||[];
+  $(".discovery-heading").textContent = "Stations answering my call · " + nearby.length;
+  // A Hand is an arrival, not a repeating status notification. Remember each
+  // station/round even though /api/state is refreshed every 1.25 seconds.
+  const owner=snapshot.callsign||"";
+  if(state.discoveryArrivalOwner!==owner){
+    state.discoveryArrivalOwner=owner;
+    state.discoverySeenHands=new Set();
+    state.discoveryArrivalsInitialized=false;
+    state.discoveryListSignature=null;
+  }
+  const seen=state.discoverySeenHands||(state.discoverySeenHands=new Set());
+  const newcomers=new Set();
+  for(const station of nearby){
+    const key=station.callsign+":"+station.round;
+    if(!seen.has(key)){
+      if(state.discoveryArrivalsInitialized)newcomers.add(key);
+      seen.add(key);
+    }
+  }
+  state.discoveryArrivalsInitialized=true;
+  // Age is excluded: polling must not reanimate a row.
+  const stableSignature=JSON.stringify([snapshot.supports_hands,gameId,snapshot.tx_enabled,
+    snapshot.observer_mode,nearby.map(station=>[station.callsign,station.round,station.status_code,
+      station.games,station.rx_snr])]);
+  if(state.discoveryListSignature===stableSignature)return;
+  state.discoveryListSignature=stableSignature;
+  list.replaceChildren();
+  if(!snapshot.supports_hands){
+    list.append(node("p","micro-copy","Your Data2G host does not support Hands. Classic CQ remains available."));
+    return;
+  }
+  if(!nearby.length){
+    list.append(node("p","micro-copy","No responses yet · Choose a game and call CQ to see who's available."));
+    return;
+  }
+  for(const [index,station] of nearby.entries()){
+    const row=node("div","cq-request discovery-result");
+    const matches=gameId ? Boolean(station.games & (1 << (gameId-1))) : station.games!==0;
+    const compatible=station.available && matches;
+    if(newcomers.has(station.callsign+":"+station.round)){
+      row.classList.add(compatible?"discovery-bounce-in":"discovery-arrive-in");
+      row.style.setProperty("--discovery-stagger",Math.min(index,8)*65+"ms");
+      row.addEventListener("animationend",event=>{
+        if(event.target!==row || !["discovery-player-glow","discovery-player-arrive"].includes(event.animationName))return;
+        row.classList.remove("discovery-bounce-in","discovery-arrive-in");
+        row.style.removeProperty("--discovery-stagger");
+      });
+    }
+    row.append(node("span","",station.callsign+" · "+station.status+
+      (compatible?" · Interested":matches?" · Game interested":" · Other games")+
+      (station.rx_snr==null?"":" · "+station.rx_snr+" dB")));
+    const invite=node("button","button",compatible?"Invite":"Unavailable");
+    invite.type="button";invite.disabled=!compatible || !canTransmit() || !gameKey;
+    invite.dataset.discoveryCall=station.callsign;
+    invite.title=compatible?"Create a direct invitation for "+gameKey:"Choose a mutually supported game and an available station";
+    row.append(invite);list.append(row);
+  }
+}
+
 function renderCq(requests) {
   const list = $("#cq-list");
   list.replaceChildren();
@@ -2014,6 +2099,7 @@ async function refresh() {
     $("#cq-panel").hidden = snapshot.transport !== "broadcast" || snapshot.observer_mode;
     $("#cq-send").disabled = !canTransmit();
     renderCq(snapshot.cq_requests || []);
+    renderDiscovery(snapshot);
     const tableMode = $("#table-mode");
     const hostedOption = tableMode.querySelector('option[value="hosted"]');
     hostedOption.disabled = snapshot.transport !== "broadcast" || snapshot.observer_mode;
@@ -2382,6 +2468,26 @@ $("#create-game").addEventListener("click", () => {
   createTable($("#game-select").value,isPractice()?"":$("#peer-input").value.trim(),!isPractice()&&$("#table-mode").value==="hosted");
 });
 $("#cq-send").addEventListener("click", () => sendCommand("call_cq", { game: $("#cq-game").value }));
+$("#discovery-save").addEventListener("click",async()=>{
+  const result=await sendCommand("configure_discovery",{
+    auto_reply:$("#discovery-auto-reply").checked,
+    status:$("#discovery-status").value,
+    games:[...document.querySelectorAll("#discovery-games input:checked")].map(input=>input.value),
+    legacy_cq:$("#discovery-legacy-cq").checked,
+  });
+  if(result){
+    $("#discovery-prefs").open=false;
+    notify("Discovery preferences saved");
+  }
+});
+$("#discovery-nearby").addEventListener("click",event=>{
+  const button=event.target.closest("[data-discovery-call]");
+  if(!button||button.disabled)return;
+  const game=$("#cq-game").value;
+  if(!game){notify("Choose a game before inviting a station");return;}
+  createTable(game,button.dataset.discoveryCall,false);
+});
+$("#cq-game").addEventListener("change",()=>{if(state.snapshot)renderDiscovery(state.snapshot);});
 $("#cq-list").addEventListener("click", event => {
   const button = event.target.closest("[data-cq-call]");
   if (!button) return;

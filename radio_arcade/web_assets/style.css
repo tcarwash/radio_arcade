@@ -883,3 +883,48 @@ body { min-width: 320px; min-height: 100svh; overflow-x: hidden; font-size: 14px
 
 .word-draft-state.confirmed{border-style:solid;border-color:#b69b6b;color:#f6dfb4;background:#353025}
 :root[data-scheme="daylight"] .word-draft-state.confirmed{border-color:#ab8952;color:#63440c;background:#f3e8d3}
+
+.discovery-prefs{padding:10px;border:1px solid #36546b;border-radius:10px;background:#112439;margin:10px 0;color:#e7f3fa}
+.discovery-prefs summary{cursor:pointer;font-weight:700}
+.discovery-prefs .field-label{margin:8px 0 3px;display:block}
+.discovery-games{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:5px 8px;padding:8px 0;max-height:240px;overflow:auto}
+.discovery-choice{display:flex;align-items:center;gap:5px;font-size:12px;line-height:1.3;cursor:pointer;margin:6px 0}
+.discovery-choice input{accent-color:#00cfa5}
+.discovery-heading{margin:12px 0 5px;color:#93d3ec;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.discovery-result{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.discovery-result span{font-size:12px}
+.discovery-result .button{flex-shrink:0}
+
+/* Newly decoded Hands drop onto the lobby like players arriving at a table.
+   The class is assigned only for a newly decoded station + round, not polls. */
+.discovery-result.discovery-bounce-in{
+  animation:discovery-player-bounce 710ms cubic-bezier(.2,.85,.27,1) both,
+            discovery-player-glow 1200ms ease-out both;
+  animation-delay:var(--discovery-stagger,0ms);
+  transform-origin:50% 100%;
+}
+.discovery-result.discovery-arrive-in{
+  animation:discovery-player-arrive 480ms ease-out both;
+  animation-delay:var(--discovery-stagger,0ms);
+}
+@keyframes discovery-player-bounce{
+  0%{opacity:0;transform:translateY(-32px) scale(.83)}
+  48%{opacity:1;transform:translateY(8px) scale(1.055)}
+  68%{transform:translateY(-5px) scale(.985)}
+  84%{transform:translateY(2px) scale(1.012)}
+  100%{opacity:1;transform:translateY(0) scale(1)}
+}
+@keyframes discovery-player-glow{
+  0%,40%{box-shadow:0 0 0 0 rgba(0,245,196,.0);background:rgba(4,125,101,.18)}
+  55%{box-shadow:0 0 0 2px rgba(0,245,196,.54),0 0 25px rgba(0,245,196,.3);background:rgba(4,125,101,.35)}
+  100%{box-shadow:0 0 0 0 rgba(0,245,196,0);background:transparent}
+}
+@keyframes discovery-player-arrive{
+  from{opacity:0;transform:translateY(-12px) scale(.96)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+@media(prefers-reduced-motion:reduce){
+  .discovery-result.discovery-bounce-in,.discovery-result.discovery-arrive-in{
+    animation:none!important;transform:none!important;
+  }
+}
