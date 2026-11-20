@@ -150,6 +150,14 @@ class WebController:
             "sessions": [self._public_session(session) for session in engine.sessions()
                          if session["game_id"] in web_game_ids and not session.get("archived")] if engine else [],
             "cq_requests": engine.cq_requests() if engine else [],
+            "supports_hands": bool(engine and getattr(engine.transport,"supports_hands",False)),
+            "discovery_auto_reply": self.settings.discovery_auto_reply,
+            "discovery_status": self.settings.discovery_status,
+            "discovery_games": (self.settings.discovery_games
+                                if self.settings.discovery_games is not None else
+                                list(getattr(engine,"discovery_games",[]))),
+            "discovery_legacy_cq": self.settings.discovery_legacy_cq,
+            "nearby_players": engine.nearby_players() if engine else [],
         }
 
     def _configure(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -193,6 +201,10 @@ class WebController:
             color_scheme=scheme,
             sound_enabled=bool(data.get("sound_enabled", self.settings.sound_enabled)),
             ai_difficulty=difficulty,
+            discovery_auto_reply=self.settings.discovery_auto_reply,
+            discovery_status=self.settings.discovery_status,
+            discovery_games=self.settings.discovery_games,
+            discovery_legacy_cq=self.settings.discovery_legacy_cq,
             experimental_games=experimental_games,
             dx_cluster_url=str(data.get("dx_cluster_url", self.settings.dx_cluster_url)).strip(),
             observer_mode=observer,
@@ -216,6 +228,18 @@ class WebController:
             raise ValueError(self.last_error or "save station settings before using the game room")
         engine = self.engine
         name = data.get("command")
+        if name == "configure_discovery":
+            auto_reply=data.get("auto_reply")
+            status=data.get("status")
+            games=data.get("games")
+            legacy_cq=data.get("legacy_cq",True)
+            engine.configure_discovery(auto_reply=auto_reply,status=status,games=games,legacy_cq=legacy_cq)
+            self.settings.discovery_auto_reply=auto_reply
+            self.settings.discovery_status=status
+            self.settings.discovery_games=list(engine.discovery_games)
+            self.settings.discovery_legacy_cq=legacy_cq
+            self.settings.save(self.settings_path)
+            return {"ok":True}
         transmit_commands = {"forfeit_game", "create_game", "call_cq", "answer_cq", "invite_player", "cancel_invitation", "accept_invite", "join_game", "announce_game", "set_reply_order", "start_game", "legal_action", "place_word", "exchange_word", "send_chat", "request_sync", "resend_pending_action", "connect_peer", "place_battleship_fleet"}
         if name in transmit_commands and self.settings.transport != "practice" and not self.settings.tx_enabled:
             raise ValueError("TX is disabled. Enable TX to send radio traffic.")

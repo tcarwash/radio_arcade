@@ -9,6 +9,9 @@ import time
 from typing import Any, Callable
 
 from .games.base import GameRegistry, builtin_registry
+from .discovery import (Availability, STATUS_CHOICES, STATUS_LABELS, Hand, decode_hand,
+                        decode_request, encode_hand, encode_request, game_bits,
+                        interested, response_channel, round_tag)
 from .debuglog import opaque_logger
 from .store import SessionStore
 from .wire import (Kind, Packet, CompactFrame, decode, decode_action, decode_roster, decode_roster_state, encode,
@@ -44,7 +47,9 @@ class ArcadeService:
 
     def __init__(self, callsign: str, transport: Any, store: SessionStore | None = None,
                  registry: GameRegistry | None = None, observer_mode: bool = False,
-                 tx_enabled: bool = True, compact_turns: bool | None = None):
+                 tx_enabled: bool = True, compact_turns: bool | None = None,
+                 discovery_auto_reply: bool = False, discovery_status: str = "looking",
+                 discovery_games: list[str] | None = None, discovery_legacy_cq: bool = True):
         self.callsign = station_name(callsign)
         self.observer_mode = observer_mode
         self.tx_enabled = bool(tx_enabled)
@@ -81,6 +86,20 @@ class ArcadeService:
         self._id_finished = {sid for sid, row in self._sessions.items() if row["status"] == "finished"}
         self._reported_failed: set[tuple[str, str, int, int]] = set()
         self._cq_requests: dict[tuple[str, int], float] = {}
+        self.discovery_auto_reply = bool(discovery_auto_reply)
+        self.discovery_status = discovery_status if discovery_status in STATUS_CHOICES else "not_looking"
+        self.discovery_games = list(discovery_games) if discovery_games is not None else [
+            "tic-tac-toe", "nim", "connect-four", "battleship-classic", "sea-warfare", "scorched-earth"]
+        self.discovery_legacy_cq = bool(discovery_legacy_cq)
+        self._roll_seen: dict[tuple[str, int], float] = {}
+        self._rounds: dict[int, tuple[int, float]] = {}  # round -> (game ID, created monotonic)
+        self._stations: dict[str, dict[str, Any]] = {}
+        if hasattr(self.transport, "set_hand_handler"):
+            self.transport.set_hand_handler(self._hand_event)
+        if hasattr(self.transport, "on_frame_with_ref"):
+            self.transport.on_frame_with_ref = self.receive_with_ref
+        elif hasattr(self.transport, "current_ref"):
+            self.transport.on_frame_with_ref = self.receive_with_ref
         if not observer_mode:
             self.store.upgrade_v3_outbox()
         self._stop = threading.Event()
@@ -568,18 +587,177 @@ class ArcadeService:
             self._transmit(self._make(row, "*", Kind.HOST_ANNOUNCE,
                                       payload=encode_roster(tuple(row["players"]))))
 
+    def configure_discovery(self, *, auto_reply: bool, status: str, games: list[str],
+                            legacy_cq: bool = True) -> None:
+        if type(auto_reply) is not bool or type(legacy_cq) is not bool:
+            raise ValueError("discovery switches must be booleans")
+        if status not in STATUS_CHOICES or not isinstance(games,list):
+            raise ValueError("invalid discovery status or games")
+        checked = []
+        for key in games:
+            if not isinstance(key,str):
+                raise ValueError("invalid discovery game key")
+            game = self.registry.by_key(key)
+            if game.max_players < 2 or not 1 <= game.game_id <= 16:
+                raise ValueError("game cannot be advertised in Hand")
+            if key not in checked:
+                checked.append(key)
+        with self._lock:
+            self.discovery_auto_reply = auto_reply
+            self.discovery_status = status
+            self.discovery_games = checked
+            self.discovery_legacy_cq = legacy_cq
+
+    def _availability(self) -> Availability:
+        status = STATUS_CHOICES[self.discovery_status]
+        if status == Availability.LOOKING and any(
+            row["status"] == "active" and self.callsign in row["players"]
+            for row in self._sessions.values()
+        ):
+            return Availability.IN_GAME
+        return status
+
+    def _game_interest_bits(self) -> int:
+        ids = []
+        for key in self.discovery_games:
+            try:
+                game = self.registry.by_key(key)
+                if game.max_players >= 2 and 1 <= game.game_id <= 16:
+                    ids.append(game.game_id)
+            except ValueError:
+                continue
+        return game_bits(ids)
+
+    def nearby_players(self, game: str | int | None = None) -> list[dict[str, Any]]:
+        wanted = ((self.registry.by_id(game) if type(game) is int else self.registry.by_key(game)).game_id
+                  if game is not None else None)
+        with self._lock:
+            now = time.monotonic()
+            self._stations = {c: v for c,v in self._stations.items()
+                              if now-v["heard_at"] < CQ_LIFETIME_SECONDS}
+            return [dict(callsign=c, status=STATUS_LABELS[v["status"]],
+                         status_code=v["status"], games=v["games"], snr=v["snr"],
+                         rx_snr=v["rx_snr"], interested=(interested(v["games"], wanted)
+                                                        if wanted else bool(v["games"])),
+                         available=(v["status"] == Availability.LOOKING),
+                         round=v["round"], seconds_ago=round(now-v["heard_at"]))
+                    for c,v in sorted(self._stations.items(),key=lambda item: item[1]["heard_at"],reverse=True)]
+
     def call_cq(self, game: str | int | None = None) -> None:
-        """Ask listeners to open a direct table, without creating one yet."""
+        """Request players. Open one parallel Hand window on capable Data2G hosts."""
         self._require_player()
-        if hasattr(self.transport, "connect_peer") or not getattr(self.transport, "supports_broadcast", True):
+        if hasattr(self.transport,"connect_peer") or not getattr(self.transport,"supports_broadcast",True):
             raise ValueError("CQ requires broadcast radio mode")
         if not self.tx_enabled:
             raise ValueError("TX is disabled. Enable TX to call CQ.")
-        definition = (self.registry.by_id(game) if isinstance(game, int) else self.registry.by_key(game)) if game is not None else None
+        definition = (self.registry.by_id(game) if type(game) is int else self.registry.by_key(game)) if game is not None else None
         if definition is not None and definition.max_players < 2:
             raise ValueError("CQ requires a multiplayer game")
-        self._transmit(encode(Packet(definition.game_id if definition else CQ_ANY_GAME,
-                                     Kind.CQ_REQUEST, 0, 0, 0, self.callsign, "*")))
+        game_id = definition.game_id if definition else CQ_ANY_GAME
+        hand_capable = bool(getattr(self.transport,"supports_hands",False))
+        sent_roll=False
+        if hand_capable:
+            with self._lock:
+                self._rounds = {r:data for r,data in self._rounds.items()
+                                if time.monotonic()-data[1] < 60}
+                round_id = secrets.randbelow(65535)+1
+                while round_id in self._rounds:
+                    round_id = secrets.randbelow(65535)+1
+                self._rounds[round_id] = (game_id,time.monotonic())
+            channels = int(getattr(self.transport,"hand_channels",40))
+            if channels not in (8,20,40): channels = 40
+            packet = encode(Packet(game_id,Kind.ROLL_CALL,0,round_id,0,
+                                   self.callsign,"*",encode_request(30,channels)))
+            try:
+                if self.station_id_enabled:
+                    with self._id_lock:
+                        if self._last_id_at is None or time.monotonic()-self._last_id_at >= ID_INTERVAL_SECONDS:
+                            if not self._send_station_id():
+                                raise RuntimeError("Station ID required before calling roll")
+                self.transport.send_roll_call(packet,round_tag(self.callsign,round_id),
+                                              channels,delay_s=3.0)
+                if self.station_id_enabled:
+                    self._sent_since_id = True
+            except (OSError,ValueError,RuntimeError) as exc:
+                with self._lock:self._rounds.pop(round_id,None)
+                self._emit("rollcall_unavailable",error=str(exc))
+                if not self.discovery_legacy_cq:
+                    raise
+            else:
+                sent_roll=True
+                self._emit("rollcall_started",callsign=self.callsign,game_id=game_id,
+                           round=round_id,channels=channels)
+        if not sent_roll or self.discovery_legacy_cq:
+            self._transmit(encode(Packet(game_id,Kind.CQ_REQUEST,0,0,0,self.callsign,"*")))
+
+    def receive_with_ref(self, frame: bytes, ref: dict | None) -> None:
+        self.receive_frame(frame,ref=ref)
+
+    def _handle_roll_call(self, packet: Packet, ref: dict | None) -> None:
+        if (packet.session != 0 or packet.revision != 0 or packet.destination != "*"
+                or packet.sequence == 0):
+            return
+        delay_tenths,channels = decode_request(packet.payload)
+        if packet.game != CQ_ANY_GAME:
+            game=self.registry.by_id(packet.game)
+            if game.max_players < 2: return
+        caller=station_name(packet.source)
+        pair=(caller,packet.sequence)
+        now=time.monotonic()
+        with self._lock:
+            self._roll_seen={p:t for p,t in self._roll_seen.items() if now-t<300}
+            if pair in self._roll_seen:return
+            self._roll_seen[pair]=now
+            self._cq_requests[(caller,packet.game)] = now
+        self._emit("cq_request",callsign=caller,game_id=packet.game,
+                   game="Any game" if packet.game==CQ_ANY_GAME else self.registry.by_id(packet.game).name)
+        if (not self.discovery_auto_reply or self.observer_mode or not self.tx_enabled
+                or not getattr(self.transport,"supports_hands",False) or not ref):
+            return
+        if not hasattr(self.transport,"send_hand"):return
+        # Only the host controls precise RF start. Never substitute a normal
+        # data packet for a Hand: that would cause collision and extra traffic.
+        with self._lock:
+            status=self._availability()
+            bitmap=self._game_interest_bits()
+        payload=encode_hand(Hand(self.callsign,status,bitmap,ref.get("snr"),
+                                 1 if self.discovery_auto_reply else 0))
+        # Everybody hashes into the caller's advertised channel map. A narrower
+        # receiver must sit out an out-of-band assignment, not silently remap
+        # it; otherwise the caller will reject an otherwise valid Hand.
+        channel=response_channel(self.callsign,packet.sequence,channels)
+        if channel >= int(getattr(self.transport,"hand_channels",40)):
+            return
+        if self.transport.send_hand(ref["id"],round_tag(caller,packet.sequence),
+                                    delay_tenths/10.0,channel,payload):
+            self._emit("hand_queued",callsign=caller,game_id=packet.game,channel=channel)
+
+    def _hand_event(self, kind: str, data: dict) -> None:
+        if kind == "heard":
+            round_id = data.get("round")
+            # The transport labels the active window, not the raw RF payload.
+            with self._lock:
+                context=self._rounds.get(round_id)
+                if context is None or time.monotonic()-context[1]>45:return
+            try:
+                word=decode_hand(data["payload"], tuple(self._stations))
+                if word.callsign == self.callsign:return
+                width=int(data.get("channels",40))
+                channel=int(data["channel"])
+                if channel != response_channel(word.callsign,round_id,width):
+                    return
+            except (ValueError, KeyError, TypeError):
+                return
+            with self._lock:
+                self._stations[word.callsign]={
+                    "status":word.status,"games":word.games,"snr":word.snr,
+                    "rx_snr":data.get("snr"),"round":round_id,
+                    "heard_at":time.monotonic()}
+            self._emit("rollcall_response",callsign=word.callsign,
+                       status=STATUS_LABELS[word.status],game_id=context[0],
+                       interested=interested(word.games,context[0]),rx_snr=data.get("snr"))
+        elif kind=="end":
+            self._emit("rollcall_finished",round=data.get("round"))
 
     def cq_requests(self) -> list[dict[str, Any]]:
         """Recently heard CQ calls; these expire and create no game on receipt."""
@@ -1111,12 +1289,12 @@ class ArcadeService:
         if self.observer_mode:
             raise ValueError("observer mode cannot create, join, or play games or send chat")
 
-    def receive_frame(self, frame: bytes) -> None:
+    def receive_frame(self, frame: bytes, ref: dict | None = None) -> None:
         try:
             packet = decode(frame)
             if isinstance(packet, CompactFrame):
                 packet = self._expand_compact(packet)
-            self._handle(packet)
+            self._handle(packet,ref=ref)
         except (ValueError, KeyError, IndexError, UnicodeDecodeError) as exc:
             self._emit("protocol_error", error=str(exc))
 
@@ -1196,7 +1374,7 @@ class ArcadeService:
             elif packet.kind == Kind.HOST_CHAT and row.get("hosted"):
                 self._receive_host_chat(row, packet)
 
-    def _handle(self, packet: Packet) -> None:
+    def _handle(self, packet: Packet, ref: dict | None = None) -> None:
         if packet.kind == Kind.STATION_ID:
             if (packet.session == 0 and packet.sequence == packet.revision == 0
                     and packet.destination == "*" and packet.payload == b"ID " + packet.source.encode("ascii")):
@@ -1206,6 +1384,11 @@ class ArcadeService:
             self._observe(packet)
             return
         if packet.source == self.callsign or packet.destination not in (self.callsign, "*"):
+            return
+        if packet.kind == Kind.ROLL_CALL:
+            try:self._handle_roll_call(packet,ref)
+            except (ValueError, KeyError, TypeError) as exc:
+                self._emit("protocol_error",error=str(exc))
             return
         with self._lock:
             if packet.kind == Kind.CQ_REQUEST:

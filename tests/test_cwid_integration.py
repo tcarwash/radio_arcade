@@ -76,7 +76,7 @@ class CwidIntegrationTests(unittest.TestCase):
         self.assertTrue(link.cwid_active)
         self.assertIsNone(link.cwid_warning)
         self.assertEqual(commands, ["MYCALL AG7SU", "DATA2G ON", "CWID ONLY 20",
-                                    "BCAST OPEN RAGAMES"])
+                                    "VERSION", "BCAST OPEN RAGAMES"])
 
     def test_broadcast_cwid_rejection_keeps_application_id_fallback(self):
         link, commands = self.broadcast(reject=True)
@@ -87,7 +87,7 @@ class CwidIntegrationTests(unittest.TestCase):
     def test_opt_out_does_not_modify_modem_cwid_configuration(self):
         link, commands = self.broadcast(mode="application")
         self.assertFalse(link.cwid_active)
-        self.assertEqual(commands, ["BCAST OPEN RAGAMES"])
+        self.assertEqual(commands, ["VERSION", "BCAST OPEN RAGAMES"])
 
     def connected(self, reject=False, mode="auto"):
         commands = []
